@@ -4,7 +4,7 @@ wo_id: WO-04.1
 pr_id: PR-04
 title: Sidecar manifest (sidecar.json) and stdlib HTTP + SSE backend (cockpit.py)
 complexity: architect
-status: IN_PROGRESS
+status: COMPLETED
 allowed_files:
 - daemon/sidecars/pa_cockpit/sidecar.json
 - daemon/workspace-plugin/principal-architect/scripts/cockpit.py
@@ -31,7 +31,23 @@ verification_command: ./.venv/bin/pytest tests/test_schemas.py tests/test_state_
 max_attempts: 5
 max_structural_failures: 2
 spec_hash: e2be44ce4c70512121e96d73c2721dc4e07bfcc8fbae85528790c691049af012
-completion: null
+completion:
+  status: COMPLETED
+  attempt_num: 1
+  receipt_id: rcpt_124a60280b90
+  commit_sha: e363da338606cf3d1c977fb9be62670ae1020525
+  files_modified:
+  - daemon/sidecars/pa_cockpit/sidecar.json
+  - daemon/workspace-plugin/principal-architect/scripts/cockpit.py
+  - tests/test_cockpit_api.py
+  verification_summary: "119 passed in 44.58s; ruff check daemon tests: All checks passed!"
+  out_of_scope_findings: []
+  escalation_request: null
+  decisions_made:
+  - "Implemented stdlib-only ThreadingHTTPServer + BaseHTTPRequestHandler cockpit backend in cockpit.py with server_close() setting _pa_stop_sse=True for clean SSE loop teardown."
+  - "Exposed both workspaces (enriched list) and repos (raw Registry mapping) in GET /api/workspaces while stripping file:// URIs in _resolve_workspace."
+  - "Delegated PR and WO lifecycle mutations (/api/mode, /api/pr/approve-plan, /api/pr/start, /api/wo/debug, /api/pr/graduate, /api/sync) to pa_cli.main and vcs_sync while handling /api/escalation/resolve directly on WORKORDER.md (recomputing spec_hash) and StateDB."
+  dead_ends: []
 ---
 
 # WO-04.1 — Sidecar Manifest (`sidecar.json`) & Stdlib HTTP + SSE Backend (`cockpit.py`)
@@ -207,4 +223,19 @@ completion: null
 ## Completion Report
 <!-- Written by the Tier 3 Worker at task completion -->
 
-_Pending execution by Tier 3 Worker._
+- **Status:** `COMPLETED` (attempt 1)
+- **Receipt ID:** `rcpt_124a60280b90`
+- **Tree Hash (`allowed_files`):** `124a60280b90d20da71babcfc2ae17bcf9eee49f2b1da62e93056ba440624359`
+- **Files Modified:**
+  - `daemon/sidecars/pa_cockpit/sidecar.json`
+  - `daemon/workspace-plugin/principal-architect/scripts/cockpit.py`
+  - `tests/test_cockpit_api.py`
+- **Verification Summary:**
+  - `./.venv/bin/pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py tests/test_github_and_local_git_bus.py tests/test_memory_modes.py tests/test_cockpit_api.py` -> `119 passed in 44.58s`
+  - `./.venv/bin/ruff check daemon tests` -> `All checks passed!`
+- **Decisions Made:**
+  - Built `CockpitHTTPServer(ThreadingHTTPServer)` with `daemon_threads = True`, `allow_reuse_address = True`, and `_pa_stop_sse` shutdown signaling so ephemeral-port tests and SSE streams shut down cleanly without hanging threads.
+  - Served `/preload.js` with a safe fallback shim when not injected by the Antigravity host proxy, and static UI fallbacks for `/`, `/index.html`, `/styles.css`, and `/app.js` prior to `WO-04.2`.
+  - Implemented `POST /api/escalation/resolve` to append approved `requested_files` to `WORKORDER.md`, recompute a valid `spec_hash` via `schemas.compute_spec_hash`, mark the escalation `RESOLVED` (or `DENIED`), and dequeue the linked `attention_queue` row.
+- **Out-of-Scope Findings:** None.
+- **Dead Ends:** None.
