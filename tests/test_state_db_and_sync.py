@@ -268,3 +268,392 @@ def test_fake_runner_scripting(fake_runner: FakeRunner) -> None:
 
     assert len(fake_runner.calls) == 2
     assert fake_runner.calls[0] == ["git", "status", "--short"]
+
+
+# =============================================================================
+# StateDB & Registry Tests (WO-01.4)
+# =============================================================================
+
+from state_db import SCHEMA_VERSION, TABLES, Registry, StateDB, utc_now_iso
+
+
+def test_state_db_constants() -> None:
+    """Verify TABLES tuple and SCHEMA_VERSION."""
+    assert TABLES == (
+        "repo_config",
+        "sessions",
+        "verification_receipts",
+        "escalations",
+        "attention_queue",
+    )
+    assert SCHEMA_VERSION == 1
+    ts = utc_now_iso()
+    assert ts.endswith("Z")
+    assert "T" in ts
+
+
+def test_state_db_table_schemas_and_pragmas(tmp_path: Path) -> None:
+    """Verify PRAGMA journal_mode, busy_timeout, user_version, and table schemas."""
+    db_file = tmp_path / "subdir" / "state.db"
+    with StateDB(db_file) as db:
+        # Check pragmas
+        cur = db.conn.execute("PRAGMA journal_mode;")
+        assert cur.fetchone()[0].lower() == "wal"
+
+        cur = db.conn.execute("PRAGMA busy_timeout;")
+        assert cur.fetchone()[0] == 5000
+
+        cur = db.conn.execute("PRAGMA user_version;")
+        assert cur.fetchone()[0] == 1
+
+        # Check table schemas
+        expected_columns = {
+            "repo_config": {"key", "value"},
+            "sessions": {
+                "conversation_id",
+                "role",
+                "programme_id",
+                "pr_id",
+                "wo_id",
+                "attempt_num",
+                "structural_failures",
+                "pinned",
+                "last_checkpoint_step",
+                "created_at",
+                "updated_at",
+            },
+            "verification_receipts": {
+                "receipt_id",
+                "wo_id",
+                "pr_id",
+                "cmd",
+                "exit_code",
+                "tree_hash",
+                "git_head_sha",
+                "valid",
+                "created_at",
+            },
+            "escalations": {
+                "escalation_id",
+                "level",
+                "source_role",
+                "target_role",
+                "pr_id",
+                "wo_id",
+                "blocker_type",
+                "reason_code",
+                "requested_files_json",
+                "summary",
+                "status",
+                "github_issue_or_comment_url",
+                "created_at",
+                "resolved_at",
+            },
+            "attention_queue": {
+                "item_id",
+                "priority",
+                "kind",
+                "pr_id",
+                "wo_id",
+                "title",
+                "action_payload_json",
+                "status",
+                "created_at",
+            },
+        }
+
+        for table, cols in expected_columns.items():
+            cur = db.conn.execute(f"PRAGMA table_info({table});")
+            actual_cols = {row[1] for row in cur.fetchall()}
+            assert actual_cols == cols, f"Mismatch in columns for {table}: {actual_cols} != {cols}"
+
+    # Verify idempotency on reopen
+    with StateDB(db_file) as db:
+        db.init()
+        cur = db.conn.execute("PRAGMA user_version;")
+        assert cur.fetchone()[0] == 1
+
+
+def test_state_db_repo_config(tmp_path: Path) -> None:
+    """Verify repo_config get_config default, set_config insert/upsert, and get_all_config."""
+    with StateDB(tmp_path / "test.db") as db:
+        assert db.get_config("missing") is None
+        assert db.get_config("missing", "default_val") == "default_val"
+
+        db.set_config("execution_mode", "monitored")
+        assert db.get_config("execution_mode") == "monitored"
+
+        # Upsert
+        db.set_config("execution_mode", "autonomous")
+        assert db.get_config("execution_mode") == "autonomous"
+
+        db.set_config("vcs_mode", "github")
+        all_cfg = db.get_all_config()
+        assert all_cfg == {
+            "execution_mode": "autonomous",
+            "vcs_mode": "github",
+        }
+
+
+def test_state_db_sessions(tmp_path: Path) -> None:
+    """Verify sessions bind_session insert/upsert, get_session, and update_session."""
+    with StateDB(tmp_path / "test.db") as db:
+        cid = "conv-123"
+        assert db.get_session(cid) is None
+
+        # Bind session
+        row = db.bind_session(
+            cid,
+            role="pa-engineer",
+            programme_id="prog-1",
+            pr_id="PR-01",
+            wo_id="WO-01.4",
+            attempt_num=1,
+            structural_failures=0,
+            pinned=True,
+            last_checkpoint_step=42,
+        )
+        assert row["conversation_id"] == cid
+        assert row["role"] == "pa-engineer"
+        assert row["pinned"] == 1
+        assert row["last_checkpoint_step"] == 42
+        created_at = row["created_at"]
+        assert created_at is not None
+
+        # Upsert session
+        row2 = db.bind_session(
+            cid,
+            role="pa-engineer",
+            pr_id="PR-01",
+            wo_id="WO-01.4",
+            attempt_num=2,
+            structural_failures=1,
+            pinned=False,
+            last_checkpoint_step=45,
+        )
+        assert row2["attempt_num"] == 2
+        assert row2["structural_failures"] == 1
+        assert row2["pinned"] == 0
+        assert row2["created_at"] == created_at
+
+        # Update session
+        updated = db.update_session(cid, attempt_num=3, pinned=True)
+        assert updated is not None
+        assert updated["attempt_num"] == 3
+        assert updated["pinned"] == 1
+        assert updated["updated_at"] >= row2["updated_at"]
+
+        # Update nonexistent
+        assert db.update_session("nonexistent", attempt_num=1) is None
+
+        # Invalid field
+        with pytest.raises(ValueError, match="Invalid sessions column"):
+            db.update_session(cid, invalid_column="foo")
+
+        # Immutable field
+        with pytest.raises(ValueError, match="Cannot update immutable column"):
+            db.update_session(cid, created_at="foo")
+
+
+def test_state_db_verification_receipts(tmp_path: Path) -> None:
+    """Verify verification_receipts insert, query, filter, and invalidation."""
+    with StateDB(tmp_path / "test.db") as db:
+        r1 = db.insert_receipt(
+            wo_id="WO-01.4",
+            pr_id="PR-01",
+            cmd="pytest",
+            exit_code=0,
+            tree_hash="hash_a",
+            git_head_sha="sha_a",
+        )
+        assert r1["receipt_id"].startswith("rcpt_")
+        assert r1["valid"] == 1
+
+        r2 = db.insert_receipt(
+            wo_id="WO-01.4",
+            pr_id="PR-01",
+            cmd="pytest",
+            exit_code=0,
+            tree_hash="hash_b",
+            git_head_sha="sha_b",
+        )
+
+        # latest_valid_receipt without tree_hash returns r2
+        latest = db.latest_valid_receipt("WO-01.4")
+        assert latest is not None
+        assert latest["receipt_id"] == r2["receipt_id"]
+
+        # latest_valid_receipt with tree_hash matches specific hash
+        match_a = db.latest_valid_receipt("WO-01.4", tree_hash="hash_a")
+        assert match_a is not None
+        assert match_a["receipt_id"] == r1["receipt_id"]
+
+        # Nonexistent tree_hash
+        assert db.latest_valid_receipt("WO-01.4", tree_hash="nonexistent") is None
+
+        # Invalidate receipts
+        count = db.invalidate_receipts("WO-01.4")
+        assert count == 2
+        assert db.latest_valid_receipt("WO-01.4") is None
+
+
+def test_state_db_escalations(tmp_path: Path) -> None:
+    """Verify escalations insert, query with filters, and resolve."""
+    with StateDB(tmp_path / "test.db") as db:
+        e1 = db.insert_escalation(
+            level="tier_3_to_tier_2",
+            source_role="pa-engineer",
+            target_role="pa-principal-architect",
+            pr_id="PR-01",
+            wo_id="WO-01.4",
+            blocker_type="boundary_expansion",
+            reason_code="EXTRA_FILE_NEEDED",
+            requested_files=["foo.py", "bar.py"],
+            summary="Need extra files",
+        )
+        assert e1["escalation_id"].startswith("esc_")
+        assert json.loads(e1["requested_files_json"]) == ["foo.py", "bar.py"]
+        assert e1["status"] == "OPEN"
+        assert e1["resolved_at"] is None
+
+        e2 = db.insert_escalation(
+            level="tier_2_to_tier_1",
+            source_role="pa-principal-architect",
+            target_role="pa-chief-architect",
+            pr_id="PR-01",
+            wo_id=None,
+            summary="Charter amendment needed",
+        )
+
+        open_all = db.open_escalations()
+        assert len(open_all) == 2
+
+        # Filter by wo_id
+        open_wo = db.open_escalations(wo_id="WO-01.4")
+        assert len(open_wo) == 1
+        assert open_wo[0]["escalation_id"] == e1["escalation_id"]
+
+        # Filter by target_role
+        open_chief = db.open_escalations(target_role="pa-chief-architect")
+        assert len(open_chief) == 1
+        assert open_chief[0]["escalation_id"] == e2["escalation_id"]
+
+        # Resolve escalation
+        resolved = db.resolve_escalation(e1["escalation_id"])
+        assert resolved is not None
+        assert resolved["status"] == "RESOLVED"
+        assert resolved["resolved_at"] is not None
+
+        # Check open count after resolution
+        assert len(db.open_escalations(wo_id="WO-01.4")) == 0
+        assert len(db.open_escalations()) == 1
+
+        # Resolve nonexistent
+        assert db.resolve_escalation("nonexistent") is None
+
+
+def test_state_db_attention_queue(tmp_path: Path) -> None:
+    """Verify attention_queue enqueue, list_open priority order, and dequeue."""
+    with StateDB(tmp_path / "test.db") as db:
+        # Enqueue with different priorities (lower number = higher priority)
+        item_low = db.enqueue(
+            kind="info",
+            title="Low priority item",
+            priority=20,
+            pr_id="PR-01",
+        )
+        item_high = db.enqueue(
+            kind="blocker",
+            title="High priority item",
+            priority=5,
+            pr_id="PR-01",
+            action_payload={"reason": "need approval"},
+        )
+        item_other_pr = db.enqueue(
+            kind="review",
+            title="PR-02 item",
+            priority=10,
+            pr_id="PR-02",
+        )
+
+        # list_open for PR-01
+        pr1_items = db.list_open(pr_id="PR-01")
+        assert len(pr1_items) == 2
+        assert pr1_items[0]["item_id"] == item_high["item_id"]
+        assert pr1_items[1]["item_id"] == item_low["item_id"]
+        assert json.loads(pr1_items[0]["action_payload_json"]) == {"reason": "need approval"}
+
+        # list_open all
+        all_items = db.list_open()
+        assert len(all_items) == 3
+        assert [i["item_id"] for i in all_items] == [
+            item_high["item_id"],
+            item_other_pr["item_id"],
+            item_low["item_id"],
+        ]
+
+        # Dequeue
+        dq = db.dequeue(item_high["item_id"])
+        assert dq is not None
+        assert dq["status"] == "RESOLVED"
+        assert len(db.list_open(pr_id="PR-01")) == 1
+
+        # Dequeue nonexistent
+        assert db.dequeue("nonexistent") is None
+
+
+def test_registry_operations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify Registry register, idempotency, lookup, list, unregister, and common.is_repo_enrolled."""
+    daemon_dir = tmp_path / "daemon_home"
+    monkeypatch.setenv("PA_DAEMON_HOME", str(daemon_dir))
+
+    reg = Registry()
+    assert reg.path == daemon_dir / "state" / "registry.json"
+    assert reg.list() == {}
+
+    repo1 = tmp_path / "repo1"
+    repo1.mkdir()
+    (repo1 / ".git").mkdir()
+
+    # Register repo1
+    entry = reg.register(repo1)
+    real_repo1 = str(repo1.resolve())
+    assert entry["slug"] == "repo1"
+    assert entry["enrolled_at"] is not None
+    assert real_repo1 in reg.list()
+
+    # Verify common.is_repo_enrolled returns True
+    assert common.is_repo_enrolled([repo1])
+
+    # Idempotent re-register preserves enrolled_at
+    time.sleep(0.01)
+    entry2 = reg.register(repo1)
+    assert entry2["enrolled_at"] == entry["enrolled_at"]
+
+    # Lookup
+    lookup_res = reg.lookup(repo1)
+    assert lookup_res is not None
+    assert lookup_res["slug"] == "repo1"
+
+    # Unregister
+    assert reg.unregister(repo1) is True
+    assert not common.is_repo_enrolled([repo1])
+    assert reg.lookup(repo1) is None
+    assert reg.unregister(repo1) is False
+
+
+def test_registry_missing_or_corrupt_file(tmp_path: Path) -> None:
+    """Verify Registry handles corrupt JSON gracefully by resetting to empty."""
+    reg_file = tmp_path / "state" / "registry.json"
+    reg_file.parent.mkdir(parents=True, exist_ok=True)
+    reg_file.write_text("corrupted json content", encoding="utf-8")
+
+    reg = Registry(reg_file)
+    assert reg.list() == {}
+    assert reg.lookup(tmp_path) is None
+
+    # Register should overwrite cleanly
+    repo = tmp_path / "my_repo"
+    repo.mkdir()
+    reg.register(repo)
+    assert str(repo.resolve()) in reg.list()

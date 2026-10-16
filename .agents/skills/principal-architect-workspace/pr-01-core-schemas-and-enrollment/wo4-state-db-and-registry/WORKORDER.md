@@ -4,7 +4,7 @@ wo_id: WO-01.4
 pr_id: PR-01
 title: "Repo-local SQLite StateDB (WAL, 5 SPEC §6.5 tables) and global atomic Registry"
 complexity: standard
-status: IN_PROGRESS
+status: COMPLETED
 allowed_files:
   - daemon/workspace-plugin/principal-architect/scripts/state_db.py
   - tests/test_state_db_and_sync.py
@@ -18,7 +18,23 @@ verification_command: "./.venv/bin/pytest tests/test_schemas.py tests/test_state
 max_attempts: 5
 max_structural_failures: 2
 spec_hash: "56d01cfbe1367df324c72d3253e80fa32e464226e4046be565a9985ee44973ef"
-completion: null
+completion:
+  status: COMPLETED
+  attempt_num: 1
+  receipt_id: "1dc4c42ec36c9241139caf0c7b480fdd33444e29a5c1a1cc00166f2f44950f34"
+  commit_sha: "HEAD"
+  files_modified:
+    - daemon/workspace-plugin/principal-architect/scripts/state_db.py
+    - tests/test_state_db_and_sync.py
+  verification_summary: "38 passed in pytest (tests/test_schemas.py + tests/test_state_db_and_sync.py); ruff check passed with 0 errors."
+  out_of_scope_findings: []
+  escalation_request: null
+  decisions_made:
+    - "Used datetime.UTC for ruff UP017 compliance with Python 3.11+."
+    - "Used typing.Self for StateDB.__enter__ return type."
+    - "Implemented atomic Registry writes using tempfile.NamedTemporaryFile in parent directory, flushing and fsyncing before os.replace."
+    - "Validated sessions table columns dynamically against allowed set, prohibiting modification of conversation_id and created_at."
+  dead_ends: []
 ---
 
 # WO-01.4 — Repo-Local SQLite `StateDB` & Global Atomic `Registry`
@@ -120,4 +136,32 @@ completion: null
 ## Completion Report
 <!-- Written by the Tier 3 Worker at task completion -->
 
-_Pending execution by Tier 3 Worker (`WO-01.4`)._
+### Execution Summary
+- **Work Order:** `WO-01.4` (`pr-01-core-schemas-and-enrollment / wo4-state-db-and-registry`)
+- **Status:** COMPLETED (`attempt_num: 1`)
+- **Cryptographic Receipt:** `1dc4c42ec36c9241139caf0c7b480fdd33444e29a5c1a1cc00166f2f44950f34`
+- **Verification Command:** `./.venv/bin/pytest tests/test_schemas.py tests/test_state_db_and_sync.py && ./.venv/bin/ruff check daemon tests` (38 passed, 0 lint errors)
+
+### Changes Delivered
+1. `daemon/workspace-plugin/principal-architect/scripts/state_db.py`:
+   - `TABLES` tuple and `SCHEMA_VERSION = 1`.
+   - `utc_now_iso()` generating RFC3339 / ISO 8601 UTC timestamps ending with `Z`.
+   - `StateDB` class:
+     - SQLite WAL mode connection with `PRAGMA busy_timeout=5000` and `PRAGMA user_version=1`.
+     - Idempotent `init()` creating all 5 SPEC §6.5 tables: `repo_config`, `sessions`, `verification_receipts`, `escalations`, `attention_queue`.
+     - Context manager support (`__enter__`, `__exit__`, `close()`).
+     - Typed accessors:
+       - `repo_config`: `get_config`, `set_config` (insert/upsert), `get_all_config`.
+       - `sessions`: `bind_session` (insert/upsert), `get_session`, `update_session` (column validation, dynamic update, `updated_at` refresh).
+       - `verification_receipts`: `insert_receipt`, `invalidate_receipts`, `latest_valid_receipt` (with optional `tree_hash` filtering).
+       - `escalations`: `insert_escalation` (JSON list serialization), `resolve_escalation`, `open_escalations` (filtering by `pr_id`, `wo_id`, `target_role`).
+       - `attention_queue`: `enqueue` (JSON dict serialization), `dequeue`, `list_open` (ordered by `priority ASC, created_at ASC, rowid ASC`).
+   - `Registry` class:
+     - Global repository enrollment registry targeting `<daemon_home>/state/registry.json`.
+     - Atomic write mechanism using temporary files in the target directory followed by `os.replace`.
+     - Methods: `register` (idempotent, preserving `enrolled_at`), `unregister`, `lookup`, `list`.
+2. `tests/test_state_db_and_sync.py`:
+   - Added unit tests verifying `TABLES`, `SCHEMA_VERSION`, pragmas, table schemas via `PRAGMA table_info`.
+   - Unit tests covering all accessors across `repo_config`, `sessions`, `verification_receipts`, `escalations`, and `attention_queue`.
+   - Unit tests covering `Registry` operations, atomic persistence, idempotency, corrupt file resilience, and integration with `common.is_repo_enrolled`.
+
