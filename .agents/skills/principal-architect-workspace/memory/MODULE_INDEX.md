@@ -27,14 +27,17 @@
 | Project | Scope | Context |
 |---|---|---|
 | [pr-01-core-schemas-and-enrollment](../pr-01-core-schemas-and-enrollment/PROJECT.md) | Delivered `COMMAND_MODULES`, `build_parser`, `main`, `detect_vcs_mode`, `detect_memory_mode`, normative 9-step `pa enroll` (including legacy workspace migration), `pa unenroll`, `pa status [--json]`, `pa mode`, and `scripts/enroll.sh` / `scripts/unenroll.sh`. | [PROJECT.md](../pr-01-core-schemas-and-enrollment/PROJECT.md) |
+| [pr-02-agents-and-dual-mode-hooks](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) | Added `pa pr approve-plan <PR-ID>` (validates `PROJECT.md` Part II & `WORKORDER.md` specs, checks `allowed_files ⊆ charter.allowed_modules`, stamps `spec_hash`, marks `APPROVED`), `pa wo verify <WO-ID>` (checks scope hygiene & `spec_hash`, runs `verification_command`, stamps cryptographic receipt, commits with `PA-WorkOrder`/`PA-Verified-Hash` trailers), and `pa escalate` (`--to-pa`/`--to-chief`/`--to-human`). | [PROJECT.md](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) |
 
 ## hooks (`hooks.json`, `pre_invocation.py`, `pre_tool_gate.py`, `post_tool_receipt.py`, `stop_gate.py`, `escalation.py`)
 | Project | Scope | Context |
 |---|---|---|
+| [pr-02-agents-and-dual-mode-hooks](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) | Delivered `hooks.json` (`PreInvocation`, `PreToolUse`, `PostToolUse`, `Stop`, `timeout: 10`), `escalation.py` (`decide` for R1–R6 across `monitored` and `autonomous` modes, `is_structural_blocker`, `record_escalation`, `enqueue_attention`, `read_hook_input`, `write_hook_output`), `pre_tool_gate.py` (`<1ms` fast-exit, `os.path.realpath` traversal defense, R1–R6 enforcement), `post_tool_receipt.py` (`compute_tree_hash`, receipt invalidation/stamping, retry counters), `stop_gate.py` (two-tier retry ceiling `max_attempts=5` vs `max_structural_failures=2`, Case A/B + auditor checks, bounded continuations), and `pre_invocation.py` (`parse_spawn_header`, Turn 1 session binding, `CHECKPOINT`/rewind detection, `builtin` vs `external` memory injection). | [PROJECT.md](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) |
 
 ## agents-and-rules (`agents/pa-*.md`, `rules/`, in-plugin `skills/principal-architect/SKILL.md`)
 | Project | Scope | Context |
 |---|---|---|
+| [pr-02-agents-and-dual-mode-hooks](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) | Delivered `agents/{pa-chief-architect,pa-principal-architect,pa-engineer,pa-auditor,pa-debugger}.md` with SPEC §5.2 capability scoping (`inheritCustomizations: false` + `.state/pa-skills.json` & `.state/pa-worker-rules.json` on `pa-engineer`/`pa-auditor`, `inheritMcp: false` on `pa-auditor`), `rules/00-pa-operating-model.md`, and in-plugin `skills/principal-architect/SKILL.md`. | [PROJECT.md](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) |
 
 ## vcs-bus (`scripts/vcs_sync.py` — local_git floor, GitHub PR/Review/Issue sync)
 | Project | Scope | Context |
@@ -61,3 +64,4 @@
 | Project | Scope | Context |
 |---|---|---|
 | [pr-01-core-schemas-and-enrollment](../pr-01-core-schemas-and-enrollment/PROJECT.md) | Delivered `tests/conftest.py` (`tmp_repo`, `daemon_home`, `fake_runner`), `tests/test_schemas.py` (17 tests), and `tests/test_state_db_and_sync.py` (34 tests). | [PROJECT.md](../pr-01-core-schemas-and-enrollment/PROJECT.md) |
+| [pr-02-agents-and-dual-mode-hooks](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) | Delivered `tests/test_hooks_monitored_vs_autonomous.py` (34 unit, subprocess, CLI, and dogfood tests; total floor 85 passed). | [PROJECT.md](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) |
