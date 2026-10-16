@@ -4,7 +4,7 @@ wo_id: WO-01.6
 pr_id: PR-01
 title: "pa CLI entrypoint (enroll, unenroll, status --json, mode), wrapper scripts, and README"
 complexity: architect
-status: IN_PROGRESS
+status: COMPLETED
 allowed_files:
   - daemon/workspace-plugin/principal-architect/scripts/pa_cli.py
   - scripts/enroll.sh
@@ -22,7 +22,26 @@ verification_command: "./.venv/bin/pytest tests/test_schemas.py tests/test_state
 max_attempts: 5
 max_structural_failures: 2
 spec_hash: "d17839779a7329303dec333d4cb2f19de03d03be284ca01b718626793448e196"
-completion: null
+completion:
+  status: COMPLETED
+  attempt_num: 1
+  receipt_id: "rcpt-wo01.6-pa-cli"
+  commit_sha: null
+  files_modified:
+    - daemon/workspace-plugin/principal-architect/scripts/pa_cli.py
+    - scripts/enroll.sh
+    - scripts/unenroll.sh
+    - README.md
+    - tests/test_state_db_and_sync.py
+    - tests/test_schemas.py
+  verification_summary: "51 passed in 4.61s, ruff check clean"
+  out_of_scope_findings: []
+  escalation_request: null
+  decisions_made:
+    - "Implemented pa_cli.py strictly per locked PROJECT.md Charter (§1.2 G7, §2.1 R6-R12, §2.2, §2.3) and WORKORDER.md Part I specification, keeping top-level imports stdlib-only and lazy-importing schemas inside _cmd_status."
+    - "Used regex extraction over git log trailer fields (%H\\x00%(trailers:key=PA-WorkOrder,valueonly=true)\\x00%(trailers:key=PA-Verified-Hash,valueonly=true)) so multiline trailer expansions and mocked runner outputs parse identically."
+    - "Preserved stored extra_skills_json, exclude_rules_json, and execution_mode across idempotent pa enroll re-runs."
+  dead_ends: []
 ---
 
 # WO-01.6 — `pa` CLI (`enroll`, `unenroll`, `status`, `mode`), Wrapper Scripts & `README.md`
@@ -186,4 +205,18 @@ completion: null
 ## Completion Report
 <!-- Written by the Tier 3 Worker at task completion -->
 
-_Pending execution by Tier 3 Worker (`WO-01.6`)._
+- **Status:** `COMPLETED`
+- **Attempt Number:** 1
+- **Receipt ID:** `rcpt-wo01.6-pa-cli`
+- **Verification Summary:** `51 passed in 4.61s, ruff check clean`
+- **Files Modified:**
+  - `daemon/workspace-plugin/principal-architect/scripts/pa_cli.py`
+  - `scripts/enroll.sh`
+  - `scripts/unenroll.sh`
+  - `README.md`
+  - `tests/test_state_db_and_sync.py`
+  - `tests/test_schemas.py`
+- **Decisions Made:**
+  - Implemented `pa_cli.py` (`build_parser`, `main`, `COMMAND_MODULES`, `detect_vcs_mode`, `detect_memory_mode`, `enroll`, `unenroll`, `status [--json]`, `mode`) with lazy import of `schemas` inside `_cmd_status` so `pa --help` and `pa mode` remain stdlib-only.
+  - Added executable wrapper scripts `scripts/enroll.sh` and `scripts/unenroll.sh` plus `README.md`.
+  - Added 12 comprehensive unit, matrix, migration, idempotency, wrapper, and dogfood tests in `tests/test_state_db_and_sync.py` and added `WO-01.6` to the dogfood `verify_spec_hash` test in `tests/test_schemas.py`.

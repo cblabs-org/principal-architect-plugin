@@ -654,13 +654,14 @@ def test_dogfood_committed_programme_project_and_workorders() -> None:
     assert verify_charter_hash(proj_doc) is True
     assert verify_charter_hash(proj_path) is True
 
-    # 3. WORKORDER.md files for WO-01.1 through WO-01.5
+    # 3. WORKORDER.md files for WO-01.1 through WO-01.6
     for wo_slug in (
         "wo1-dev-bootstrap-and-package-skeleton",
         "wo2-common-stdlib-foundations",
         "wo3-schemas-models-and-document-layer",
         "wo4-state-db-and-registry",
         "wo5-templates",
+        "wo6-pa-cli-enroll-unenroll-status-mode",
     ):
         wo_path = ws_dir / "pr-01-core-schemas-and-enrollment" / wo_slug / "WORKORDER.md"
         wo_doc = load_workorder(wo_path)
