@@ -1,5 +1,5 @@
 # Principal Architect Memory
-<!-- Last updated: 2026-10-16T22:53:00Z -->
+<!-- Last updated: 2026-10-16T23:01:30Z -->
 <!-- memory_mode: builtin (no external memory plugin enrolled on this repository) -->
 
 ## Active Programs
@@ -10,7 +10,7 @@
 ## Active Projects
 | Project | Status | Modules | Context |
 |---|---|---|---|
-| pr-04-cockpit-auxpane-ui | IN_PROGRESS — Tier 2 PA spawned (Part I Charter locked; autonomous execution to Step 6A) | cockpit-backend, cockpit-ui, sidecar.json, install/uninstall, README, tests | [PROJECT.md](../pr-04-cockpit-auxpane-ui/PROJECT.md) |
+| pr-04-cockpit-auxpane-ui | APPROVED — WO 1/3 in progress (`wo1-cockpit-backend-http-sse`) | cockpit-backend, cockpit-ui, sidecar.json, install/uninstall, README, tests | [PROJECT.md](../pr-04-cockpit-auxpane-ui/PROJECT.md) |
 
 ## Recently Completed (last 5)
 | Project | Completed | Modules | Key Outcome |
