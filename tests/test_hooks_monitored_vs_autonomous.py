@@ -2331,3 +2331,357 @@ def test_pre_invocation_memory_mode_builtin_vs_external_separation(
     assert "ALPHA_BETA_GAMMA" not in eng_ext_msg
 
 
+# ---------------------------------------------------------------------------
+# WO-02.6: Custom Agent Definitions, Rule, SKILL.md, `pa pr approve-plan`,
+#          `pa escalate`, and PR-02 Dogfood Workspace Verification
+# ---------------------------------------------------------------------------
+
+
+def test_agent_frontmatter_rule_and_skill_compliance() -> None:
+    """Verify all 5 agents/pa-*.md files, 00-pa-operating-model.md, and SKILL.md (SPEC §5.2, Charter R6)."""
+    repo_root = common.find_repo_root(Path(__file__).resolve())
+    assert repo_root is not None
+    plugin_dir = repo_root / "daemon" / "workspace-plugin" / "principal-architect"
+    agents_dir = plugin_dir / "agents"
+
+    expected_agents = (
+        "pa-chief-architect.md",
+        "pa-principal-architect.md",
+        "pa-engineer.md",
+        "pa-auditor.md",
+        "pa-debugger.md",
+    )
+
+    parsed_agents: dict[str, dict[str, Any]] = {}
+    for fname in expected_agents:
+        fpath = agents_dir / fname
+        assert fpath.is_file(), f"Missing agent definition: {fpath}"
+        fm_data, sections = schemas.parse_document(fpath.read_text(encoding="utf-8"))
+        assert isinstance(fm_data.get("name"), str) and fm_data["name"].strip()
+        assert fm_data["name"] == fname.removesuffix(".md")
+        assert isinstance(fm_data.get("description"), str) and fm_data["description"].strip()
+        assert fm_data.get("model") == "inherit"
+        assert fm_data.get("excludeDefaultComponents") is False
+        assert isinstance(fm_data.get("tools"), list) and len(fm_data["tools"]) >= 1
+        assert len(sections) >= 1
+        parsed_agents[fname] = fm_data
+
+    # 1. pa-engineer.md and pa-auditor.md capability scoping
+    for sub_name in ("pa-engineer.md", "pa-auditor.md"):
+        fm = parsed_agents[sub_name]
+        assert fm.get("inheritCustomizations") is False
+        assert fm.get("skills") == [
+            ".agents/plugins/principal-architect-workspace/.state/pa-skills.json"
+        ]
+        assert fm.get("rules") == [
+            ".agents/plugins/principal-architect-workspace/.state/pa-worker-rules.json"
+        ]
+
+    # 2. pa-engineer.md tool and role restrictions
+    eng_fm = parsed_agents["pa-engineer.md"]
+    assert eng_fm.get("mainAgent") is False
+    assert eng_fm.get("subagent") is True
+    assert eng_fm.get("inheritMcp") is True
+    eng_tools = set(eng_fm["tools"])
+    for forbidden_tool in (
+        "invoke_subagent",
+        "ask_question",
+        "search_web",
+        "search_marketplace",
+    ):
+        assert forbidden_tool not in eng_tools
+
+    # 3. pa-auditor.md read-only tool and MCP restrictions
+    aud_fm = parsed_agents["pa-auditor.md"]
+    assert aud_fm.get("mainAgent") is True
+    assert aud_fm.get("subagent") is True
+    assert aud_fm.get("inheritMcp") is False
+    aud_tools = set(aud_fm["tools"])
+    for forbidden_write_tool in (
+        "write_to_file",
+        "write_file",
+        "replace_file_content",
+        "edit_file",
+        "multi_replace_file_content",
+        "invoke_subagent",
+    ):
+        assert forbidden_write_tool not in aud_tools
+
+    # 4. pa-chief-architect.md and pa-principal-architect.md configuration
+    for arch_name in ("pa-chief-architect.md", "pa-principal-architect.md"):
+        afm = parsed_agents[arch_name]
+        assert afm.get("mainAgent") is True
+        assert afm.get("subagent") is True
+        assert afm.get("inheritMcp") is True
+        assert afm.get("skills") == [
+            ".agents/plugins/principal-architect-workspace/.state/pa-skills.json"
+        ]
+        assert afm.get("rules") == [".agents/rules"]
+        assert "invoke_subagent" in afm["tools"]
+        assert "ask_question" in afm["tools"]
+
+    # 5. pa-debugger.md configuration
+    dbg_fm = parsed_agents["pa-debugger.md"]
+    assert dbg_fm.get("mainAgent") is True
+    assert dbg_fm.get("subagent") is True
+    assert dbg_fm.get("inheritMcp") is True
+    assert dbg_fm.get("skills") == [
+        ".agents/plugins/principal-architect-workspace/.state/pa-skills.json"
+    ]
+    assert dbg_fm.get("rules") == [
+        ".agents/plugins/principal-architect-workspace/.state/pa-worker-rules.json"
+    ]
+    assert "ask_question" in dbg_fm["tools"]
+
+    # 6. Rule file compliance: no YAML frontmatter and < 8192 bytes
+    rule_path = plugin_dir / "rules" / "00-pa-operating-model.md"
+    assert rule_path.is_file()
+    rule_bytes = rule_path.read_bytes()
+    assert 0 < len(rule_bytes) < 8192
+    rule_text = rule_bytes.decode("utf-8")
+    assert not rule_text.lstrip().startswith("---")
+
+    # 7. SKILL.md compliance: valid YAML frontmatter with name == "principal-architect"
+    skill_path = plugin_dir / "skills" / "principal-architect" / "SKILL.md"
+    assert skill_path.is_file()
+    skill_fm, skill_sections = schemas.parse_document(skill_path.read_text(encoding="utf-8"))
+    assert skill_fm.get("name") == "principal-architect"
+    assert isinstance(skill_fm.get("description"), str) and skill_fm["description"].strip()
+    assert len(skill_sections) >= 1
+
+
+def test_pa_pr_approve_plan_cli(
+    tmp_repo: Path, daemon_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Verify `pa pr approve-plan` validates charter_hash and allowed_modules, stamps spec_hash, and resolves plan_approval."""
+    ws_dir, proj_path, wo_path = _setup_enrolled_workspace(
+        tmp_repo,
+        daemon_home,
+        mode="autonomous",
+        pr_status=schemas.PRState.PLANNED,
+    )
+    db_file = ws_dir / ".state" / "state.db"
+
+    # Enqueue an open plan_approval item and PLAN_APPROVAL_REQUIRED escalation
+    with StateDB(db_file) as db:
+        escalation.record_escalation(
+            db,
+            level="PA_TO_HUMAN",
+            source_role="pa",
+            target_role="human",
+            pr_id="PR-02",
+            blocker_type="other",
+            reason_code="PLAN_APPROVAL_REQUIRED",
+            summary="Approve PR-02 plan",
+            enqueue_if_needed=True,
+            attention_kind="plan_approval",
+            attention_title="🟠 [Plan Approval] PR-02",
+            attention_priority=10,
+        )
+        assert len(db.list_open(pr_id="PR-02")) == 1
+
+    # 1. Rejects (exit 1) when a Work Order's allowed_files falls outside charter.allowed_modules
+    wo_doc = schemas.load_workorder(wo_path)
+    wo_doc.spec.allowed_files = ["src/allowed.py", "outside_charter/hack.py"]
+    wo_doc.spec.spec_hash = None
+    wo_path.write_text(schemas.dump_document(wo_doc.spec, wo_doc.sections), encoding="utf-8")
+
+    rc_outside = pa_cli.main(["pr", "approve-plan", "PR-02", "--path", str(tmp_repo)])
+    assert rc_outside == 1
+    assert "outside charter.allowed_modules" in capsys.readouterr().err
+    assert schemas.load_project(proj_path).spec.status == schemas.PRState.PLANNED
+
+    # Restore valid allowed_files on WO-02.1
+    wo_doc.spec.allowed_files = ["src/allowed.py", "src/sub/**"]
+    wo_doc.spec.spec_hash = None
+    wo_path.write_text(schemas.dump_document(wo_doc.spec, wo_doc.sections), encoding="utf-8")
+
+    # 2. Rejects (exit 1) when PROJECT.md Part I charter_hash is tampered with
+    original_proj_text = proj_path.read_text(encoding="utf-8")
+    proj_path.write_text(
+        original_proj_text.replace("Charter scope details.", "Tampered charter scope."),
+        encoding="utf-8",
+    )
+    rc_tampered = pa_cli.main(["pr", "approve-plan", "PR-02", "--path", str(tmp_repo)])
+    assert rc_tampered == 1
+    assert "charter_hash verification failed" in capsys.readouterr().err
+
+    # Restore valid PROJECT.md
+    proj_path.write_text(original_proj_text, encoding="utf-8")
+
+    # 3. Succeeds (exit 0) when valid: stamps spec_hash, sets status=APPROVED + approved_at, and resolves plan_approval
+    rc_ok = pa_cli.main(["pr", "approve-plan", "PR-02", "--path", str(tmp_repo)])
+    assert rc_ok == 0
+    assert "Approved plan for PR-02" in capsys.readouterr().err
+
+    approved_proj = schemas.load_project(proj_path)
+    assert approved_proj.spec.status == schemas.PRState.APPROVED
+    assert approved_proj.spec.approved_at is not None
+    assert schemas.verify_charter_hash(proj_path) is True
+
+    stamped_wo = schemas.load_workorder(wo_path)
+    assert stamped_wo.spec.spec_hash is not None
+    assert schemas.verify_spec_hash(wo_path) is True
+
+    with StateDB(db_file) as db:
+        assert db.list_open(pr_id="PR-02") == []
+        assert db.open_escalations(pr_id="PR-02") == []
+
+
+def test_pa_escalate_cli(
+    tmp_repo: Path, daemon_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Verify `pa escalate` across `--to-pa`, `--to-chief`, and `--to-human` in monitored and autonomous modes."""
+    ws_dir, _, _ = _setup_enrolled_workspace(tmp_repo, daemon_home, mode="monitored")
+    db_file = ws_dir / ".state" / "state.db"
+
+    # Missing summary returns exit 1
+    rc_missing = pa_cli.main(["escalate", "--to-pa", "--path", str(tmp_repo)])
+    assert rc_missing == 1
+    assert "--summary is required" in capsys.readouterr().err
+
+    # 1. --to-pa in monitored mode: records escalation in escalations, does not enqueue in attention_queue
+    rc_pa = pa_cli.main(
+        [
+            "escalate",
+            "--to-pa",
+            "--pr-id",
+            "PR-02",
+            "--wo-id",
+            "WO-02.1",
+            "--blocker-type",
+            "boundary",
+            "--reason-code",
+            "BOUNDARY_EXPANSION_NEEDED",
+            "--requested-file",
+            "src/extra.py",
+            "--summary",
+            "Need src/extra.py in allowed_files",
+            "--path",
+            str(tmp_repo),
+        ]
+    )
+    assert rc_pa == 0
+    esc_pa_id = capsys.readouterr().out.strip()
+    assert esc_pa_id.startswith("esc_")
+
+    with StateDB(db_file) as db:
+        escs = db.open_escalations(wo_id="WO-02.1")
+        assert len(escs) == 1
+        assert escs[0]["escalation_id"] == esc_pa_id
+        assert escs[0]["level"] == "wo_to_pa"
+        assert escs[0]["source_role"] == "engineer"
+        assert escs[0]["target_role"] == "pa"
+        assert json.loads(escs[0]["requested_files_json"]) == ["src/extra.py"]
+        assert escs[0]["summary"] == "Need src/extra.py in allowed_files"
+        assert db.list_open(pr_id="PR-02") == []
+
+    # 2. --to-human in monitored mode: records escalation AND enqueues into attention_queue (priority 15)
+    rc_human = pa_cli.main(
+        [
+            "escalate",
+            "--to-human",
+            "--pr-id",
+            "PR-02",
+            "--reason-code",
+            "STRATEGIC_DECISION",
+            "--path",
+            str(tmp_repo),
+            "Need human sign-off on API change",
+        ]
+    )
+    assert rc_human == 0
+    esc_human_id = capsys.readouterr().out.strip()
+    assert esc_human_id.startswith("esc_")
+
+    with StateDB(db_file) as db:
+        human_escs = db.open_escalations(target_role="human")
+        assert len(human_escs) == 1
+        assert human_escs[0]["level"] == "chief_to_human"
+        assert human_escs[0]["source_role"] == "chief"
+        assert human_escs[0]["target_role"] == "human"
+        open_attn = db.list_open(pr_id="PR-02")
+        assert len(open_attn) == 1
+        assert open_attn[0]["priority"] == 15
+        assert json.loads(open_attn[0]["action_payload_json"])["escalation_id"] == esc_human_id
+
+    # 3. --to-chief in autonomous mode: records escalation AND enqueues into attention_queue (priority 20)
+    with StateDB(db_file) as db:
+        db.set_config("execution_mode", "autonomous")
+
+    rc_chief = pa_cli.main(
+        [
+            "escalate",
+            "--to-chief",
+            "--pr-id",
+            "PR-02",
+            "--blocker-type",
+            "charter",
+            "--reason-code",
+            "CHARTER_AMENDMENT_NEEDED",
+            "--requested-file",
+            "daemon/new_module.py",
+            "--summary",
+            "Need daemon/new_module.py in allowed_modules",
+            "--path",
+            str(tmp_repo),
+        ]
+    )
+    assert rc_chief == 0
+    esc_chief_id = capsys.readouterr().out.strip()
+    assert esc_chief_id.startswith("esc_")
+
+    with StateDB(db_file) as db:
+        chief_escs = db.open_escalations(target_role="chief")
+        assert len(chief_escs) == 1
+        assert chief_escs[0]["escalation_id"] == esc_chief_id
+        assert chief_escs[0]["level"] == "pa_to_chief"
+        assert chief_escs[0]["source_role"] == "pa"
+        assert chief_escs[0]["target_role"] == "chief"
+        assert json.loads(chief_escs[0]["requested_files_json"]) == ["daemon/new_module.py"]
+        open_attn2 = db.list_open(pr_id="PR-02")
+        assert len(open_attn2) == 2
+        assert any(
+            json.loads(i["action_payload_json"]).get("escalation_id") == esc_chief_id
+            and i["priority"] == 20
+            for i in open_attn2
+        )
+
+
+def test_pr02_dogfood_workspace_specs_and_hashes() -> None:
+    """Validate this repository's own PR-02 PROJECT.md and WO-02.1..WO-02.6 WORKORDER.md files and hashes."""
+    repo_root = common.find_repo_root(Path(__file__).resolve())
+    assert repo_root is not None
+    ws_dir = common.workspace_dir(repo_root)
+    pr02_dir = ws_dir / "pr-02-agents-and-dual-mode-hooks"
+    proj_md = pr02_dir / "PROJECT.md"
+    assert proj_md.is_file()
+
+    proj_doc = schemas.load_project(proj_md)
+    assert proj_doc.spec.charter.pr_id == "PR-02"
+    assert proj_doc.spec.charter.charter_locked is True
+    assert schemas.verify_charter_hash(proj_md) is True
+    assert len(proj_doc.spec.work_orders) == 6
+
+    wo_paths = sorted(pr02_dir.glob("wo*/WORKORDER.md"))
+    assert len(wo_paths) == 6
+    expected_ids = [f"WO-02.{idx}" for idx in range(1, 7)]
+    found_ids: list[str] = []
+
+    for wp in wo_paths:
+        wo_doc = schemas.load_workorder(wp)
+        assert wo_doc.spec.pr_id == "PR-02"
+        assert wo_doc.spec.spec_hash is not None
+        assert schemas.verify_spec_hash(wp) is True, f"spec_hash mismatch on {wp}"
+        for af in wo_doc.spec.allowed_files:
+            assert pa_cli._is_pattern_within_allowed_modules(
+                af,
+                proj_doc.spec.charter.allowed_modules,
+                pre_tool_gate.matches_any_pattern,
+            ), f"{wo_doc.spec.wo_id} allowed_files '{af}' outside PR-02 allowed_modules"
+        found_ids.append(wo_doc.spec.wo_id)
+
+    assert found_ids == expected_ids
+
+
+

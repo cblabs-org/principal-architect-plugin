@@ -4,7 +4,7 @@ wo_id: WO-02.6
 pr_id: PR-02
 title: "Five custom agent definitions (agents/pa-*.md), operating-model rule, in-plugin SKILL.md, pa pr approve-plan, and pa escalate"
 complexity: standard
-status: PENDING
+status: COMPLETED
 allowed_files:
   - daemon/workspace-plugin/principal-architect/agents/**
   - daemon/workspace-plugin/principal-architect/rules/**
@@ -21,7 +21,28 @@ verification_command: "./.venv/bin/pytest tests/test_schemas.py tests/test_state
 max_attempts: 5
 max_structural_failures: 2
 spec_hash: 72c40ab174373449f4d60f0436cab3c337fa55a8cc6a99392828cbba6a3e1dda
-completion: null
+completion:
+  status: COMPLETED
+  attempt_num: 1
+  receipt_id: rcpt_b620400d70e1
+  commit_sha: 1f0d1f96c84019e78c03e7ebe36e7d3103a4b4ab
+  files_modified:
+    - daemon/workspace-plugin/principal-architect/agents/pa-auditor.md
+    - daemon/workspace-plugin/principal-architect/agents/pa-chief-architect.md
+    - daemon/workspace-plugin/principal-architect/agents/pa-debugger.md
+    - daemon/workspace-plugin/principal-architect/agents/pa-engineer.md
+    - daemon/workspace-plugin/principal-architect/agents/pa-principal-architect.md
+    - daemon/workspace-plugin/principal-architect/rules/00-pa-operating-model.md
+    - daemon/workspace-plugin/principal-architect/scripts/pa_cli.py
+    - daemon/workspace-plugin/principal-architect/skills/principal-architect/SKILL.md
+    - tests/test_hooks_monitored_vs_autonomous.py
+  verification_summary: "85 passed in 16.02s; ruff check daemon tests: All checks passed!"
+  out_of_scope_findings: []
+  escalation_request: null
+  decisions_made:
+    - "Defined _is_pattern_within_allowed_modules in pa_cli.py wrapping pre_tool_gate.matches_any_pattern so glob/directory patterns in allowed_files are validated against charter.allowed_modules without mutating pre_tool_gate.py."
+    - "Kept pa_cli.py top-level imports stdlib-only and lazy-imported schemas, pre_tool_gate, and escalation inside _cmd_pr_approve_plan and _cmd_escalate."
+  dead_ends: []
 ---
 
 # WO-02.6 — Custom Agent Definitions (`agents/pa-*.md`), Operating-Model Rule, `SKILL.md`, `pa pr approve-plan`, and `pa escalate`
@@ -171,3 +192,19 @@ completion: null
 
 ## Completion Report
 <!-- Written by the Tier 3 Worker at task completion -->
+
+- **Status:** `COMPLETED` (attempt 1 of 5)
+- **Receipt ID:** `rcpt_b620400d70e1` (`tree_hash`: `b620400d70e1e92efa9ba535e5b52822335abd4508c6283a8e84caed1c21247b`)
+- **Files Created / Modified:**
+  - `daemon/workspace-plugin/principal-architect/agents/pa-chief-architect.md`
+  - `daemon/workspace-plugin/principal-architect/agents/pa-principal-architect.md`
+  - `daemon/workspace-plugin/principal-architect/agents/pa-engineer.md`
+  - `daemon/workspace-plugin/principal-architect/agents/pa-auditor.md`
+  - `daemon/workspace-plugin/principal-architect/agents/pa-debugger.md`
+  - `daemon/workspace-plugin/principal-architect/rules/00-pa-operating-model.md`
+  - `daemon/workspace-plugin/principal-architect/skills/principal-architect/SKILL.md`
+  - `daemon/workspace-plugin/principal-architect/scripts/pa_cli.py`
+  - `tests/test_hooks_monitored_vs_autonomous.py`
+- **Verification Summary:** `./.venv/bin/pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py && ./.venv/bin/ruff check daemon tests` — `85 passed in 16.02s`, `All checks passed!`.
+- **Out-of-Scope Findings:** None.
+

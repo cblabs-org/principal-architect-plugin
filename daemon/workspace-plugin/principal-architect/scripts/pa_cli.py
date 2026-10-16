@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Principal Architect Plugin (`pa`) CLI entrypoint and subcommand dispatcher.
 
-Implements `pa enroll`, `pa unenroll`, `pa status [--json]`, and `pa mode`, plus
-the `COMMAND_MODULES` extension list consumed by downstream PR modules.
+Implements `pa enroll`, `pa unenroll`, `pa status [--json]`, `pa mode`,
+`pa pr approve-plan`, `pa wo verify`, and `pa escalate`, plus the
+`COMMAND_MODULES` extension list consumed by downstream PR modules.
 
 Lazy Import Rule (Charter R1): This module MUST NOT import `pydantic`, `yaml`,
 or `schemas` at module top-level so fast paths (`pa --help`, `pa mode`) remain
@@ -20,6 +21,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -1039,6 +1041,252 @@ def _cmd_wo_verify(args: argparse.Namespace, *, runner: common.Runner = common.r
     return 0
 
 
+def _is_pattern_within_allowed_modules(
+    pattern: str,
+    allowed_modules: Sequence[str],
+    matches_any_fn: Any,
+) -> bool:
+    """Return True if Work Order `allowed_files` pattern falls within `charter.allowed_modules`."""
+    norm = pattern.strip().lstrip("./")
+    if not norm:
+        return False
+    stripped_glob = re.sub(r"/\*+$", "", norm).rstrip("/")
+    candidates = [norm, norm.rstrip("/")]
+    if stripped_glob:
+        candidates.append(stripped_glob)
+    return any(matches_any_fn(cand, allowed_modules) for cand in candidates)
+
+
+def _cmd_pr_approve_plan(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
+    """Validate `PROJECT.md` and `wo*/WORKORDER.md` specs, stamp `spec_hash`, and approve PR plan."""
+    import pre_tool_gate
+    import schemas
+
+    raw_target = Path(args.path).expanduser()
+    if not raw_target.exists():
+        print(f"Error: Path does not exist: {args.path}", file=sys.stderr)
+        return 2
+
+    repo_root = common.find_repo_root(raw_target, runner=runner)
+    if repo_root is None:
+        print(f"Error: Not inside a git repository: {args.path}", file=sys.stderr)
+        return 2
+
+    real_root = Path(os.path.realpath(repo_root))
+    ws_dir = common.workspace_dir(real_root)
+    pr_id_arg = str(args.pr_id).strip()
+    if not pr_id_arg:
+        print("Error: pr_id is required for pa pr approve-plan", file=sys.stderr)
+        return 1
+
+    proj_md: Path | None = None
+    proj_doc: schemas.Document[schemas.ProjectSpec] | None = None
+    for cand_md in sorted(ws_dir.glob("pr-*/PROJECT.md")):
+        pr_dir_name = cand_md.parent.name
+        try:
+            cand_doc = schemas.load_project(cand_md)
+        except Exception as exc:  # noqa: BLE001
+            if pr_dir_name.lower() == pr_id_arg.lower():
+                print(
+                    f"Error: Invalid PROJECT.md at {cand_md}: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            continue
+        if (
+            cand_doc.spec.charter.pr_id.upper() == pr_id_arg.upper()
+            or pr_dir_name.lower() == pr_id_arg.lower()
+        ):
+            proj_md = cand_md
+            proj_doc = cand_doc
+            break
+
+    if proj_md is None or proj_doc is None:
+        print(
+            f"Error: PROJECT.md for '{pr_id_arg}' not found in {ws_dir}",
+            file=sys.stderr,
+        )
+        return 1
+
+    pr_dir = proj_md.parent
+    pr_id_canonical = proj_doc.spec.charter.pr_id
+
+    if proj_doc.spec.charter.charter_locked and not schemas.verify_charter_hash(proj_md):
+        print(
+            f"Error: PROJECT.md Part I charter_hash verification failed for {pr_id_canonical}.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if len(proj_doc.spec.work_orders) < 1:
+        print(
+            f"Error: PROJECT.md for {pr_id_canonical} has no work_orders entries.",
+            file=sys.stderr,
+        )
+        return 1
+
+    wo_paths = sorted(pr_dir.glob("wo*/WORKORDER.md"))
+    if not wo_paths:
+        print(
+            f"Error: No wo*/WORKORDER.md files found in {pr_dir}",
+            file=sys.stderr,
+        )
+        return 1
+
+    allowed_modules = proj_doc.spec.charter.allowed_modules
+    loaded_wos: list[tuple[Path, schemas.Document[schemas.WorkOrderSpec]]] = []
+    loaded_by_id: dict[str, schemas.Document[schemas.WorkOrderSpec]] = {}
+
+    for wo_md in wo_paths:
+        try:
+            wo_doc = schemas.load_workorder(wo_md)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"Error: Invalid WORKORDER.md at {wo_md}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+        if wo_doc.spec.pr_id.upper() != pr_id_canonical.upper():
+            print(
+                f"Error: WORKORDER.md {wo_doc.spec.wo_id} declares pr_id='{wo_doc.spec.pr_id}' "
+                f"(expected '{pr_id_canonical}').",
+                file=sys.stderr,
+            )
+            return 1
+
+        for af in wo_doc.spec.allowed_files:
+            if not _is_pattern_within_allowed_modules(
+                af, allowed_modules, pre_tool_gate.matches_any_pattern
+            ):
+                print(
+                    f"Error: Work Order {wo_doc.spec.wo_id} allowed_files pattern '{af}' "
+                    f"falls outside charter.allowed_modules for {pr_id_canonical}.",
+                    file=sys.stderr,
+                )
+                return 1
+
+        loaded_wos.append((wo_md, wo_doc))
+        loaded_by_id[wo_doc.spec.wo_id.upper()] = wo_doc
+
+    for row in proj_doc.spec.work_orders:
+        if row.id.upper() not in loaded_by_id:
+            print(
+                f"Error: Work Order '{row.id}' listed in PROJECT.md has no matching WORKORDER.md in {pr_dir}",
+                file=sys.stderr,
+            )
+            return 1
+
+    for wo_md, wo_doc in loaded_wos:
+        h = schemas.compute_spec_hash(wo_doc)
+        wo_doc.spec.spec_hash = h
+        wo_md.write_text(
+            schemas.dump_document(wo_doc.spec, wo_doc.sections),
+            encoding="utf-8",
+        )
+        if not schemas.verify_spec_hash(wo_md):
+            print(
+                f"Error: Failed to verify stamped spec_hash on {wo_md}",
+                file=sys.stderr,
+            )
+            return 1
+
+    proj_doc.spec.status = schemas.PRState.APPROVED
+    if proj_doc.spec.approved_at is None:
+        proj_doc.spec.approved_at = datetime.now(UTC)
+
+    proj_md.write_text(
+        schemas.dump_document(proj_doc.spec, proj_doc.sections),
+        encoding="utf-8",
+    )
+    if (
+        proj_doc.spec.charter.charter_locked
+        and proj_doc.spec.charter.charter_hash
+        and not schemas.verify_charter_hash(proj_md)
+    ):
+        print(
+            f"Error: PROJECT.md charter_hash check failed after approval write: {proj_md}",
+            file=sys.stderr,
+        )
+        return 1
+
+    db_file = ws_dir / ".state" / "state.db"
+    if db_file.is_file():
+        with state_db.StateDB(db_file) as db:
+            for item in db.list_open(pr_id=pr_id_canonical):
+                if item.get("kind") == "plan_approval":
+                    db.dequeue(str(item["item_id"]), status="RESOLVED")
+            for esc in db.open_escalations(pr_id=pr_id_canonical):
+                if esc.get("reason_code") == "PLAN_APPROVAL_REQUIRED":
+                    db.resolve_escalation(str(esc["escalation_id"]), status="RESOLVED")
+
+    print(
+        f"Approved plan for {pr_id_canonical} ({len(loaded_wos)} Work Orders stamped).",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _cmd_escalate(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
+    """Record an upward escalation in `state.db` (`escalations` and optional `attention_queue`)."""
+    import escalation
+
+    raw_target = Path(args.path).expanduser()
+    if not raw_target.exists():
+        print(f"Error: Path does not exist: {args.path}", file=sys.stderr)
+        return 2
+
+    repo_root = common.find_repo_root(raw_target, runner=runner)
+    if repo_root is None:
+        print(f"Error: Not inside a git repository: {args.path}", file=sys.stderr)
+        return 2
+
+    if args.to_human or args.level == "chief_to_human":
+        level = "chief_to_human"
+        source_role = args.source_role or "chief"
+        target_role = args.target_role or "human"
+    elif args.to_chief or args.level == "pa_to_chief":
+        level = "pa_to_chief"
+        source_role = args.source_role or "pa"
+        target_role = args.target_role or "chief"
+    else:
+        level = "wo_to_pa"
+        source_role = args.source_role or "engineer"
+        target_role = args.target_role or "pa"
+
+    summary_str = str(args.summary or args.summary_pos or "").strip()
+    if not summary_str:
+        print("Error: --summary is required for pa escalate", file=sys.stderr)
+        return 1
+
+    ws_dir = common.workspace_dir(repo_root)
+    db_file = ws_dir / ".state" / "state.db"
+    with state_db.StateDB(db_file) as db:
+        exec_mode = (db.get_config("execution_mode") or "monitored").strip().lower()
+        enqueue = (target_role == "human") or (exec_mode == "autonomous")
+        row = escalation.record_escalation(
+            db,
+            level=level,
+            source_role=source_role,
+            target_role=target_role,
+            pr_id=args.pr_id,
+            wo_id=args.wo_id,
+            blocker_type=args.blocker_type,
+            reason_code=args.reason_code,
+            requested_files=args.requested_file or [],
+            summary=summary_str,
+            enqueue_if_needed=enqueue,
+            attention_kind="escalation",
+            attention_title=(
+                f"Escalation ({args.reason_code}): {args.wo_id or args.pr_id or level}"
+            ),
+            attention_priority=15 if target_role == "human" else 20,
+        )
+
+    print(row["escalation_id"])
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the root `pa` ArgumentParser and register all `COMMAND_MODULES`."""
     parser = argparse.ArgumentParser(
@@ -1158,6 +1406,109 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the target repository (default: current directory).",
     )
     p_wo_verify.set_defaults(_handler=_cmd_wo_verify)
+
+    # 6. pa pr <subcommand>
+    p_pr = subparsers.add_parser(
+        "pr",
+        help="Pull Request lifecycle commands.",
+    )
+    pr_subparsers = p_pr.add_subparsers(dest="pr_command", metavar="<subcommand>")
+
+    p_pr_approve = pr_subparsers.add_parser(
+        "approve-plan",
+        help="Validate PROJECT.md and wo*/WORKORDER.md specs, stamp spec_hash, and set status: APPROVED.",
+    )
+    p_pr_approve.add_argument(
+        "pr_id",
+        help="Pull Request ID (e.g. PR-02) or folder slug.",
+    )
+    p_pr_approve.add_argument(
+        "--path",
+        default=".",
+        help="Path to the target repository (default: current directory).",
+    )
+    p_pr_approve.set_defaults(_handler=_cmd_pr_approve_plan)
+
+    # 7. pa escalate
+    p_escalate = subparsers.add_parser(
+        "escalate",
+        help="Record an upward hierarchical escalation in state.db.",
+    )
+    p_escalate.add_argument(
+        "--level",
+        choices=["wo_to_pa", "pa_to_chief", "chief_to_human"],
+        default=None,
+        help="Explicit escalation level.",
+    )
+    p_escalate.add_argument(
+        "--to-pa",
+        action="store_true",
+        help="Escalate from Tier 3 Worker to Tier 2 Principal Architect.",
+    )
+    p_escalate.add_argument(
+        "--to-chief",
+        action="store_true",
+        help="Escalate from Tier 2 Principal Architect to Tier 1 Chief Architect.",
+    )
+    p_escalate.add_argument(
+        "--to-human",
+        action="store_true",
+        help="Escalate to the Human Attention Needed queue.",
+    )
+    p_escalate.add_argument(
+        "--source-role",
+        default=None,
+        help="Override source role (default inferred from level).",
+    )
+    p_escalate.add_argument(
+        "--target-role",
+        default=None,
+        help="Override target role (default inferred from level).",
+    )
+    p_escalate.add_argument(
+        "--pr-id",
+        default=None,
+        help="Pull Request ID (e.g. PR-02).",
+    )
+    p_escalate.add_argument(
+        "--wo-id",
+        default=None,
+        help="Work Order ID (e.g. WO-02.6).",
+    )
+    p_escalate.add_argument(
+        "--blocker-type",
+        default="scope",
+        help="Blocker category (default: scope).",
+    )
+    p_escalate.add_argument(
+        "--reason-code",
+        default="MANUAL_ESCALATION",
+        help="Reason code (default: MANUAL_ESCALATION).",
+    )
+    p_escalate.add_argument(
+        "--requested-file",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="File or module path requested by the escalation (repeatable).",
+    )
+    p_escalate.add_argument(
+        "--summary",
+        default=None,
+        help="Concise escalation summary.",
+    )
+    p_escalate.add_argument(
+        "--path",
+        default=".",
+        help="Path to the target repository (default: current directory).",
+    )
+    p_escalate.add_argument(
+        "summary_pos",
+        nargs="?",
+        default=None,
+        help="Optional positional escalation summary.",
+    )
+    p_escalate.set_defaults(_handler=_cmd_escalate)
 
     # Extension hook for downstream PR modules
     for mod_name in COMMAND_MODULES:
