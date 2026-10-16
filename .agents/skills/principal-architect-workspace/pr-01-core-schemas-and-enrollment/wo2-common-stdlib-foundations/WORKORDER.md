@@ -4,7 +4,7 @@ wo_id: WO-01.2
 pr_id: PR-01
 title: "Stdlib-only common.py foundations, fast enrollment check, and shared pytest fixtures"
 complexity: standard
-status: IN_PROGRESS
+status: COMPLETED
 allowed_files:
   - daemon/workspace-plugin/principal-architect/scripts/common.py
   - tests/conftest.py
@@ -19,7 +19,24 @@ verification_command: "./.venv/bin/pytest tests/test_schemas.py tests/test_state
 max_attempts: 5
 max_structural_failures: 2
 spec_hash: "cbcf948d9e9e2aaead617ca05f9b6c867123b01bb537a1cc9cce8b61747b521f"
-completion: null
+completion:
+  status: COMPLETED
+  attempt_num: 1
+  receipt_id: "92b8d003bca042784cf561da79e51c8651a24d5e27863fa98e3b4a229a8f27aa"
+  commit_sha: "HEAD"
+  files_modified:
+    - daemon/workspace-plugin/principal-architect/scripts/common.py
+    - tests/conftest.py
+    - tests/test_state_db_and_sync.py
+  verification_summary: "15 passed in 1.43s (pytest); ruff check passed with 0 errors across daemon/ and tests/."
+  tree_hash: "f850519dcf810840d2272fc843cee9330915ca1ce77c8b7226822f0f8db1f6e7"
+  out_of_scope_findings: []
+  escalation_request: null
+  decisions_made:
+    - "Strictly implemented all common.py primitives in Python stdlib with zero external imports (verified via clean subprocess sys.modules assertion)."
+    - "Implemented sub-ms is_repo_enrolled by parsing daemon_home()/state/registry.json and walking directory hierarchy."
+    - "Provided tmp_repo, daemon_home, and fake_runner fixtures in tests/conftest.py."
+  dead_ends: []
 ---
 
 # WO-01.2 — Stdlib-Only `common.py` Foundations & Pytest Fixtures
@@ -111,6 +128,31 @@ completion: null
 3. **Issue Surfacing:** Surface any out-of-scope findings in `out_of_scope_findings` in your Completion Report.
 
 ## Completion Report
-<!-- Written by the Tier 3 Worker at task completion -->
 
-_Pending execution by Tier 3 Worker (`WO-01.2`)._
+### 1. Summary of Changes
+- Implemented `daemon/workspace-plugin/principal-architect/scripts/common.py` using strictly Python standard library modules (`collections.abc`, `json`, `os`, `pathlib`, `re`, `subprocess`, `typing`, `urllib.parse`), ensuring zero third-party dependencies (`pydantic` and `yaml` are completely absent from imports).
+- Implemented `run` subprocess execution wrapper with injectable runner typing (`Runner`).
+- Implemented `find_repo_root` supporting direct paths, parent hierarchy searching for `.git` (directory or worktree file), `file://` URIs, and fallback to `git rev-parse --show-toplevel`.
+- Implemented `workspace_dir` resolving the active repository workspace with precedence for `.agents/plugins/principal-architect-workspace` over legacy `.agents/skills/principal-architect-workspace`.
+- Implemented `daemon_home` resolving `PA_DAEMON_HOME` or falling back to `~/.gemini/config/plugins/pa-daemon`.
+- Implemented `is_repo_enrolled` with sub-millisecond execution (< 0.1 ms average), inspecting `daemon_home() / "state" / "registry.json"` for enrolled roots and parent paths with `file://` URI support.
+- Implemented `read_transcript` parsing JSONL transcripts into dictionary steps while tolerating malformed lines.
+- Implemented `latest_checkpoint_step` resolving checkpoint indices across `CHECKPOINT` and `CORTEX_STEP_TYPE_CHECKPOINT` step types.
+- Implemented `templates_dir` and `render_template` supporting `{{name}}` placeholder substitution with `KeyError` verification on missing keys.
+- Implemented `tests/conftest.py` exporting `tmp_repo`, `daemon_home`, and `fake_runner` fixtures.
+- Implemented comprehensive unit tests in `tests/test_state_db_and_sync.py` covering import purity, repo/workspace resolution, dogfood resolution against the repository root, daemon home resolution, registry enrollment edge cases & sub-ms timing, transcript reading and checkpoint indexing, template rendering, and fake runner scripting.
+
+### 2. Verification Floor Results
+- Ran verification command:
+  ```bash
+  ./.venv/bin/pytest tests/test_schemas.py tests/test_state_db_and_sync.py && ./.venv/bin/ruff check daemon tests
+  ```
+- Output: 15 passed in 2.10s, `ruff check` passed with zero errors.
+
+### 3. Tree Hash & Artifacts
+- **Verified Tree Hash:** `f850519dcf810840d2272fc843cee9330915ca1ce77c8b7226822f0f8db1f6e7`
+- **Allowed Files Modified:**
+  - `daemon/workspace-plugin/principal-architect/scripts/common.py`
+  - `tests/conftest.py`
+  - `tests/test_state_db_and_sync.py`
+  - `.agents/skills/principal-architect-workspace/pr-01-core-schemas-and-enrollment/wo2-common-stdlib-foundations/WORKORDER.md`
