@@ -32,7 +32,7 @@ charter:
     - "pytest tests/test_schemas.py tests/test_state_db_and_sync.py"
   charter_locked: true
   charter_hash: "9005d5135f25ae53fd2ed1b6ee63ece115b521cbaccd4469fd690fb6ca061d1a"
-status: STAGED_FOR_AUDIT
+status: GRADUATED
 approved_at: "2026-10-16T18:50:00Z"
 github_pr: 1
 work_orders:
@@ -230,3 +230,20 @@ Repository inspection at `main` confirms that `SPEC.md` (v1.1), `docs/positionin
 - **2026-10-16 (`WO-01.4 COMPLETED`, `b0a92c1`):** Delivered `scripts/state_db.py` (`TABLES`, `SCHEMA_VERSION = 1`, `StateDB` with WAL mode, `busy_timeout=5000`, `user_version=1`, idempotent `init()`, context manager, and typed accessors for `repo_config`, `sessions`, `verification_receipts`, `escalations`, and `attention_queue`, plus atomic `Registry`) and 9 comprehensive tests in `tests/test_state_db_and_sync.py` (38 passed, `ruff check` clean).
 - **2026-10-16 (`WO-01.5 COMPLETED`, `a64da6d`):** Delivered all seven `.md.tpl` templates (`PROGRAM`, `PROJECT`, `WORKORDER`, `AUDIT`, `MEMORY`, `MODULE_INDEX`, `PROJECT_INDEX`), `common.render_template_file`, and template validation + dogfood tests in `tests/test_schemas.py` (39 passed, `ruff check` clean).
 - **2026-10-16 (`WO-01.6 COMPLETED`, `265829c`):** Delivered `scripts/pa_cli.py` (`COMMAND_MODULES`, `build_parser`, `main`, `detect_vcs_mode`, `detect_memory_mode`, normative 9-step `enroll`, `unenroll`, `status [--json]` reconciling Markdown + `state.db` + git trailers, and `mode`), `scripts/enroll.sh`, `scripts/unenroll.sh`, `README.md`, and 12 comprehensive tests in `tests/test_state_db_and_sync.py` + `tests/test_schemas.py` (51 passed, `ruff check` clean). Transitioned PR-01 to `status: STAGED_FOR_AUDIT`.
+- **2026-10-16 (`AUDIT ROUND 1 APPROVED`, `ce4950c`):** Cold-Firewall Audit Round 1 (`AUDIT-round-1.md`, GitHub PR `#1`, audited SHA `be21bcc81f6b675559944d18f20ec4982bb1e28a`) returned `APPROVED (0 blocking, 0 major, 0 minor)` across all 5 audit axes (`spec_alignment`, `invariants`, `edge_cases`, `test_quality`, `scope_hygiene`).
+- **2026-10-16 (`status: GRADUATED`):** Graduated `PR-01` (`pr-01-core-schemas-and-enrollment`) into `MEMORY.md`, `MODULE_INDEX.md`, and `PROJECT_INDEX.md` (`memory_mode: builtin`).
+
+### 4.1 Architectural Distillation (`memory_mode: builtin`)
+
+- **Delivered Modules & Cross-PR Exported Interfaces:**
+  - `scripts/dev-bootstrap.sh` & `pyproject.toml`: 3-strategy virtualenv provisioning (`uv` -> `python3 -m venv` -> `python3 -m venv --without-pip` + `get-pip.py`), installing `pydantic>=2,<3`, `pyyaml>=6`, `pytest`, and `ruff` with `pythonpath = ["daemon/workspace-plugin/principal-architect/scripts"]`.
+  - `daemon/workspace-plugin/principal-architect/scripts/common.py` (stdlib-only, zero third-party imports, `<1ms` fast path): `find_repo_root`, `workspace_dir` (`.agents/plugins/principal-architect-workspace` -> legacy `.agents/skills/principal-architect-workspace` fallback), `daemon_home`, `is_repo_enrolled`, `read_transcript`, `latest_checkpoint_step`, `templates_dir`, `render_template`, `render_template_file`, `run(cmd, *, cwd=None, check=True, input_text=None)`.
+  - `daemon/workspace-plugin/principal-architect/scripts/schemas.py`: Split-Authority Pydantic v2 models (`PRState`, `WorkOrderStatus`, `ComplexityTier`, `PRNodeSpec`, `ProgramSpec`, `PRCharterSpec`, `WOSummaryRow`, `ProjectSpec`, `EscalationRequest`, `CompletionReport`, `WorkOrderSpec`, `AuditFinding`, `AuditReport`, all `extra="forbid"`), lossless H2 parser/renderer (`Section`, `Document[T]`, `parse_document`, `dump_document`, `load_program`, `load_project`, `load_workorder`, `load_audit`), and normative SHA-256 hashing (`canonical_json`, `norm_section`, `compute_charter_hash`, `verify_charter_hash`, `compute_spec_hash`, `verify_spec_hash`).
+  - `daemon/workspace-plugin/principal-architect/scripts/state_db.py`: `TABLES`, `SCHEMA_VERSION = 1`, `StateDB` (`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA user_version=1;` + typed accessors for `repo_config`, `sessions`, `verification_receipts`, `escalations`, and `attention_queue`), and atomic `Registry` (`daemon/state/registry.json` via temp-file + `os.replace`).
+  - `daemon/workspace-plugin/principal-architect/skills/principal-architect/templates/*.md.tpl`: Seven canonical templates (`PROGRAM`, `PROJECT`, `WORKORDER`, `AUDIT`, `MEMORY`, `MODULE_INDEX`, `PROJECT_INDEX`) whose rendered output validates against `schemas.py` models and required H2 sections.
+  - `daemon/workspace-plugin/principal-architect/scripts/pa_cli.py`, `scripts/enroll.sh`, `scripts/unenroll.sh`: Extensible `COMMAND_MODULES` CLI root with stdlib-only startup and lazy heavy imports (`schemas` imported only inside `_cmd_status`), implementing `pa enroll`, `pa unenroll`, `pa status [--json]`, and `pa mode [monitored|autonomous]`.
+- **Key Architectural Decisions & Invariants Preserved:**
+  - Pre-H2 preambles and HTML banner comments in Markdown documents are preserved as a leading `Section(heading="", body=...)`; in `PROJECT.md`, `section("## 2.")` extends to `^## 3.` and includes the Part II HTML separator banner, so Part II/III edits must occur strictly from `## 3.` onward (and in Part II/III frontmatter keys `status`, `approved_at`, `github_pr`, `work_orders`) to keep `charter_hash` invariant.
+  - `pa status` is strictly read-only on unenrolled repositories (never creating `.state/state.db` as a side effect) and emits zero emoji in `--json` mode.
+- **Verification & Audit Summary:**
+  - `51 passed` in `tests/test_schemas.py` (17 tests) and `tests/test_state_db_and_sync.py` (34 tests); `ruff check daemon tests` clean; Cold-Firewall Audit Round 1 `APPROVED (0 blocking, 0 major, 0 minor)` at `ce4950c23d615c682dcab3d747bd22906f4f5ff5`.
