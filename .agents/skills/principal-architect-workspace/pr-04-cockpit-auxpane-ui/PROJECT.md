@@ -24,7 +24,7 @@ charter:
   charter_hash: "2ac0917b9e8a4a0d1a85bded6036c555aebb2de04441ffd74c5d84038fc80559"
 status: STAGED_FOR_AUDIT
 approved_at: "2026-10-16T23:01:30Z"
-github_pr: null
+github_pr: 4
 work_orders:
   - id: WO-04.1
     slug: wo1-cockpit-backend-http-sse
