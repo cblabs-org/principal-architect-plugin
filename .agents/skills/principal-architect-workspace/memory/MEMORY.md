@@ -10,7 +10,7 @@
 ## Active Projects
 | Project | Status | Modules | Context |
 |---|---|---|---|
-| pr-02-agents-and-dual-mode-hooks | APPROVED — WO1/6 in progress (`wo1-escalation-engine-and-hook-io`) | agents, hooks.json, escalation, pre-invocation, pre-tool-gate, post-tool-receipt, stop-gate, pa-cli (approve-plan/wo-verify/escalate) | [PROJECT.md](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) |
+| pr-02-agents-and-dual-mode-hooks | APPROVED — WO2/6 in progress (`wo2-pre-tool-gate-r1-r6`) | agents, hooks.json, escalation, pre-invocation, pre-tool-gate, post-tool-receipt, stop-gate, pa-cli (approve-plan/wo-verify/escalate) | [PROJECT.md](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) |
 
 ## Recently Completed (last 5)
 | Project | Completed | Modules | Key Outcome |

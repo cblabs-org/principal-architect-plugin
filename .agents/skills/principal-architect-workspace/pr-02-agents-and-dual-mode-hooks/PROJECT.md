@@ -38,9 +38,9 @@ work_orders:
     slug: wo1-escalation-engine-and-hook-io
     title: "Dual-mode escalation engine (decide R1-R6), structural blocker signatures, hook I/O helpers, and hooks.json"
     complexity: architect
-    status: PENDING
-    attempts: 0
-    commit_sha: null
+    status: COMPLETED
+    attempts: 1
+    commit_sha: "9d85dceb1157ff2feb91ee937fd25d4655bcdf2c"
   - id: WO-02.2
     slug: wo2-pre-tool-gate-r1-r6
     title: "PreToolUse gate enforcing R1, R1b, R2, R3, R4, R5, R6 with realpath traversal defense and <1ms fast-exit"
@@ -180,7 +180,7 @@ Inspection of `feat/pr-01-core-schemas-and-enrollment` (`a0216da`) confirms that
 
 ### 3.2 Work Order Ledger
 
-- **[ ] [wo1-escalation-engine-and-hook-io](wo1-escalation-engine-and-hook-io/WORKORDER.md)** (`WO-02.1`, `complexity: architect`, base: `feat/pr-01-core-schemas-and-enrollment`): Implement `scripts/escalation.py` (`decide`, `STRUCTURAL_SIGNATURES`, `is_structural_blocker`, `record_escalation`, `enqueue_attention`, `extract_workspace_paths`, `read_hook_input`, `write_hook_output`), `hooks.json`, and initial unit tests in `tests/test_hooks_monitored_vs_autonomous.py`.
+- **[x] [wo1-escalation-engine-and-hook-io](wo1-escalation-engine-and-hook-io/WORKORDER.md)** (`WO-02.1`, `complexity: architect`, base: `feat/pr-01-core-schemas-and-enrollment`, commit `9d85dce`): Implement `scripts/escalation.py` (`decide`, `STRUCTURAL_SIGNATURES`, `is_structural_blocker`, `record_escalation`, `enqueue_attention`, `extract_workspace_paths`, `read_hook_input`, `write_hook_output`), `hooks.json`, and initial unit tests in `tests/test_hooks_monitored_vs_autonomous.py`.
 - **[ ] [wo2-pre-tool-gate-r1-r6](wo2-pre-tool-gate-r1-r6/WORKORDER.md)** (`WO-02.2`, `complexity: architect`, base: `pr-02-agents-and-dual-mode-hooks/wo1-escalation-engine-and-hook-io`): Implement `scripts/pre_tool_gate.py` (`<1ms` unenrolled fast-exit, `os.path.realpath` canonical path resolution & traversal defense, `evaluate_pre_tool` and `main()` enforcing R1, R1b, R2, R3, R4, R5, R6) and comprehensive `rule × mode` + traversal + fast-exit tests in `tests/test_hooks_monitored_vs_autonomous.py`.
 - **[ ] [wo3-post-tool-receipt-and-wo-verify](wo3-post-tool-receipt-and-wo-verify/WORKORDER.md)** (`WO-02.3`, `complexity: standard`, base: `pr-02-agents-and-dual-mode-hooks/wo2-pre-tool-gate-r1-r6`): Implement `scripts/post_tool_receipt.py` (`compute_tree_hash`, receipt invalidation, receipt stamping, attempt/structural failure counters) and `pa wo verify <WO-ID>` in `scripts/pa_cli.py`, plus tests in `tests/test_hooks_monitored_vs_autonomous.py`.
 - **[ ] [wo4-stop-gate-two-tier-retry](wo4-stop-gate-two-tier-retry/WORKORDER.md)** (`WO-02.4`, `complexity: architect`, base: `pr-02-agents-and-dual-mode-hooks/wo3-post-tool-receipt-and-wo-verify`): Implement `scripts/stop_gate.py` (two-tier retry ceiling, structural fast-fail, 5-attempt debugger escalation, Case A/B completion gates, bounded continuation cap, and auditor stop gate) and tests in `tests/test_hooks_monitored_vs_autonomous.py`.
@@ -194,3 +194,4 @@ Inspection of `feat/pr-01-core-schemas-and-enrollment` (`a0216da`) confirms that
 ## 4. Outcome & Session Log
 
 - **2026-10-16 (`status: APPROVED`):** User approved the full Programme Plan (`PROGRAM.md` `status: APPROVED`) and explicitly authorized autonomous execution and sub-agent spawning across the programme (Decision D11, 2026-10-16). Part II Work Order decomposition (`WO-02.1` through `WO-02.6`) authored and approved under standing user programme authorization (`approved_at: 2026-10-16T20:05:00Z`).
+- **2026-10-16 (`WO-02.1 COMPLETED`, `9d85dce`):** Delivered `scripts/escalation.py` (`decide` covering `R1`, `R1b`, `R2`, `R3`, `R4`, `R5`, `R6` across `monitored` and `autonomous` modes, `STRUCTURAL_SIGNATURES` & `is_structural_blocker`, `record_escalation` & `enqueue_attention`, and stdlib-only hook I/O helpers `extract_workspace_paths`, `read_hook_input`, `write_hook_output`), `daemon/workspace-plugin/principal-architect/hooks.json`, and 11 unit tests in `tests/test_hooks_monitored_vs_autonomous.py` (62 passed, `ruff check` clean).
