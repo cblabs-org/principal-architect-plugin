@@ -28,7 +28,7 @@ charter:
   charter_hash: "ad7e71f954cd3d2b3db2eed6c4e55ef17b855bd01bfeefa2c59246c44c5d4e21"
 status: STAGED_FOR_AUDIT
 approved_at: "2026-10-16T21:37:00Z"
-github_pr: null
+github_pr: 3
 work_orders:
   - id: WO-03.1
     slug: wo1-local-git-bus
