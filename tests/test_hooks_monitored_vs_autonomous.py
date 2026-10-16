@@ -7,12 +7,16 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
+from typing import Any
 
 import common
 import escalation
+import pre_tool_gate
 import pytest
-from state_db import StateDB
+import schemas
+from state_db import Registry, StateDB
 
 
 def test_escalation_import_purity() -> None:
@@ -433,3 +437,847 @@ def test_hooks_json_schema() -> None:
         "command": "python3 ${PLUGIN_ROOT}/scripts/stop_gate.py",
         "timeout": 10,
     }
+
+
+# ---------------------------------------------------------------------------
+# WO-02.2: pre_tool_gate.py tests (Fast-exit, R1-R6, and Traversal Defense)
+# ---------------------------------------------------------------------------
+
+
+def _setup_enrolled_workspace(
+    tmp_repo: Path,
+    daemon_home: Path,
+    *,
+    mode: str = "monitored",
+    pr_status: schemas.PRState = schemas.PRState.APPROVED,
+    auto_approve_pr_plans: bool = False,
+) -> tuple[Path, Path, Path]:
+    """Provision an enrolled workspace with a locked PROJECT.md and stamped WORKORDER.md."""
+    _ = daemon_home
+    ws_dir = tmp_repo / common.NEW_WORKSPACE_REL
+    pr_dir = ws_dir / "pr-02-agents-and-dual-mode-hooks"
+    wo_dir = pr_dir / "wo1-sample"
+    wo_dir.mkdir(parents=True, exist_ok=True)
+    prog_dir = ws_dir / "programme-sample"
+    prog_dir.mkdir(parents=True, exist_ok=True)
+
+    Registry().register(tmp_repo, workspace_dir=ws_dir, slug="test-repo")
+
+    prog_spec = schemas.ProgramSpec(
+        programme_id="prog-sample",
+        title="Sample Programme",
+        status="APPROVED",
+        prs=[
+            schemas.PRNodeSpec(
+                id="PR-02",
+                slug="pr-02-agents-and-dual-mode-hooks",
+                title="Sample PR Title",
+                branch="feat/pr-02",
+                allowed_modules=["src/", "tests/"],
+            )
+        ],
+    )
+    prog_sections = [
+        schemas.Section("## 1. Programme Charter", "Charter body.\n"),
+        schemas.Section("## 2. PR Topology", "Topology body.\n"),
+        schemas.Section("## 3. Cross-PR Interfaces", "Interfaces body.\n"),
+    ]
+    (prog_dir / "PROGRAM.md").write_text(
+        schemas.dump_document(prog_spec, prog_sections), encoding="utf-8"
+    )
+
+    charter = schemas.PRCharterSpec(
+        pr_id="PR-02",
+        programme_id="prog-sample",
+        slug="pr-02-agents-and-dual-mode-hooks",
+        title="Sample PR Title",
+        branch="feat/pr-02",
+        allowed_modules=["src/", "tests/"],
+        verification_floor=["pytest"],
+        charter_locked=True,
+    )
+    proj_sections = [
+        schemas.Section("## 1. PR Charter: Scope", "Charter scope details.\n"),
+        schemas.Section("## 2. Architectural Requirements", "Requirements details.\n"),
+        schemas.Section("## 3. Implementation Plan", "Initial plan details.\n"),
+        schemas.Section("## 4. Outcome & Session Log", "Log entry.\n"),
+    ]
+    charter.charter_hash = schemas.compute_charter_hash(charter, proj_sections)
+
+    proj_spec = schemas.ProjectSpec(
+        charter=charter,
+        status=pr_status,
+        work_orders=[
+            schemas.WOSummaryRow(
+                id="WO-02.1",
+                slug="wo1-sample",
+                title="Implement src/allowed.py",
+                complexity=schemas.ComplexityTier.standard,
+            )
+        ],
+    )
+    proj_path = pr_dir / "PROJECT.md"
+    proj_path.write_text(schemas.dump_document(proj_spec, proj_sections), encoding="utf-8")
+
+    wo_spec = schemas.WorkOrderSpec(
+        wo_id="WO-02.1",
+        pr_id="PR-02",
+        title="Implement src/allowed.py",
+        complexity=schemas.ComplexityTier.standard,
+        allowed_files=["src/allowed.py", "src/sub/"],
+        forbidden_files=["SPEC.md", "src/sub/secret.py"],
+        verification_command="pytest",
+    )
+    wo_sections = [
+        schemas.Section("## 1. Role & Objective", "Objective text.\n"),
+        schemas.Section("## 2. Strict Boundary Box", "Boundary text.\n"),
+        schemas.Section("## 3. Line-Item Instructions", "- [ ] Do work.\n"),
+        schemas.Section("## 4. Verification", "Run pytest.\n"),
+        schemas.Section("## Completion Report", "_Pending._\n"),
+    ]
+    wo_spec.spec_hash = schemas.compute_spec_hash(wo_spec, wo_sections)
+    wo_path = wo_dir / "WORKORDER.md"
+    wo_path.write_text(schemas.dump_document(wo_spec, wo_sections), encoding="utf-8")
+
+    with StateDB(ws_dir / ".state" / "state.db") as db:
+        db.set_config("execution_mode", mode)
+        db.set_config("auto_approve_pr_plans", "true" if auto_approve_pr_plans else "false")
+        db.bind_session("conv-chief", "chief", programme_id="prog-sample", pr_id="PR-02")
+        db.bind_session("conv-pa", "pa", programme_id="prog-sample", pr_id="PR-02")
+        db.bind_session(
+            "conv-eng",
+            "engineer",
+            programme_id="prog-sample",
+            pr_id="PR-02",
+            wo_id="WO-02.1",
+        )
+        db.bind_session("conv-auditor", "auditor", programme_id="prog-sample", pr_id="PR-02")
+
+    return ws_dir, proj_path, wo_path
+
+
+def test_pre_tool_gate_unenrolled_fast_exit_and_import_purity(
+    tmp_path: Path, daemon_home: Path
+) -> None:
+    """Verify unenrolled fast-exit (<1ms) and zero pydantic/yaml/schemas imports."""
+    _ = daemon_home
+    unenrolled = tmp_path / "unenrolled-repo"
+    unenrolled.mkdir(parents=True, exist_ok=True)
+
+    payload: dict[str, Any] = {
+        "workspacePaths": [str(unenrolled)],
+        "toolCall": {"name": "write_file", "args": {"Path": "src/foo.py", "Content": "x = 1\n"}},
+    }
+
+    # Warm-up call
+    assert pre_tool_gate.evaluate_pre_tool(payload) == {}
+
+    iterations = 25
+    start = time.perf_counter()
+    for _ in range(iterations):
+        res = pre_tool_gate.evaluate_pre_tool(payload)
+        assert res == {}
+    elapsed_ms = ((time.perf_counter() - start) * 1000.0) / iterations
+    assert elapsed_ms < 1.0, f"Unenrolled fast-exit took {elapsed_ms:.3f} ms (limit < 1.0 ms)"
+
+    # Verify import purity on the unenrolled path in a fresh subprocess
+    script_path = Path(pre_tool_gate.__file__).resolve()
+    scripts_dir = str(script_path.parent)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = scripts_dir
+    code = (
+        "import sys, pre_tool_gate\n"
+        f"res = pre_tool_gate.evaluate_pre_tool({{'workspacePaths': [{str(unenrolled)!r}]}})\n"
+        "assert res == {}\n"
+        "assert 'pydantic' not in sys.modules\n"
+        "assert 'yaml' not in sys.modules\n"
+        "assert 'schemas' not in sys.modules\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert proc.returncode == 0, f"Import purity failed:\n{proc.stdout}\n{proc.stderr}"
+
+    # Verify CLI subprocess execution on unenrolled repo outputs {} and exits 0
+    cli_proc = subprocess.run(
+        [sys.executable, str(script_path)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert cli_proc.returncode == 0
+    assert json.loads(cli_proc.stdout.strip()) == {}
+
+
+def test_path_resolution_pattern_matching_and_simulate_edit(tmp_repo: Path) -> None:
+    """Verify resolve_repo_rel_path, matches_pattern, and simulate_file_edit helpers."""
+    inside, rel, _ = pre_tool_gate.resolve_repo_rel_path(tmp_repo, "src/module/file.py")
+    assert inside is True
+    assert rel == "src/module/file.py"
+
+    # file:// URI inside repo
+    uri = f"file://{tmp_repo}/src/app.py"
+    inside_uri, rel_uri, _ = pre_tool_gate.resolve_repo_rel_path(tmp_repo, uri)
+    assert inside_uri is True
+    assert rel_uri == "src/app.py"
+
+    # ../ traversal escaping repo_root
+    inside_esc, raw_esc, _ = pre_tool_gate.resolve_repo_rel_path(tmp_repo, "../../etc/passwd")
+    assert inside_esc is False
+    assert raw_esc == "../../etc/passwd"
+
+    # Pattern matching variations
+    assert pre_tool_gate.matches_pattern("src/foo.py", "src/")
+    assert pre_tool_gate.matches_pattern("src/nested/bar.py", "src/**")
+    assert pre_tool_gate.matches_pattern("src/foo.py", "src/*.py")
+    assert pre_tool_gate.matches_pattern("README.md", "README.md")
+    assert not pre_tool_gate.matches_pattern("other/foo.py", "src/")
+
+    # simulate_file_edit variations
+    base_text = "alpha\nbeta\ngamma\n"
+    assert (
+        pre_tool_gate.simulate_file_edit(
+            base_text, "write_file", {"Path": "a.txt", "Content": "new\n"}
+        )
+        == "new\n"
+    )
+    assert (
+        pre_tool_gate.simulate_file_edit(
+            base_text, "write_file", {"Path": "a.txt", "Content": "delta\n", "Append": True}
+        )
+        == "alpha\nbeta\ngamma\ndelta\n"
+    )
+    assert (
+        pre_tool_gate.simulate_file_edit(
+            base_text,
+            "edit_file",
+            {"Path": "a.txt", "Target": "beta", "Replacement": "BETA"},
+        )
+        == "alpha\nBETA\ngamma\n"
+    )
+    assert (
+        pre_tool_gate.simulate_file_edit(
+            base_text,
+            "multi_replace_file_content",
+            {
+                "TargetFile": "a.txt",
+                "ReplacementChunks": [
+                    {"TargetContent": "alpha", "ReplacementContent": "A"},
+                    {"TargetContent": "gamma", "ReplacementContent": "G"},
+                ],
+            },
+        )
+        == "A\nbeta\nG\n"
+    )
+    assert (
+        pre_tool_gate.simulate_file_edit(
+            base_text, "edit_file", {"Path": "a.txt", "Target": "missing", "Replacement": "X"}
+        )
+        is None
+    )
+
+
+def test_pre_tool_gate_r1_and_r1b_architect_gates(
+    tmp_repo: Path, daemon_home: Path
+) -> None:
+    """Verify R1 (Architect no-inline-code) and R1b (Charter lock & allowed_modules)."""
+    ws_dir, proj_path, wo_path = _setup_enrolled_workspace(
+        tmp_repo, daemon_home, mode="monitored"
+    )
+
+    # 1. R1: Chief and PA editing application code outside .agents/ -> ask in monitored, deny in autonomous
+    for conv_id in ("conv-chief", "conv-pa"):
+        res_mon = pre_tool_gate.evaluate_pre_tool(
+            {
+                "conversationId": conv_id,
+                "toolCall": {
+                    "name": "write_file",
+                    "args": {"Path": "src/inline_hack.py", "Content": "x = 1\n"},
+                },
+            },
+            repo_root=tmp_repo,
+        )
+        assert res_mon["rule"] == "R1"
+        assert res_mon["permissionDecision"] == "ask"
+
+    with StateDB(ws_dir / ".state" / "state.db") as db:
+        db.set_config("execution_mode", "autonomous")
+
+    for conv_id in ("conv-chief", "conv-pa"):
+        res_auto = pre_tool_gate.evaluate_pre_tool(
+            {
+                "conversationId": conv_id,
+                "toolCall": {
+                    "name": "write_file",
+                    "args": {"Path": "src/inline_hack.py", "Content": "x = 1\n"},
+                },
+            },
+            repo_root=tmp_repo,
+        )
+        assert res_auto["rule"] == "R1"
+        assert res_auto["permissionDecision"] == "deny"
+
+    # Architect shell command mutating outside .agents/ triggers R1
+    res_cmd_r1 = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-pa",
+            "toolCall": {"name": "run_command", "args": {"CommandLine": "echo bad > src/app.py"}},
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_cmd_r1["rule"] == "R1"
+    assert res_cmd_r1["permissionDecision"] == "deny"
+
+    # Chief attempting to edit WORKORDER.md triggers R1, but Chief editing PROGRAM.md is allowed
+    res_chief_wo = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-chief",
+            "toolCall": {
+                "name": "edit_file",
+                "args": {
+                    "Path": str(wo_path.relative_to(tmp_repo)),
+                    "Target": "Objective text.",
+                    "Replacement": "Changed by chief.",
+                },
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_chief_wo["rule"] == "R1"
+    assert res_chief_wo["permissionDecision"] == "deny"
+
+    prog_rel = str((ws_dir / "programme-sample" / "PROGRAM.md").relative_to(tmp_repo))
+    res_chief_prog = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-chief",
+            "toolCall": {
+                "name": "edit_file",
+                "args": {
+                    "Path": prog_rel,
+                    "Target": "Charter body.",
+                    "Replacement": "Updated charter body.",
+                },
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_chief_prog["permissionDecision"] == "allow"
+
+    # 2. R1b: PA editing Part II (## 3. Implementation Plan) of PROJECT.md is allowed
+    proj_rel = str(proj_path.relative_to(tmp_repo))
+    res_pa_part2 = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-pa",
+            "toolCall": {
+                "name": "edit_file",
+                "args": {
+                    "Path": proj_rel,
+                    "Target": "Initial plan details.",
+                    "Replacement": "Updated Part II plan details.",
+                },
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_pa_part2["permissionDecision"] == "allow"
+
+    # R1b: PA tampering with Part I (## 1. PR Charter: Scope) of PROJECT.md is blocked
+    res_pa_part1_auto = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-pa",
+            "toolCall": {
+                "name": "edit_file",
+                "args": {
+                    "Path": proj_rel,
+                    "Target": "Charter scope details.",
+                    "Replacement": "Tampered charter scope.",
+                },
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_pa_part1_auto["rule"] == "R1b"
+    assert res_pa_part1_auto["permissionDecision"] == "deny"
+    assert res_pa_part1_auto["escalation"]["reason_code"] == "CHARTER_AMENDMENT_NEEDED"
+
+    # R1b: PA editing PROGRAM.md is blocked
+    res_pa_prog = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-pa",
+            "toolCall": {
+                "name": "edit_file",
+                "args": {
+                    "Path": prog_rel,
+                    "Target": "Charter body.",
+                    "Replacement": "PA edit.",
+                },
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_pa_prog["rule"] == "R1b"
+    assert res_pa_prog["permissionDecision"] == "deny"
+
+    # R1b: PA authoring WORKORDER.md with allowed_files outside charter.allowed_modules
+    wo_rel = str(wo_path.relative_to(tmp_repo))
+    res_pa_wo_outside = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-pa",
+            "toolCall": {
+                "name": "edit_file",
+                "args": {
+                    "Path": wo_rel,
+                    "Target": "- src/allowed.py",
+                    "Replacement": "- outside_module/forbidden.py",
+                },
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_pa_wo_outside["rule"] == "R1b"
+    assert res_pa_wo_outside["permissionDecision"] == "deny"
+    assert res_pa_wo_outside["escalation"]["requested_files"] == ["outside_module/forbidden.py"]
+
+    # Switch to monitored mode and verify R1b returns "ask"
+    with StateDB(ws_dir / ".state" / "state.db") as db:
+        db.set_config("execution_mode", "monitored")
+    res_pa_part1_mon = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-pa",
+            "toolCall": {
+                "name": "edit_file",
+                "args": {
+                    "Path": proj_rel,
+                    "Target": "Charter scope details.",
+                    "Replacement": "Tampered charter scope.",
+                },
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_pa_part1_mon["rule"] == "R1b"
+    assert res_pa_part1_mon["permissionDecision"] == "ask"
+
+
+def test_pre_tool_gate_r2_plan_approval_gate(tmp_repo: Path, daemon_home: Path) -> None:
+    """Verify R2 (PA invoke_subagent Plan Approval Gate) across monitored and autonomous modes."""
+    ws_dir, proj_path, wo_path = _setup_enrolled_workspace(
+        tmp_repo,
+        daemon_home,
+        mode="monitored",
+        pr_status=schemas.PRState.PLANNED,
+        auto_approve_pr_plans=False,
+    )
+
+    invoke_payload: dict[str, Any] = {
+        "conversationId": "conv-pa",
+        "toolCall": {
+            "name": "invoke_subagent",
+            "args": {
+                "TypeName": "pa-engineer",
+                "Role": "WO-02.1 Worker",
+                "Prompt": "PA_ROLE: engineer\nPR_ID: PR-02\nWO_ID: WO-02.1\nExecute WO-02.1.",
+            },
+        },
+    }
+
+    # 1. Monitored mode with status=PLANNED -> ask
+    res_mon = pre_tool_gate.evaluate_pre_tool(invoke_payload, repo_root=tmp_repo)
+    assert res_mon["rule"] == "R2"
+    assert res_mon["permissionDecision"] == "ask"
+
+    # Invoking pa-auditor is not blocked by R2
+    auditor_payload: dict[str, Any] = {
+        "conversationId": "conv-pa",
+        "toolCall": {
+            "name": "invoke_subagent",
+            "args": {
+                "TypeName": "pa-auditor",
+                "Role": "Cold-Firewall Auditor",
+                "Prompt": "PA_ROLE: auditor\nPR_ID: PR-02\nAudit PR-02.",
+            },
+        },
+    }
+    assert (
+        pre_tool_gate.evaluate_pre_tool(auditor_payload, repo_root=tmp_repo)["permissionDecision"]
+        == "allow"
+    )
+
+    # 2. Autonomous mode with auto_approve_pr_plans=false -> deny + enqueue plan_approval
+    with StateDB(ws_dir / ".state" / "state.db") as db:
+        db.set_config("execution_mode", "autonomous")
+        db.set_config("auto_approve_pr_plans", "false")
+
+    res_auto_deny = pre_tool_gate.evaluate_pre_tool(invoke_payload, repo_root=tmp_repo)
+    assert res_auto_deny["rule"] == "R2"
+    assert res_auto_deny["permissionDecision"] == "deny"
+    with StateDB(ws_dir / ".state" / "state.db") as db:
+        attn = db.list_open(pr_id="PR-02")
+        assert any(i["kind"] == "plan_approval" for i in attn)
+
+    # 3. Autonomous mode with auto_approve_pr_plans=true and valid plan -> allow + auto-approve
+    # Clear spec_hash on wo_path first to verify R2 stamps it on auto-approval
+    wo_doc = schemas.load_workorder(wo_path)
+    wo_doc.spec.spec_hash = None
+    wo_path.write_text(schemas.dump_document(wo_doc.spec, wo_doc.sections), encoding="utf-8")
+
+    with StateDB(ws_dir / ".state" / "state.db") as db:
+        db.set_config("auto_approve_pr_plans", "true")
+
+    res_auto_allow = pre_tool_gate.evaluate_pre_tool(invoke_payload, repo_root=tmp_repo)
+    assert res_auto_allow["rule"] == "R2"
+    assert res_auto_allow["permissionDecision"] == "allow"
+    assert res_auto_allow["auto_approve_plan"] is True
+
+    updated_proj = schemas.load_project(proj_path)
+    assert updated_proj.spec.status == schemas.PRState.APPROVED
+    assert updated_proj.spec.approved_at is not None
+
+    updated_wo = schemas.load_workorder(wo_path)
+    assert updated_wo.spec.spec_hash is not None
+    assert schemas.verify_spec_hash(updated_wo) is True
+
+
+def test_pre_tool_gate_r3_r4_worker_boundary_and_traversal(
+    tmp_repo: Path, daemon_home: Path, tmp_path: Path
+) -> None:
+    """Verify R3 (allowed/forbidden/spec_hash/realpath traversal) and R4 (git/gh lockdown)."""
+    ws_dir, _, wo_path = _setup_enrolled_workspace(
+        tmp_repo, daemon_home, mode="autonomous"
+    )
+
+    # 1. Worker editing allowed file -> allow
+    res_allowed = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-eng",
+            "toolCall": {
+                "name": "write_file",
+                "args": {"Path": "src/allowed.py", "Content": "print('ok')\n"},
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_allowed["permissionDecision"] == "allow"
+
+    # 2. Worker editing file outside allowed_files -> deny + structural_failures incremented + escalation
+    res_outside = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-eng",
+            "toolCall": {
+                "name": "write_file",
+                "args": {"Path": "src/disallowed.py", "Content": "print('no')\n"},
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_outside["rule"] == "R3"
+    assert res_outside["permissionDecision"] == "deny"
+    assert res_outside["escalation"]["reason_code"] == "BOUNDARY_EXPANSION_NEEDED"
+    with StateDB(ws_dir / ".state" / "state.db") as db:
+        sess = db.get_session("conv-eng")
+        assert sess is not None
+        assert sess["structural_failures"] == 1
+        assert len(db.open_escalations(wo_id="WO-02.1")) == 1
+
+    # 3. Worker editing file matching forbidden_files inside an allowed directory (src/sub/secret.py)
+    res_forbidden = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-eng",
+            "toolCall": {
+                "name": "write_file",
+                "args": {"Path": "src/sub/secret.py", "Content": "secret = 1\n"},
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_forbidden["rule"] == "R3"
+    assert res_forbidden["permissionDecision"] == "deny"
+
+    # 4. Path traversal (../) outside repo_root -> blocked with PATH_TRAVERSAL_BLOCKED
+    res_traversal = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-eng",
+            "toolCall": {
+                "name": "write_file",
+                "args": {"Path": "../../outside_escape.py", "Content": "pwned\n"},
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_traversal["rule"] == "R3"
+    assert res_traversal["permissionDecision"] == "deny"
+    assert res_traversal["escalation"]["reason_code"] == "PATH_TRAVERSAL_BLOCKED"
+
+    # 5. Symlink escape inside allowed directory pointing outside repo_root and to forbidden SPEC.md
+    src_sub = tmp_repo / "src" / "sub"
+    src_sub.mkdir(parents=True, exist_ok=True)
+    outside_file = tmp_path / "outside_target.txt"
+    outside_file.write_text("secret\n", encoding="utf-8")
+    symlink_outside = src_sub / "evil_outside.py"
+    symlink_outside.symlink_to(outside_file)
+
+    res_sym_out = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-eng",
+            "toolCall": {
+                "name": "write_file",
+                "args": {"Path": "src/sub/evil_outside.py", "Content": "overwrite\n"},
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_sym_out["rule"] == "R3"
+    assert res_sym_out["permissionDecision"] == "deny"
+    assert res_sym_out["escalation"]["reason_code"] == "PATH_TRAVERSAL_BLOCKED"
+
+    spec_md = tmp_repo / "SPEC.md"
+    spec_md.write_text("# Spec\n", encoding="utf-8")
+    symlink_spec = src_sub / "evil_spec.py"
+    symlink_spec.symlink_to(spec_md)
+
+    res_sym_spec = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-eng",
+            "toolCall": {
+                "name": "write_file",
+                "args": {"Path": "src/sub/evil_spec.py", "Content": "overwrite spec\n"},
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_sym_spec["rule"] == "R3"
+    assert res_sym_spec["permissionDecision"] == "deny"
+    assert res_sym_spec["escalation"]["reason_code"] == "BOUNDARY_EXPANSION_NEEDED"
+
+    # 6. Worker editing Part II of bound WORKORDER.md preserving spec_hash -> allow
+    wo_rel = str(wo_path.relative_to(tmp_repo))
+    res_wo_part2 = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-eng",
+            "toolCall": {
+                "name": "edit_file",
+                "args": {
+                    "Path": wo_rel,
+                    "Target": "_Pending._",
+                    "Replacement": "Completed all items.",
+                },
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_wo_part2["permissionDecision"] == "allow"
+
+    # 7. Worker tampering with Part I of bound WORKORDER.md -> blocked with SPEC_LOCK_VIOLATION
+    res_wo_tamper = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-eng",
+            "toolCall": {
+                "name": "edit_file",
+                "args": {
+                    "Path": wo_rel,
+                    "Target": "Objective text.",
+                    "Replacement": "Modified Part I objective.",
+                },
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_wo_tamper["rule"] == "R3"
+    assert res_wo_tamper["permissionDecision"] == "deny"
+    assert res_wo_tamper["escalation"]["reason_code"] == "SPEC_LOCK_VIOLATION"
+
+    # 8. R4: Worker git/gh lockdown in both monitored and autonomous modes
+    for mode in ("monitored", "autonomous"):
+        with StateDB(ws_dir / ".state" / "state.db") as db:
+            db.set_config("execution_mode", mode)
+
+        for bad_cmd in (
+            "git push origin HEAD",
+            "git checkout -b feat/rogue",
+            "git switch main",
+            "git branch -D main",
+            "git rebase main",
+            "git merge feat/other",
+            "git reset --hard HEAD~1",
+            "gh pr create --title test",
+            "gh issue create --title test",
+        ):
+            res_r4 = pre_tool_gate.evaluate_pre_tool(
+                {
+                    "conversationId": "conv-eng",
+                    "toolCall": {"name": "run_command", "args": {"CommandLine": bad_cmd}},
+                },
+                repo_root=tmp_repo,
+            )
+            assert res_r4["rule"] == "R4", f"Expected R4 for {bad_cmd}"
+            assert res_r4["permissionDecision"] == "deny"
+
+        for ok_cmd in (
+            "git status",
+            "git diff",
+            "git add src/allowed.py",
+            'git commit -m "WO-02.1: test git push guard"',
+            "./.venv/bin/pytest",
+        ):
+            res_ok = pre_tool_gate.evaluate_pre_tool(
+                {
+                    "conversationId": "conv-eng",
+                    "toolCall": {"name": "run_command", "args": {"CommandLine": ok_cmd}},
+                },
+                repo_root=tmp_repo,
+            )
+            assert res_ok["permissionDecision"] == "allow", f"Unexpected block for {ok_cmd}"
+
+
+def test_pre_tool_gate_r5_auditor_and_r6_graduation(
+    tmp_repo: Path, daemon_home: Path
+) -> None:
+    """Verify R5 (Auditor read-only lockdown) and R6 (Graduation audit gate)."""
+    ws_dir, proj_path, _ = _setup_enrolled_workspace(
+        tmp_repo, daemon_home, mode="monitored"
+    )
+
+    # 1. R5: Auditor blocked on file mutation tools, invoke_subagent, and mutating shell commands
+    for mode in ("monitored", "autonomous"):
+        with StateDB(ws_dir / ".state" / "state.db") as db:
+            db.set_config("execution_mode", mode)
+
+        res_file = pre_tool_gate.evaluate_pre_tool(
+            {
+                "conversationId": "conv-auditor",
+                "toolCall": {
+                    "name": "write_file",
+                    "args": {"Path": "src/allowed.py", "Content": "x = 1\n"},
+                },
+            },
+            repo_root=tmp_repo,
+        )
+        assert res_file["rule"] == "R5"
+        assert res_file["permissionDecision"] == "deny"
+
+        res_sub = pre_tool_gate.evaluate_pre_tool(
+            {
+                "conversationId": "conv-auditor",
+                "toolCall": {"name": "invoke_subagent", "args": {"TypeName": "self"}},
+            },
+            repo_root=tmp_repo,
+        )
+        assert res_sub["rule"] == "R5"
+        assert res_sub["permissionDecision"] == "deny"
+
+        for bad_auditor_cmd in (
+            "git commit -m 'audit'",
+            "rm -rf src",
+            "sed -i 's/a/b/' README.md",
+            "echo hacked > README.md",
+        ):
+            res_cmd = pre_tool_gate.evaluate_pre_tool(
+                {
+                    "conversationId": "conv-auditor",
+                    "toolCall": {"name": "run_command", "args": {"CommandLine": bad_auditor_cmd}},
+                },
+                repo_root=tmp_repo,
+            )
+            assert res_cmd["rule"] == "R5"
+            assert res_cmd["permissionDecision"] == "deny"
+
+        for ok_auditor_cmd in (
+            "git diff main...HEAD",
+            "gh pr diff 12",
+            "pytest -q 2>&1",
+            "pa pr post-audit PR-02 --verdict APPROVED",
+        ):
+            res_ok = pre_tool_gate.evaluate_pre_tool(
+                {
+                    "conversationId": "conv-auditor",
+                    "toolCall": {"name": "run_command", "args": {"CommandLine": ok_auditor_cmd}},
+                },
+                repo_root=tmp_repo,
+            )
+            assert res_ok["permissionDecision"] == "allow"
+
+    # 2. R6: pa pr graduate / gh pr merge without matching APPROVED AuditReport
+    with StateDB(ws_dir / ".state" / "state.db") as db:
+        db.set_config("execution_mode", "monitored")
+
+    res_r6_mon = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-pa",
+            "toolCall": {"name": "run_command", "args": {"CommandLine": "pa pr graduate PR-02"}},
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_r6_mon["rule"] == "R6"
+    assert res_r6_mon["permissionDecision"] == "ask"
+
+    with StateDB(ws_dir / ".state" / "state.db") as db:
+        db.set_config("execution_mode", "autonomous")
+
+    res_r6_auto = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-pa",
+            "toolCall": {"name": "run_command", "args": {"CommandLine": "gh pr merge 42 --squash"}},
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_r6_auto["rule"] == "R6"
+    assert res_r6_auto["permissionDecision"] == "deny"
+
+    # Write an APPROVED AuditReport matching current HEAD SHA and verify R6 allows graduation
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    audit_spec = schemas.AuditReport(
+        pr_id="PR-02",
+        audit_round=1,
+        head_sha=head_sha,
+        verdict="APPROVED",
+        findings=[],
+    )
+    audit_path = proj_path.parent / "AUDIT-round-1.md"
+    audit_path.write_text(
+        schemas.dump_document(audit_spec, [schemas.Section("## Audit Summary", "LGTM.\n")]),
+        encoding="utf-8",
+    )
+
+    res_r6_approved = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-pa",
+            "toolCall": {"name": "run_command", "args": {"CommandLine": "pa pr graduate PR-02"}},
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_r6_approved["permissionDecision"] == "allow"
+
+    # Subprocess stdin/stdout round-trip on enrolled repo
+    script_path = Path(pre_tool_gate.__file__).resolve()
+    env = dict(os.environ)
+    sub_res = subprocess.run(
+        [sys.executable, str(script_path)],
+        input=json.dumps(
+            {
+                "workspacePaths": [str(tmp_repo)],
+                "conversationId": "conv-eng",
+                "toolCall": {"name": "run_command", "args": {"CommandLine": "git push"}},
+            }
+        ),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert sub_res.returncode == 0
+    sub_json = json.loads(sub_res.stdout.strip())
+    assert sub_json["rule"] == "R4"
+    assert sub_json["permissionDecision"] == "deny"

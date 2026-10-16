@@ -4,7 +4,7 @@ wo_id: WO-02.2
 pr_id: PR-02
 title: "PreToolUse gate enforcing R1, R1b, R2, R3, R4, R5, R6 with realpath traversal defense and <1ms fast-exit"
 complexity: architect
-status: PENDING
+status: COMPLETED
 allowed_files:
   - daemon/workspace-plugin/principal-architect/scripts/pre_tool_gate.py
   - tests/test_hooks_monitored_vs_autonomous.py
@@ -18,7 +18,21 @@ verification_command: "./.venv/bin/pytest tests/test_schemas.py tests/test_state
 max_attempts: 5
 max_structural_failures: 2
 spec_hash: a6e4e0c9d37450362c8a9e2f040b9dafab8990c5a6cde5febeb2224ea46e5400
-completion: null
+completion:
+  status: COMPLETED
+  attempt_num: 1
+  receipt_id: rcpt_wo02_2_verified
+  commit_sha: null
+  files_modified:
+    - daemon/workspace-plugin/principal-architect/scripts/pre_tool_gate.py
+    - tests/test_hooks_monitored_vs_autonomous.py
+  verification_summary: "68 passed in pytest (test_schemas, test_state_db_and_sync, test_hooks_monitored_vs_autonomous); ruff check daemon tests clean."
+  out_of_scope_findings: []
+  escalation_request: null
+  decisions_made:
+    - "Stripped quoted -m/--message commit arguments before evaluating R4 git/gh command patterns so commit messages mentioning 'git push' do not trigger false-positive denials."
+    - "Resolved all candidate file paths via os.path.realpath relative to the canonical repo_root before checking workspace membership, allowed_files, or forbidden_files."
+  dead_ends: []
 ---
 
 # WO-02.2 — `PreToolUse` Gate (`R1`, `R1b`, `R2`, `R3`, `R4`, `R5`, `R6`) & Traversal Defense
@@ -199,4 +213,15 @@ completion: null
 ## Completion Report
 <!-- Written by the Tier 3 Worker at task completion -->
 
-_Pending execution._
+- **Status:** `COMPLETED` (attempt 1)
+- **Tree Hash (`allowed_files`):** `6789f28007e885a8e40625f47914fde4fa326dca99529d8cde9da530af410dde`
+- **Files Modified:**
+  - `daemon/workspace-plugin/principal-architect/scripts/pre_tool_gate.py`
+  - `tests/test_hooks_monitored_vs_autonomous.py`
+- **Verification Summary:** `./.venv/bin/pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py && ./.venv/bin/ruff check daemon tests` — 68 passed, 0 lint findings.
+- **Key Decisions:**
+  - Implemented `<1ms` unenrolled fast-exit in `evaluate_pre_tool` before any `pydantic`, `yaml`, or `schemas` imports (`schemas` is imported lazily only when inspecting enrolled workspace documents).
+  - Enforced canonical `os.path.realpath` resolution in `resolve_repo_rel_path` to block `../` directory traversal and symlink escapes pointing outside `repo_root` or into `forbidden_files`.
+  - Implemented `simulate_file_edit` supporting `write_to_file`, `write_file` (including `Append=True`), `replace_file_content`, `edit_file`, and `multi_replace_file_content` to verify `PROJECT.md` `charter_hash` under `R1b` and `WORKORDER.md` `spec_hash` under `R3`.
+  - Stripped quoted `-m` / `--message` commit message strings before matching `R4` forbidden `git`/`gh` patterns so legitimate Worker commits cannot false-positive on commit message text.
+- **Out-of-Scope Findings:** None.
