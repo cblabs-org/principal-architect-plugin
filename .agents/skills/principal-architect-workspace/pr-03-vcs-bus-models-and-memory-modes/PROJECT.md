@@ -34,14 +34,14 @@ work_orders:
     slug: wo1-local-git-bus
     title: "Local-Git floor (VcsBus protocol, LocalGitBus stacked branches, commit trailers, AUDIT-round-K.md, DEFERRED_BACKLOG.md, sync_state, restack)"
     complexity: architect
-    status: IN_PROGRESS
-    attempts: 0
-    commit_sha: null
+    status: COMPLETED
+    attempts: 1
+    commit_sha: "114ace23784b67850f8d1455e48fa5855ec6aa43"
   - id: WO-03.2
     slug: wo2-github-bus
     title: "GitHub multi-machine bus (GitHubBus, get_vcs_bus, parse_pa_audit_comment, PR create/edit/view/diff, gh pr review --comment, pa:deferred issues)"
     complexity: standard
-    status: PENDING
+    status: IN_PROGRESS
     attempts: 0
     commit_sha: null
   - id: WO-03.3
@@ -160,7 +160,7 @@ To build PR-03 cleanly with zero circular dependencies and keep the full verific
 
 ### 3.2 Work Order Ledger
 
-- **[ ] [wo1-local-git-bus](wo1-local-git-bus/WORKORDER.md)** (`WO-03.1`, `complexity: architect`, base: `feat/pr-02-agents-and-dual-mode-hooks`): Implement `scripts/vcs_sync.py` (`VcsBus` protocol + `LocalGitBus` stacked branches, commit trailers, `write_audit_round`, `append_deferred_backlog`, `sync_state`, `restack_branches`), initial `tests/test_github_and_local_git_bus.py`, and placeholder `tests/test_memory_modes.py`.
+- **[x] [wo1-local-git-bus](wo1-local-git-bus/WORKORDER.md)** (`WO-03.1`, `complexity: architect`, base: `feat/pr-02-agents-and-dual-mode-hooks`): Implement `scripts/vcs_sync.py` (`VcsBus` protocol + `LocalGitBus` stacked branches, commit trailers, `write_audit_round`, `append_deferred_backlog`, `sync_state`, `restack_branches`), initial `tests/test_github_and_local_git_bus.py`, and placeholder `tests/test_memory_modes.py`.
 - **[ ] [wo2-github-bus](wo2-github-bus/WORKORDER.md)** (`WO-03.2`, `complexity: standard`, base: `pr-03-vcs-bus-models-and-memory-modes/wo1-local-git-bus`): Extend `scripts/vcs_sync.py` with `GitHubBus`, `get_vcs_bus`, and `parse_pa_audit_comment`, plus mocked-`gh` tests in `tests/test_github_and_local_git_bus.py`.
 - **[ ] [wo3-memory-graduation-modes](wo3-memory-graduation-modes/WORKORDER.md)** (`WO-03.3`, `complexity: standard`, base: `pr-03-vcs-bus-models-and-memory-modes/wo2-github-bus`): Implement `scripts/memory_grad.py` (`graduate` for `external` vs. `builtin` modes) and comprehensive tests in `tests/test_memory_modes.py`.
 - **[ ] [wo4-models-routing-and-ide-client](wo4-models-routing-and-ide-client/WORKORDER.md)** (`WO-03.4`, `complexity: standard`, base: `pr-03-vcs-bus-models-and-memory-modes/wo3-memory-graduation-modes`): Implement `scripts/models.py` (`ARCHITECT_MODEL_PREFERENCE`, `route`, `step_up`, `select_architect_model`, `LanguageServerClient`) and `pa wo debug`/`pa wo resolve` in `scripts/pa_cli.py`, plus tests in `tests/test_github_and_local_git_bus.py`.
@@ -173,3 +173,4 @@ To build PR-03 cleanly with zero circular dependencies and keep the full verific
 ## 4. Outcome & Session Log
 
 - **2026-10-16 (`status: APPROVED`):** User approved the full Programme Plan (`PROGRAM.md` `status: APPROVED`) and explicitly authorized autonomous execution and sub-agent spawning across the programme (Decision D11, 2026-10-16). Part II Work Order decomposition (`WO-03.1` through `WO-03.5`) authored and approved under standing user programme authorization (`approved_at: 2026-10-16T21:37:00Z`).
+- **2026-10-16 (`WO-03.1 COMPLETED`, `114ace2`):** Delivered `daemon/workspace-plugin/principal-architect/scripts/vcs_sync.py` (`VcsBus` protocol, `LocalGitBus`, `format_commit_with_trailers`, `read_commit_trailers` / `read_trailers`, `format_pa_audit_comment`, `parse_pa_audit_comment`, `write_audit_round`, `append_deferred_backlog`, `sync_state`, `create_or_checkout_branch`, `restack_branches`), 9 `LocalGitBus` tests in `tests/test_github_and_local_git_bus.py`, and smoke test in `tests/test_memory_modes.py` (`95 passed`, `ruff check` clean).
