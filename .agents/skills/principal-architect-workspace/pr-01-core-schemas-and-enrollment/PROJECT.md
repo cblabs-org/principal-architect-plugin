@@ -61,14 +61,14 @@ work_orders:
     slug: wo4-state-db-and-registry
     title: "Repo-local SQLite StateDB (WAL, 5 SPEC §6.5 tables) and global atomic Registry"
     complexity: standard
-    status: IN_PROGRESS
-    attempts: 0
-    commit_sha: null
+    status: COMPLETED
+    attempts: 1
+    commit_sha: "b0a92c14aa7cbf8b68c850548148c2a672f2eccf"
   - id: WO-01.5
     slug: wo5-templates
     title: "Seven Split-Authority and built-in memory .md.tpl templates and validation tests"
     complexity: mechanical
-    status: PENDING
+    status: IN_PROGRESS
     attempts: 0
     commit_sha: null
   - id: WO-01.6
@@ -213,8 +213,8 @@ Repository inspection at `main` confirms that `SPEC.md` (v1.1), `docs/positionin
 - **[x] [wo1-dev-bootstrap-and-package-skeleton](wo1-dev-bootstrap-and-package-skeleton/WORKORDER.md)** (`WO-01.1`, `complexity: standard`, base: `main`, commit `84c04d8`): Provision `./.venv` via `scripts/dev-bootstrap.sh`, configure `pyproject.toml`, root and `daemon/` `.gitignore` files, `daemon/plugin.json`, `daemon/workspace-plugin/principal-architect/plugin.json`, `scripts/__init__.py`, and initial test suite skeleton (`tests/conftest.py`, `tests/test_schemas.py`, `tests/test_state_db_and_sync.py`).
 - **[x] [wo2-common-stdlib-foundations](wo2-common-stdlib-foundations/WORKORDER.md)** (`WO-01.2`, `complexity: standard`, base: `pr-01-core-schemas-and-enrollment/wo1-dev-bootstrap-and-package-skeleton`, commit `0d58138`): Implement stdlib-only `scripts/common.py` (`find_repo_root`, `workspace_dir`, `daemon_home`, `is_repo_enrolled`, `read_transcript`, `latest_checkpoint_step`, `run`, `render_template`), shared fixtures in `tests/conftest.py` (`tmp_repo`, `daemon_home`, `fake_runner`), and unit/import-purity tests in `tests/test_state_db_and_sync.py`.
 - **[x] [wo3-schemas-models-and-document-layer](wo3-schemas-models-and-document-layer/WORKORDER.md)** (`WO-01.3`, `complexity: architect`, base: `pr-01-core-schemas-and-enrollment/wo2-common-stdlib-foundations`, commit `555a907`): Implement `scripts/schemas.py` (all SPEC §6.1–6.4 Pydantic v2 models, enums, `EscalationRequest`, `Section`, `parse_document`, `dump_document`, `load_program`/`load_project`/`load_workorder`/`load_audit`, `compute_charter_hash`, `compute_spec_hash`, `verify_charter_hash`, `verify_spec_hash`) and comprehensive tests in `tests/test_schemas.py` including dogfood verification of this committed `PROJECT.md` and `PROGRAM.md`.
-- **[-] [wo4-state-db-and-registry](wo4-state-db-and-registry/WORKORDER.md)** (`WO-01.4`, `complexity: standard`, base: `pr-01-core-schemas-and-enrollment/wo3-schemas-models-and-document-layer`): Implement `scripts/state_db.py` (`TABLES`, `StateDB` with WAL + `busy_timeout=5000` + `user_version=1` + typed accessors for all 5 tables, and atomic `Registry`) plus unit tests in `tests/test_state_db_and_sync.py`.
-- **[ ] [wo5-templates](wo5-templates/WORKORDER.md)** (`WO-01.5`, `complexity: mechanical`, base: `pr-01-core-schemas-and-enrollment/wo4-state-db-and-registry`): Author the seven `.md.tpl` templates (`PROGRAM`, `PROJECT`, `WORKORDER`, `AUDIT`, `MEMORY`, `MODULE_INDEX`, `PROJECT_INDEX`), template helpers in `scripts/common.py`, and template render-and-validate tests in `tests/test_schemas.py`.
+- **[x] [wo4-state-db-and-registry](wo4-state-db-and-registry/WORKORDER.md)** (`WO-01.4`, `complexity: standard`, base: `pr-01-core-schemas-and-enrollment/wo3-schemas-models-and-document-layer`, commit `b0a92c1`): Implement `scripts/state_db.py` (`TABLES`, `StateDB` with WAL + `busy_timeout=5000` + `user_version=1` + typed accessors for all 5 tables, and atomic `Registry`) plus unit tests in `tests/test_state_db_and_sync.py`.
+- **[-] [wo5-templates](wo5-templates/WORKORDER.md)** (`WO-01.5`, `complexity: mechanical`, base: `pr-01-core-schemas-and-enrollment/wo4-state-db-and-registry`): Author the seven `.md.tpl` templates (`PROGRAM`, `PROJECT`, `WORKORDER`, `AUDIT`, `MEMORY`, `MODULE_INDEX`, `PROJECT_INDEX`), template helpers in `scripts/common.py`, and template render-and-validate tests in `tests/test_schemas.py`.
 - **[ ] [wo6-pa-cli-enroll-unenroll-status-mode](wo6-pa-cli-enroll-unenroll-status-mode/WORKORDER.md)** (`WO-01.6`, `complexity: architect`, base: `pr-01-core-schemas-and-enrollment/wo5-templates`): Implement `scripts/pa_cli.py` (`build_parser`, `main`, `COMMAND_MODULES`, `enroll`, `unenroll`, `status [--json]`, `mode`), `scripts/enroll.sh`, `scripts/unenroll.sh`, `README.md`, and the full offline enrollment/migration/status/mode test suite in `tests/test_state_db_and_sync.py`.
 
 <!-- ======================================================================
@@ -227,3 +227,4 @@ Repository inspection at `main` confirms that `SPEC.md` (v1.1), `docs/positionin
 - **2026-10-16 (`WO-01.1 COMPLETED`, `84c04d8`):** Delivered `scripts/dev-bootstrap.sh` (3-strategy fallback: `uv` -> `ensurepip` -> `--without-pip` + `get-pip.py`, verified on reference Python 3.13 host and idempotent on re-run), `pyproject.toml`, root and `daemon/` `.gitignore` files, `daemon/plugin.json`, `daemon/workspace-plugin/principal-architect/plugin.json`, `scripts/__init__.py`, and initial smoke test floor (3 passed, `ruff check` clean).
 - **2026-10-16 (`WO-01.2 COMPLETED`, `0d58138`):** Delivered stdlib-only `scripts/common.py` (`find_repo_root`, `workspace_dir` with new -> legacy fallback, `daemon_home`, sub-millisecond `is_repo_enrolled`, `read_transcript`, `latest_checkpoint_step`, `templates_dir`, `render_template`, `run`), shared fixtures in `tests/conftest.py` (`tmp_repo`, `daemon_home`, `fake_runner`), and 12 unit/import-purity tests in `tests/test_state_db_and_sync.py` (15 passed, `ruff check` clean).
 - **2026-10-16 (`WO-01.3 COMPLETED`, `555a907`):** Delivered `scripts/schemas.py` (all SPEC §6.1–6.4 Pydantic v2 models with `extra="forbid"`, `PRState`/`WorkOrderStatus`/`ComplexityTier` enums, `EscalationRequest`, `Section`/`Document[T]`/`parse_document`/`dump_document` preserving pre-H2 preambles and unknown sections, `load_program`/`load_project`/`load_workorder`/`load_audit`, and normative `compute_charter_hash`/`verify_charter_hash`/`compute_spec_hash`/`verify_spec_hash`) and 16 test functions in `tests/test_schemas.py` including dogfood verification on this committed `PROJECT.md`, `PROGRAM.md`, and `WO-01.1`–`WO-01.3` (29 passed, `ruff check` clean).
+- **2026-10-16 (`WO-01.4 COMPLETED`, `b0a92c1`):** Delivered `scripts/state_db.py` (`TABLES`, `SCHEMA_VERSION = 1`, `StateDB` with WAL mode, `busy_timeout=5000`, `user_version=1`, idempotent `init()`, context manager, and typed accessors for `repo_config`, `sessions`, `verification_receipts`, `escalations`, and `attention_queue`, plus atomic `Registry`) and 9 comprehensive tests in `tests/test_state_db_and_sync.py` (38 passed, `ruff check` clean).

@@ -10,7 +10,7 @@
 ## Active Projects
 | Project | Status | Modules | Context |
 |---|---|---|---|
-| pr-01-core-schemas-and-enrollment | IN_PROGRESS (WO4/6 — wo4-state-db-and-registry) | daemon-package, schemas, state-db, common, pa-cli (enroll/unenroll/status/mode), templates, tests, dev-bootstrap | [PROJECT.md](../pr-01-core-schemas-and-enrollment/PROJECT.md) |
+| pr-01-core-schemas-and-enrollment | IN_PROGRESS (WO5/6 — wo5-templates) | daemon-package, schemas, state-db, common, pa-cli (enroll/unenroll/status/mode), templates, tests, dev-bootstrap | [PROJECT.md](../pr-01-core-schemas-and-enrollment/PROJECT.md) |
 
 ## Recently Completed (last 5)
 | Project | Completed | Modules | Key Outcome |
