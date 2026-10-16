@@ -10,7 +10,7 @@ flowchart LR
     PR01 --> PR02["PR-02<br/>agents & dual-mode hooks<br/>feat/pr-02-agents-and-dual-mode-hooks"]
     PR02 --> PR03["PR-03<br/>vcs bus, models, memory modes<br/>feat/pr-03-vcs-bus-models-and-memory-modes"]
     PR03 --> PR04["PR-04<br/>cockpit AuxPane UI<br/>feat/pr-04-cockpit-auxpane-ui"]
-    PR04 -.proposed.-> PR05["PR-05 (proposed)<br/>dogfood self-enrollment & v0.1.0"]
+    PR04 --> PR05["PR-05<br/>dogfood self-enrollment & v0.1.0<br/>feat/pr-05-dogfood-self-enrollment-and-release"]
 ```
 
 | PR | Slug | Base (branch name) | Depends on | Verification floor | Primary SPEC sections |
@@ -19,7 +19,7 @@ flowchart LR
 | PR-02 | `pr-02-agents-and-dual-mode-hooks` | `feat/pr-01-core-schemas-and-enrollment` | PR-01 | `pytest tests/test_hooks_monitored_vs_autonomous.py` | §5.2, §7, §8 (`pr approve-plan`, `wo verify`, `escalate`), §11 |
 | PR-03 | `pr-03-vcs-bus-models-and-memory-modes` | `feat/pr-02-agents-and-dual-mode-hooks` | PR-02 | `pytest tests/test_github_and_local_git_bus.py tests/test_memory_modes.py` | §5.3, §8 (remaining lifecycle commands), §9 |
 | PR-04 | `pr-04-cockpit-auxpane-ui` | `feat/pr-03-vcs-bus-models-and-memory-modes` | PR-03 | `pytest tests/test_cockpit_api.py` + live AuxPane verification (interactive WO) | §10 |
-| PR-05 *(proposed)* | `pr-05-dogfood-self-enrollment-and-release` | `feat/pr-04-cockpit-auxpane-ui` | PR-04 | full suite + `pa status --json` consistency check | — (programme-level) |
+| PR-05 | `pr-05-dogfood-self-enrollment-and-release` | `feat/pr-04-cockpit-auxpane-ui` | PR-04 | full suite + `pa status --json` consistency check | — (programme-level) |
 
 Execution is **serial**: a PR's Tier 2 PA is spawned only after the upstream PR has graduated (Step 6B complete) and its Charter has been refined just-in-time against the upstream PR's final exported interfaces. Every PR must keep **all upstream floors** green.
 
@@ -118,7 +118,7 @@ Chief (Tier 1)
 | wo4 | `live-auxpane-verification` — **interactive**: user installs, opens the Cockpit, verifies DAG render, mode toggle, conversation jump; records evidence in the Completion Report | interactive |
 | wo5 *(if needed)* | `review-remediation` | standard |
 
-### PR-05 `pr-05-dogfood-self-enrollment-and-release` — proposed, awaiting user decision
+### PR-05 `pr-05-dogfood-self-enrollment-and-release` — Charter to be locked after PR-04 graduates
 
 | WO | Indicative topic | Complexity |
 |---|---|---|
@@ -130,11 +130,10 @@ Chief (Tier 1)
 
 | When | Task | Owner |
 |---|---|---|
-| Now | Approve the full Programme Plan (`PROGRAM.md` + this file) → Chief flips `status: DRAFT → APPROVED` and spawns the PR-01 PA | user |
-| Now | Accept or decline the proposed Phase 5 (`pr-05-dogfood-self-enrollment-and-release`) | user |
-| Per PR, step 2 | Review and approve each PA's Part II Work Order decomposition in the Chief session | user |
+| Done (2026-10-16) | Approved the full Programme Plan (`PROGRAM.md` + this file), accepted Phase 5 (`PR-05`), and authorized autonomous execution across the programme | user |
+| Per PR, step 2 | Autonomous plan approval authorized by user (2026-10-16); PA records `status: APPROVED`, `approved_at`, and dated approval line in `PROJECT.md` | Chief / PA (under user authorization) |
 | Per PR, step 5 | If an audit loop exceeds 5 rounds, decide: extend, re-charter, or archive | user |
-| After PR-02 graduates | **Self-hosting decision:** run PR-03/PR-04 under the plugin's own hooks (`pa enroll .`, `monitored`) or continue under the prompt-only skill | user |
+| After PR-02 graduates | **Self-hosting check-in (optional):** user directed default to current `principal-architect` skill implementation for simplicity; can re-evaluate after PR-02 if desired | user |
 | PR-04 wo4 | Live AuxPane verification in the IDE (interactive Work Order via bridge prompt) | user |
 | Per PR, after approval | Merge `feat/pr-NN-<slug>` into `main` bottom-up (or delegate the merge command to the Chief) | user |
 
@@ -160,18 +159,19 @@ Chief (Tier 1)
 | D6 | `pa mode` (get/set `execution_mode`) is included in PR-01. | It is a trivial `repo_config` accessor and PR-02's hook tests need it to flip modes. | 2026-10-16 |
 | D7 | Plan approval flows through the Chief session: the PA reports its Part II decomposition to the Chief, the user approves in the Chief session, the PA records `status: APPROVED`, `approved_at`, and a dated approval line in `PROJECT.md` before spawning any Worker. | Matches the operating model (plan gate binds at the human → PA/Chief boundary; the Chief session *is* the human's session) and gives Workers committed provenance. Until PR-02 lands there is no hook to enforce R2, so the PA bridge prompt states this obligation explicitly. | 2026-10-16 |
 | D8 | Tier 2 PAs are spawned with `invoke_subagent` (`TypeName: self`, `Model: inherit`, `Workspace: inherit`) rather than as top-level `agentapi` conversations. | User confirmed; gives the Chief auto-wake on PA messages and a `send_message` back-channel for the audit/remediation loop; single serialised PA on the shared tree avoids worktree permission prompts. | 2026-10-16 |
-| D9 | A fifth PR (`pr-05-dogfood-self-enrollment-and-release`) is **proposed** but not yet in the frontmatter DAG. | SPEC §12 defines four implementation PRs; self-enrollment, migration of this programme's own workspace, and a `v0.1.0` release are programme-level concerns best kept out of PR-04's audit scope. Added to the DAG only on user acceptance. | 2026-10-16 |
-| D10 | The **self-hosting question** (building PR-03/PR-04 under PR-02's hooks) is deferred to a decision point after PR-02 graduates rather than decided now. | Running an unproven hook engine on its own build risks blocking the programme on hook bugs; after PR-02 is audited the trade-off (early dogfood signal vs. stability) can be judged on evidence. | 2026-10-16 |
+| D9 | Phase 5 (`PR-05` `pr-05-dogfood-self-enrollment-and-release`) is **accepted** into the programme DAG (2026-10-16). | SPEC §12 defines four implementation PRs; self-enrollment, migration of this programme's own workspace, and a `v0.1.0` release are isolated in PR-05 after PR-04 graduates. | 2026-10-16 |
+| D10 | **Self-hosting decision (2026-10-16):** Proceed with the current `principal-architect` skill implementation, defaulting to keeping the current skill for PR-03/PR-04 to keep execution simple, with an optional check-in after PR-02 graduates. | Avoids coupling the build of PR-03/PR-04 to newly written hooks while reserving PR-05 for clean end-to-end dogfooding. | 2026-10-16 |
+| D11 | **Autonomous programme execution authorized (2026-10-16):** User approved the full Programme Plan and authorized autonomous spawning of Tier 2 PAs, Tier 3 Workers, and Tier 2b Cold-Firewall Auditors across the programme. | Allows each Tier 2 PA to record Part II plan approval under the user's standing programme authorization and execute through Step 6A before pausing for the Cold-Firewall PR Audit. | 2026-10-16 |
 
 ## 8. Status Tracker
 
 | PR | Charter | PA conversation | Plan approved | WOs | Step 6A PR / head_sha | Audit | Graduated |
 |---|---|---|---|---|---|---|---|
-| PR-01 | 🔒 locked 2026-10-16 (`9005d513…`) | — (spawn pending plan approval) | — | — | — | — | — |
+| PR-01 | 🔒 locked 2026-10-16 (`9005d513…`) | `IN_PROGRESS` (Tier 2 PA spawned 2026-10-16) | authorized (2026-10-16) | in progress | — | — | — |
 | PR-02 | stub (frontmatter only) | — | — | — | — | — | — |
 | PR-03 | stub (frontmatter only) | — | — | — | — | — | — |
 | PR-04 | stub (frontmatter only) | — | — | — | — | — | — |
-| PR-05 | proposed (not in DAG) | — | — | — | — | — | — |
+| PR-05 | stub (frontmatter only) | — | — | — | — | — | — |
 
 ## 9. Risk Register
 

@@ -3,7 +3,7 @@ schema_version: 1
 programme_id: prog-principal-architect-plugin
 title: "principal-architect-plugin: mechanically enforced multi-tier orchestration plugin (SPEC v1.1)"
 base_branch: main
-status: DRAFT
+status: APPROVED
 prs:
   - id: PR-01
     slug: pr-01-core-schemas-and-enrollment
@@ -31,7 +31,7 @@ prs:
       - tests/test_schemas.py
       - tests/test_state_db_and_sync.py
     required_skills: []
-    status: PLANNED
+    status: IN_PROGRESS
     github_pr: null
   - id: PR-02
     slug: pr-02-agents-and-dual-mode-hooks
@@ -96,14 +96,30 @@ prs:
     required_skills: []
     status: PLANNED
     github_pr: null
+  - id: PR-05
+    slug: pr-05-dogfood-self-enrollment-and-release
+    title: "Dogfood self-enrollment, workspace migration, state reconciliation, and v0.1.0 release"
+    branch: feat/pr-05-dogfood-self-enrollment-and-release
+    base_branch: feat/pr-04-cockpit-auxpane-ui
+    depends_on: [PR-04]
+    allowed_modules:
+      - CHANGELOG.md
+      - README.md
+      - pyproject.toml
+      - daemon/plugin.json
+      - daemon/workspace-plugin/principal-architect/plugin.json
+      - .agents/plugins/principal-architect-workspace/
+    required_skills: []
+    status: PLANNED
+    github_pr: null
 ---
 
 # principal-architect-plugin Programme
 
 > **Programme:** Build `principal-architect-plugin` — a self-contained Python 3.11+ / Pydantic v2 split-daemon Antigravity plugin that turns the prompt-driven `principal-architect` skill into a mechanically enforced, token-efficient, multi-tier orchestration system.
 > **Specification:** [SPEC.md](../../../../SPEC.md) v1.1 (2026-10-16) + [Positioning Paper](../../../../docs/positioning-paper.md) Rev 3
-> **Status:** Chartered — awaiting user approval of the Programme Plan and the PR-01 spawn. **0/4 PRs graduated.** **Next active:** PR-01 (`pr-01-core-schemas-and-enrollment`).
-> **Base branch:** `main` (`fa6a46b`; `origin` = `github.com/matthewmcneill/principal-architect-plugin`, `vcs_mode: github`, `memory_mode: builtin`)
+> **Status:** Approved — autonomous execution authorized (2026-10-16). **0/5 PRs graduated.** **Active:** PR-01 (`pr-01-core-schemas-and-enrollment`).
+> **Base branch:** `main` (`a16d659`; `origin` = `github.com/matthewmcneill/principal-architect-plugin`, `vcs_mode: github`, `memory_mode: builtin`)
 > **Execution plan:** [PROGRAM-PLAN.md](PROGRAM-PLAN.md) — dependency graph, branching, per-PR protocol, indicative Work Orders, human tasks, decisions, risks, status tracker.
 
 ## Programme Summary
@@ -116,8 +132,7 @@ This programme ships the plugin that closes those five gaps, in **four stacked p
 2. **PR-02 — Enforcement.** The five role agents with evidence-based capability scoping (`inheritCustomizations: false` + repo-scoped manifests), the four-hook engine (`PreInvocation`, `PreToolUse`, `PostToolUse`, `Stop`) implementing rules R1–R6 in both `monitored` and `autonomous` modes, cryptographic verification receipts, and the two-tier retry policy (`max_attempts: 5` / `max_structural_failures: 2`).
 3. **PR-03 — Transport, Routing & Memory.** The local-Git floor and optional GitHub bus (`vcs_sync.py`), the full PR/WO lifecycle commands, complexity-based model routing with retry step-up and IDE conversation pinning (`models.py`), and the mutually exclusive `external` / `builtin` memory graduation modes (`memory_grad.py`).
 4. **PR-04 — Visibility.** The Principal Architect Cockpit AuxPane sidecar (HTTP + SSE backend, 🔔 Human Attention Needed inbox, Monitored/Autonomous toggle, Programme → PR → WO DAG, one-click conversation switching) and the install/uninstall scripts.
-
-A fifth, **proposed** phase (PR-05, not in SPEC §12 — see *PR Sequence*, Phase 5) dogfoods the finished plugin on this repository (install, self-enrol, migrate this PA workspace, tag `v0.1.0`). It is listed for the user's decision and is not yet part of the frontmatter DAG.
+5. **PR-05 — Dogfood & Release.** Installs the finished plugin, runs `pa enroll .` on this repository (exercising the legacy `.agents/skills/` → `.agents/plugins/` workspace migration), reconciles `.state/state.db` via `pa sync`, and tags `v0.1.0`.
 
 The build itself is run by the skill the plugin replaces: this Chief Architect session, one Tier 2 PA per PR, one Tier 3 Worker per Work Order, and a Cold-Firewall audit before every graduation. Every artifact produced here (`PROGRAM.md`, `PROJECT.md`, `WORKORDER.md`, `AUDIT-round-K.md`) is written in the schema the plugin will validate — so PR-01's own test suite parses this programme's committed documents.
 
@@ -223,14 +238,14 @@ Specification frozen at v1.1; governance rule provisioned; PA workspace and `bui
 | **Exit criteria** | All five floors green; `install.sh` on a clean `~/.gemini/config/plugins/` yields a working `pa` and an enabled sidecar; the Cockpit renders this repository's Programme DAG, flips execution mode, and jumps to a conversation in a live IDE session (human-verified, recorded in Part III); Cold-Firewall `APPROVED`. |
 | **Charter** | Stub — refined and locked when PR-03 graduates. |
 
-### Phase 5 — Dogfood & Release (proposed; not in SPEC §12 — awaiting user decision)
+### Phase 5 — Dogfood & Release: PR-05 `pr-05-dogfood-self-enrollment-and-release`
 
 | | |
 |---|---|
-| **Proposed PR** | `pr-05-dogfood-self-enrollment-and-release` (base `feat/pr-04-cockpit-auxpane-ui`) |
+| **PR** | `pr-05-dogfood-self-enrollment-and-release` (base `feat/pr-04-cockpit-auxpane-ui`) |
 | **Objective** | Prove the plugin on itself and ship a first tagged release. |
 | **Indicative scope** | Run `scripts/install.sh`; `pa enroll .` on this repository (exercising the legacy `.agents/skills/` → `.agents/plugins/` workspace migration from PR-01 and relinking this programme's documents); `pa sync` to rebuild `.state/state.db` from the committed PR-01..04 trailers and audits; `pa status` matches `PROGRAM-PLAN.md`'s tracker; `CHANGELOG.md`; version `0.1.0` in `pyproject.toml` + `plugin.json`; GitHub release `v0.1.0`; close out `DEFERRED_BACKLOG.md` / `pa:deferred` issues. |
-| **Why it is separate** | Keeps SPEC §12's four implementation PRs pure, and gives the Chief a clean place to decide the **self-hosting question** (whether PR-03/PR-04 should already run under PR-02's hooks in `monitored` mode — see *Human Approval*). |
+| **Why it is separate** | Keeps SPEC §12's four implementation PRs pure, and verifies end-to-end self-enrollment and workspace migration after all four implementation PRs have graduated. |
 
 ## 2. Cross-PR Contracts & Interfaces
 
@@ -277,9 +292,9 @@ Downstream PRs may make **additive-only** changes to upstream modules (new funct
 - [x] Programme Charter, `PROGRAM-PLAN.md`, and PR-01 Part I Charter committed on `main` (2026-10-16, `5ce84f1`)
 - [x] GitHub remote `matthewmcneill/principal-architect-plugin` created by the user; programme switched to `vcs_mode: github` (2026-10-16, `fa6a46b`)
 - [x] Spawn mechanics for Tier 2 PAs confirmed: `invoke_subagent` (`TypeName: self`, `Model: inherit`, `Workspace: inherit`); no PR-01 Charter amendments (2026-10-16)
-- [ ] **Full Programme Plan (this document) reviewed and approved** — then `status: DRAFT → APPROVED` and PR-01 PA spawned
-- [ ] Phase 5 `pr-05-dogfood-self-enrollment-and-release` accepted or declined
-- [ ] Self-hosting decision after PR-02 graduates
+- [x] **Full Programme Plan (this document) reviewed and approved** — `status: DRAFT → APPROVED` and autonomous sub-agent execution authorized across the programme (2026-10-16)
+- [x] Phase 5 `pr-05-dogfood-self-enrollment-and-release` accepted into the programme DAG (2026-10-16)
+- [x] Self-hosting decision: proceed with current `principal-architect` skill implementation (optional check-in after PR-02 graduates; default to current skill for simplicity) (2026-10-16)
 
 ## 3. Programme Session Log
 
@@ -299,3 +314,7 @@ Downstream PRs may make **additive-only** changes to upstream modules (new funct
 ### 2026-10-16 — Full Programme Plan authored for review (session 1)
 - At the user's request, expanded this document to the full Chief Architect profile: programme summary, repositories in scope, architecture-domain → PR map, phased PR sequence with objectives, deliverables, floors and exit criteria for PR-01..PR-04, a **proposed Phase 5** (`pr-05-dogfood-self-enrollment-and-release`), gates, and the human-approval checklist. `PROGRAM-PLAN.md` gained per-PR indicative Work Order shapes, human tasks, and an expanded risk register. The `ProgramSpec` frontmatter and the three SPEC §6.1 required H2 sections are preserved so PR-01's loader validates this file.
 - Spawn mechanics confirmed by the user (`invoke_subagent`); no amendments to the PR-01 Charter. Spawn of the PR-01 PA is held pending approval of this plan.
+
+### 2026-10-16 — Programme approved; PR-05 accepted; PR-01 PA spawned (session 1)
+- User approved the full Programme Plan (`status: APPROVED`), accepted Phase 5 (`PR-05` `pr-05-dogfood-self-enrollment-and-release`) into the frontmatter DAG, directed the programme to proceed with the current `principal-architect` skill implementation (defaulting to current skill for simplicity, with an optional check-in after PR-02), and authorized autonomous execution and sub-agent spawning across the programme.
+- Spawned Tier 2 Principal Architect for `PR-01` (`pr-01-core-schemas-and-enrollment`).
