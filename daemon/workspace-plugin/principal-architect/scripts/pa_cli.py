@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Principal Architect Plugin (`pa`) CLI entrypoint and subcommand dispatcher.
 
-Implements `pa enroll`, `pa unenroll`, `pa status [--json]`, `pa mode`,
-`pa pr approve-plan`, `pa wo verify`, and `pa escalate`, plus the
+Implements `pa enroll`, `pa unenroll`, `pa status [--json]`, `pa sync`, `pa mode`,
+`pa programme <init|charter>`, `pa pr <start|claim|approve-plan|open-or-sync|post-audit|sync-audit|graduate|restack>`,
+`pa wo <verify|debug|resolve>`, `pa issue <create>`, and `pa escalate`, plus the
 `COMMAND_MODULES` extension list consumed by downstream PR modules.
 
-Lazy Import Rule (Charter R1): This module MUST NOT import `pydantic`, `yaml`,
-or `schemas` at module top-level so fast paths (`pa --help`, `pa mode`) remain
-sub-millisecond and stdlib-only.
+Lazy Import Rule (Charter R1 & R6): This module MUST NOT import `pydantic`, `yaml`,
+`schemas`, `vcs_sync`, `models`, or `memory_grad` at module top-level so fast paths
+(`pa --help`, `pa mode`) remain sub-millisecond and stdlib-only.
 """
 
 from __future__ import annotations
@@ -1651,6 +1652,943 @@ def _cmd_escalate(args: argparse.Namespace, *, runner: common.Runner = common.ru
     return 0
 
 
+def _resolve_repo_root_and_ws(
+    path_str: str,
+    *,
+    runner: common.Runner = common.run,
+) -> tuple[Path, Path] | int:
+    """Resolve `(real_root, ws_dir)` from `path_str`, or print error and return exit code `2`."""
+    raw_target = Path(path_str or ".").expanduser()
+    if not raw_target.exists():
+        print(f"Error: Path does not exist: {path_str}", file=sys.stderr)
+        return 2
+
+    repo_root = common.find_repo_root(raw_target, runner=runner)
+    if repo_root is None:
+        print(f"Error: Not inside a git repository: {path_str}", file=sys.stderr)
+        return 2
+
+    real_root = Path(os.path.realpath(repo_root))
+    ws_dir = common.workspace_dir(real_root)
+    return real_root, ws_dir
+
+
+def _normalize_pr_id(raw_pr_id: str) -> str:
+    """Normalize a PR ID like `'pr-01'` or `'PR-01A'` to `'PR-01'` / `'PR-01a'`."""
+    cleaned = raw_pr_id.strip()
+    m = re.match(r"^pr-(\d+)([a-z]?)(?:-[a-z0-9-]+)?$", cleaned, re.IGNORECASE)
+    if m:
+        return f"PR-{m.group(1)}{m.group(2).lower()}"
+    return cleaned.upper()
+
+
+def _normalize_pr_slug(pr_id_canonical: str, raw_slug: str | None) -> str:
+    """Normalize a PR slug so it matches `^pr-\\d+[a-z]?-[a-z0-9-]+$`."""
+    pr_prefix = pr_id_canonical.lower()
+    if raw_slug is not None and raw_slug.strip():
+        s = re.sub(r"[^a-z0-9-]+", "-", raw_slug.strip().lower()).strip("-")
+        if re.fullmatch(r"pr-\d+[a-z]?-[a-z0-9-]+", s):
+            return s
+        if s == pr_prefix:
+            return f"{pr_prefix}-feature"
+        if s.startswith(f"{pr_prefix}-"):
+            return s
+        return f"{pr_prefix}-{s}"
+    return f"{pr_prefix}-feature"
+
+
+def _cmd_sync(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
+    """Synchronize VCS commit trailers, audit reports, and specs into `.state/state.db`."""
+    import vcs_sync
+
+    target_path = getattr(args, "path_opt", None) or getattr(args, "path", None) or "."
+    resolved = _resolve_repo_root_and_ws(str(target_path), runner=runner)
+    if isinstance(resolved, int):
+        return resolved
+    real_root, _ = resolved
+
+    bus = vcs_sync.get_vcs_bus(real_root, runner=runner)
+    summary = bus.sync_state()
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def _cmd_programme_init(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
+    """Scaffold `<ws_dir>/programme-<slug>/PROGRAM.md` and bind the Tier 1 Chief conversation."""
+    import models
+    import schemas
+
+    resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
+    if isinstance(resolved, int):
+        return resolved
+    real_root, ws_dir = resolved
+
+    raw_slug = str(args.slug or "").strip().lower()
+    clean_slug = re.sub(r"^(programme-|prog-)", "", raw_slug).strip("-")
+    if not clean_slug or not re.fullmatch(r"[a-z0-9-]+", clean_slug):
+        print(f"Error: Invalid programme slug: '{args.slug}'", file=sys.stderr)
+        return 1
+
+    title = str(args.title or "").strip()
+    if not title:
+        print("Error: --title is required for pa programme init", file=sys.stderr)
+        return 1
+
+    base_branch = str(args.base_branch or "main").strip() or "main"
+    programme_id = f"prog-{clean_slug}"
+    prog_dir = ws_dir / f"programme-{clean_slug}"
+    prog_dir.mkdir(parents=True, exist_ok=True)
+    prog_md = prog_dir / "PROGRAM.md"
+
+    if not prog_md.is_file():
+        rendered = common.render_template_file(
+            "PROGRAM.md.tpl",
+            {
+                "programme_id": programme_id,
+                "title": title,
+                "base_branch": base_branch,
+            },
+        )
+        prog_md.write_text(rendered, encoding="utf-8")
+        prog_doc = schemas.load_program(prog_md)
+    else:
+        prog_doc = schemas.load_program(prog_md)
+        prog_doc.spec.title = title
+        prog_doc.spec.base_branch = base_branch
+        prog_md.write_text(
+            schemas.dump_document(prog_doc.spec, prog_doc.sections),
+            encoding="utf-8",
+        )
+        prog_doc = schemas.load_program(prog_md)
+
+    prog_rel = prog_md.resolve().relative_to(real_root).as_posix()
+    chief_prompt = (
+        f"PA_ROLE: chief\n"
+        f"PROGRAMME_ID: {programme_id}\n\n"
+        f"You are the Tier 1 Chief Architect for programme `{programme_id}` ({title}).\n"
+        f"- Programme Spec: `{prog_rel}`\n"
+        f"- Base Branch: `{base_branch}`\n"
+    )
+    ls_res = models.LanguageServerClient().start_conversation(
+        title=f"🏛️ [Chief] {title}",
+        prompt=chief_prompt,
+        role="chief",
+        workspace_root=real_root,
+        pin=True,
+    )
+
+    db_file = ws_dir / ".state" / "state.db"
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+    with state_db.StateDB(db_file) as db:
+        db.bind_session(
+            str(ls_res["conversation_id"]),
+            role="chief",
+            programme_id=programme_id,
+            pinned=1 if ls_res.get("pinned") else 0,
+        )
+
+    out_payload = {
+        "programme_id": programme_id,
+        "program_md": str(prog_md),
+        "conversation_id": ls_res["conversation_id"],
+        "pinned": bool(ls_res.get("pinned")),
+        "bridge_prompt": ls_res.get("bridge_prompt"),
+    }
+    print(json.dumps(out_payload, indent=2))
+    return 0
+
+
+def _scaffold_or_update_project_charter(
+    ws_dir: Path,
+    *,
+    pr_id_raw: str,
+    slug_arg: str | None = None,
+    title_arg: str | None = None,
+    branch_arg: str | None = None,
+    base_branch_arg: str | None = None,
+    allowed_modules_arg: Sequence[str] | None = None,
+    verification_floor_arg: Sequence[str] | None = None,
+    depends_on_arg: Sequence[str] | None = None,
+    required_skills_arg: Sequence[str] | None = None,
+    programme_id_arg: str | None = None,
+) -> tuple[Path, Path, Any, str]:
+    """Create or update `<ws_dir>/<slug>/PROJECT.md` Part I Charter and stamp `charter_hash`."""
+    import schemas
+    import vcs_sync
+
+    pr_id_canonical = _normalize_pr_id(pr_id_raw)
+    if not re.fullmatch(r"^PR-\d+[a-z]?$", pr_id_canonical):
+        raise ValueError(f"Invalid PR ID '{pr_id_raw}' (expected format 'PR-01')")
+
+    existing_dir, existing_doc = vcs_sync._find_pr_dir_and_project(ws_dir, pr_id_canonical)
+    if existing_doc is None and slug_arg:
+        existing_dir, existing_doc = vcs_sync._find_pr_dir_and_project(ws_dir, slug_arg)
+
+    if existing_doc is not None:
+        slug = (
+            _normalize_pr_slug(pr_id_canonical, slug_arg)
+            if slug_arg
+            else existing_doc.spec.charter.slug
+        )
+    else:
+        slug = _normalize_pr_slug(pr_id_canonical, slug_arg)
+
+    title = (
+        title_arg.strip()
+        if (title_arg and title_arg.strip())
+        else (
+            existing_doc.spec.charter.title
+            if existing_doc is not None
+            else f"Charter for {pr_id_canonical}"
+        )
+    )
+    if len(title) < 5:
+        title = f"{pr_id_canonical} — {title}"
+
+    branch = (
+        branch_arg.strip()
+        if (branch_arg and branch_arg.strip())
+        else (
+            existing_doc.spec.charter.branch
+            if existing_doc is not None
+            else f"feat/{slug}"
+        )
+    )
+    base_branch = (
+        base_branch_arg.strip()
+        if (base_branch_arg and base_branch_arg.strip())
+        else (
+            existing_doc.spec.charter.base_branch
+            if existing_doc is not None
+            else "main"
+        )
+    )
+    allowed_modules = (
+        _dedup_preserve_order(allowed_modules_arg)
+        if allowed_modules_arg
+        else (
+            list(existing_doc.spec.charter.allowed_modules)
+            if existing_doc is not None
+            else ["src/"]
+        )
+    )
+    verification_floor = (
+        _dedup_preserve_order(verification_floor_arg)
+        if verification_floor_arg
+        else (
+            list(existing_doc.spec.charter.verification_floor)
+            if existing_doc is not None
+            else ["pytest"]
+        )
+    )
+    depends_on = (
+        _dedup_preserve_order(depends_on_arg)
+        if depends_on_arg is not None
+        else (
+            list(existing_doc.spec.charter.depends_on)
+            if existing_doc is not None
+            else []
+        )
+    )
+    required_skills = (
+        _dedup_preserve_order(required_skills_arg)
+        if required_skills_arg is not None
+        else (
+            list(existing_doc.spec.charter.required_skills)
+            if existing_doc is not None
+            else []
+        )
+    )
+
+    programme_id: str | None = None
+    if programme_id_arg and programme_id_arg.strip():
+        raw_prog = programme_id_arg.strip().lower()
+        programme_id = raw_prog if raw_prog.startswith("prog-") else f"prog-{raw_prog}"
+    elif existing_doc is not None and existing_doc.spec.charter.programme_id:
+        programme_id = existing_doc.spec.charter.programme_id
+    else:
+        for cand_prog in sorted(ws_dir.glob("programme-*/PROGRAM.md")):
+            try:
+                pdoc = schemas.load_program(cand_prog)
+                programme_id = pdoc.spec.programme_id
+                break
+            except Exception:  # noqa: BLE001, S112
+                continue
+        if programme_id is None:
+            programme_id = "prog-default"
+
+    pr_dir = existing_dir if (existing_doc is not None and existing_dir.is_dir()) else (ws_dir / slug)
+    pr_dir.mkdir(parents=True, exist_ok=True)
+    proj_md = pr_dir / "PROJECT.md"
+
+    if not proj_md.is_file():
+        rendered = common.render_template_file(
+            "PROJECT.md.tpl",
+            {
+                "pr_id": pr_id_canonical,
+                "programme_id": programme_id,
+                "slug": slug,
+                "title": title,
+                "branch": branch,
+                "base_branch": base_branch,
+                "allowed_module": allowed_modules[0],
+                "verification_command": verification_floor[0],
+            },
+        )
+        proj_md.write_text(rendered, encoding="utf-8")
+
+    proj_doc = schemas.load_project(proj_md)
+    ch = proj_doc.spec.charter
+    ch.pr_id = pr_id_canonical
+    ch.programme_id = programme_id
+    ch.slug = slug
+    ch.title = title
+    ch.branch = branch
+    ch.base_branch = base_branch
+    ch.depends_on = depends_on
+    ch.allowed_modules = allowed_modules
+    ch.required_skills = required_skills
+    ch.verification_floor = verification_floor
+    ch.charter_locked = True
+
+    c_hash = schemas.compute_charter_hash(proj_doc)
+    ch.charter_hash = c_hash
+    proj_md.write_text(
+        schemas.dump_document(proj_doc.spec, proj_doc.sections),
+        encoding="utf-8",
+    )
+    if not schemas.verify_charter_hash(proj_md):
+        raise RuntimeError(f"Failed to verify stamped charter_hash on {proj_md}")
+
+    # Upsert PRNodeSpec in any matching PROGRAM.md
+    for prog_md in sorted(ws_dir.glob("programme-*/PROGRAM.md")):
+        try:
+            prog_doc = schemas.load_program(prog_md)
+        except Exception:  # noqa: BLE001, S112
+            continue
+        if (
+            programme_id_arg
+            and prog_doc.spec.programme_id.lower() != str(programme_id).lower()
+        ):
+            continue
+
+        matched_node = None
+        for node in prog_doc.spec.prs:
+            if (
+                node.id.upper() == pr_id_canonical.upper()
+                or node.slug.lower() == slug.lower()
+            ):
+                matched_node = node
+                break
+
+        if matched_node is not None:
+            matched_node.id = pr_id_canonical
+            matched_node.slug = slug
+            matched_node.title = title[:140]
+            matched_node.branch = branch
+            matched_node.base_branch = base_branch
+            matched_node.depends_on = depends_on
+            matched_node.allowed_modules = allowed_modules
+            matched_node.required_skills = required_skills
+        else:
+            prog_doc.spec.prs.append(
+                schemas.PRNodeSpec(
+                    id=pr_id_canonical,
+                    slug=slug,
+                    title=title[:140],
+                    branch=branch,
+                    base_branch=base_branch,
+                    depends_on=depends_on,
+                    allowed_modules=allowed_modules,
+                    required_skills=required_skills,
+                    status=proj_doc.spec.status,
+                    github_pr=proj_doc.spec.github_pr,
+                )
+            )
+        prog_md.write_text(
+            schemas.dump_document(prog_doc.spec, prog_doc.sections),
+            encoding="utf-8",
+        )
+
+    return pr_dir, proj_md, proj_doc, c_hash
+
+
+def _cmd_programme_charter(
+    args: argparse.Namespace,
+    *,
+    runner: common.Runner = common.run,
+) -> int:
+    """Author or update Part I (`PR Charter`) of `PROJECT.md`, lock `charter_hash`, and update `PROGRAM.md`."""
+    import vcs_sync
+
+    resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
+    if isinstance(resolved, int):
+        return resolved
+    real_root, ws_dir = resolved
+
+    try:
+        _, proj_md, proj_doc, c_hash = _scaffold_or_update_project_charter(
+            ws_dir,
+            pr_id_raw=str(args.pr_id),
+            slug_arg=args.slug,
+            title_arg=args.title,
+            branch_arg=args.branch,
+            base_branch_arg=args.base_branch,
+            allowed_modules_arg=args.allowed_module,
+            verification_floor_arg=args.verification_command,
+            depends_on_arg=args.depends_on,
+            required_skills_arg=args.required_skill,
+            programme_id_arg=args.programme_id,
+        )
+    except (ValueError, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    ch = proj_doc.spec.charter
+    draft_res: dict[str, Any] | None = None
+    if getattr(args, "open_draft", False):
+        try:
+            bus = vcs_sync.get_vcs_bus(real_root, runner=runner)
+            bus.create_or_checkout_branch(ch.branch, ch.base_branch)
+            draft_res = bus.open_or_sync_pr(ch.pr_id, draft=True)
+        except (ValueError, RuntimeError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
+    out_payload: dict[str, Any] = {
+        "pr_id": ch.pr_id,
+        "slug": ch.slug,
+        "project_md": str(proj_md),
+        "charter_hash": c_hash,
+        "charter_locked": True,
+    }
+    if draft_res is not None:
+        out_payload["draft_pr"] = draft_res
+    print(json.dumps(out_payload, indent=2))
+    return 0
+
+
+def _cmd_pr_start(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
+    """Create/checkout stacked PR branch, verify/scaffold `PROJECT.md`, and start/pin Tier 2 PA session."""
+    import models
+    import schemas
+    import vcs_sync
+
+    resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
+    if isinstance(resolved, int):
+        return resolved
+    real_root, ws_dir = resolved
+
+    pr_id_canonical = _normalize_pr_id(str(args.pr_id))
+    pr_dir, proj_doc = vcs_sync._find_pr_dir_and_project(ws_dir, str(args.pr_id))
+
+    if proj_doc is None:
+        if args.title or args.slug or args.allowed_module or args.branch:
+            try:
+                pr_dir, _, proj_doc, _ = _scaffold_or_update_project_charter(
+                    ws_dir,
+                    pr_id_raw=str(args.pr_id),
+                    slug_arg=args.slug,
+                    title_arg=args.title,
+                    branch_arg=args.branch,
+                    base_branch_arg=args.base_branch,
+                    allowed_modules_arg=args.allowed_module,
+                    verification_floor_arg=args.verification_command,
+                )
+            except (ValueError, RuntimeError) as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 1
+        else:
+            print(
+                f"Error: PROJECT.md for '{args.pr_id}' not found in {ws_dir} "
+                f"(pass --title to scaffold a standalone PR).",
+                file=sys.stderr,
+            )
+            return 1
+    elif args.title or args.branch or args.base_branch or args.allowed_module or args.verification_command:
+        try:
+            pr_dir, _, proj_doc, _ = _scaffold_or_update_project_charter(
+                ws_dir,
+                pr_id_raw=proj_doc.spec.charter.pr_id,
+                slug_arg=args.slug or proj_doc.spec.charter.slug,
+                title_arg=args.title,
+                branch_arg=args.branch,
+                base_branch_arg=args.base_branch,
+                allowed_modules_arg=args.allowed_module,
+                verification_floor_arg=args.verification_command,
+            )
+        except (ValueError, RuntimeError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
+    proj_md = pr_dir / "PROJECT.md"
+    if proj_doc.spec.charter.charter_locked and not schemas.verify_charter_hash(proj_md):
+        print(
+            f"Error: PROJECT.md Part I charter_hash verification failed for {proj_doc.spec.charter.pr_id}.",
+            file=sys.stderr,
+        )
+        return 1
+
+    ch = proj_doc.spec.charter
+    pr_id_canonical = ch.pr_id
+    bus = vcs_sync.get_vcs_bus(real_root, runner=runner)
+    try:
+        head_sha = bus.create_or_checkout_branch(ch.branch, ch.base_branch)
+    except (ValueError, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    proj_rel = proj_md.resolve().relative_to(real_root).as_posix()
+    pa_prompt = (
+        f"PA_ROLE: pa\n"
+        f"PR_ID: {pr_id_canonical}\n\n"
+        f"You are the Tier 2 Principal Architect for `{pr_id_canonical}` ({ch.title}).\n"
+        f"- Project Spec: `{proj_rel}`\n"
+        f"- Branch: `{ch.branch}` (base: `{ch.base_branch}`)\n"
+        f"- Allowed Modules: {', '.join(ch.allowed_modules)}\n"
+    )
+    ls_res = models.LanguageServerClient().start_conversation(
+        title=f"📐 [{pr_id_canonical}] {ch.title}",
+        prompt=pa_prompt,
+        role="pa",
+        workspace_root=real_root,
+        pin=True,
+    )
+
+    db_file = ws_dir / ".state" / "state.db"
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+    with state_db.StateDB(db_file) as db:
+        db.bind_session(
+            str(ls_res["conversation_id"]),
+            role="pa",
+            programme_id=ch.programme_id,
+            pr_id=pr_id_canonical,
+            pinned=1 if ls_res.get("pinned") else 0,
+        )
+
+    out_payload = {
+        "pr_id": pr_id_canonical,
+        "branch": ch.branch,
+        "base_branch": ch.base_branch,
+        "head_sha": head_sha,
+        "conversation_id": ls_res["conversation_id"],
+        "pinned": bool(ls_res.get("pinned")),
+        "bridge_prompt": ls_res["bridge_prompt"],
+    }
+    print(json.dumps(out_payload, indent=2))
+    return 0
+
+
+def _cmd_pr_claim(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
+    """Multi-machine/multi-harness PR pickup: sync state, checkout PR branch, and output PA continuation prompt."""
+    import schemas
+    import vcs_sync
+
+    resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
+    if isinstance(resolved, int):
+        return resolved
+    real_root, ws_dir = resolved
+
+    bus = vcs_sync.get_vcs_bus(real_root, runner=runner)
+    sync_res = bus.sync_state()
+
+    pr_dir, proj_doc = vcs_sync._find_pr_dir_and_project(ws_dir, str(args.pr_id))
+    if proj_doc is None:
+        print(f"Error: PROJECT.md for '{args.pr_id}' not found in {ws_dir}", file=sys.stderr)
+        return 1
+
+    ch = proj_doc.spec.charter
+    try:
+        bus.create_or_checkout_branch(ch.branch, ch.base_branch)
+    except (ValueError, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    sync_res = bus.sync_state()
+    proj_md = pr_dir / "PROJECT.md"
+    proj_doc = schemas.load_project(proj_md)
+    ch = proj_doc.spec.charter
+    pr_id_canonical = ch.pr_id
+
+    completed_wos = [
+        row.id
+        for row in proj_doc.spec.work_orders
+        if row.status == schemas.WorkOrderStatus.COMPLETED
+    ]
+    pending_wos = [
+        row.id
+        for row in proj_doc.spec.work_orders
+        if row.status != schemas.WorkOrderStatus.COMPLETED
+    ]
+    prompt = (
+        f"PA_ROLE: pa\n"
+        f"PR_ID: {pr_id_canonical}\n\n"
+        f"Resuming Principal Architect session for `{pr_id_canonical}` ({ch.title}) "
+        f"on branch `{ch.branch}`.\n"
+        f"- Completed Work Orders: {', '.join(completed_wos) if completed_wos else 'none'}\n"
+        f"- Remaining Work Orders: {', '.join(pending_wos) if pending_wos else 'none'}\n"
+    )
+    out_payload = {
+        "pr_id": pr_id_canonical,
+        "branch": ch.branch,
+        "completed_wos": completed_wos,
+        "pending_wos": pending_wos,
+        "continuation_prompt": prompt,
+        "sync": sync_res,
+    }
+    print(json.dumps(out_payload, indent=2))
+    return 0
+
+
+def _cmd_pr_open_or_sync(
+    args: argparse.Namespace,
+    *,
+    runner: common.Runner = common.run,
+) -> int:
+    """Transition `<pr_id>` to `STAGED_FOR_AUDIT` and open/update GitHub PR when in `github` mode."""
+    import vcs_sync
+
+    resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
+    if isinstance(resolved, int):
+        return resolved
+    real_root, _ = resolved
+
+    bus = vcs_sync.get_vcs_bus(real_root, runner=runner)
+    try:
+        res = bus.open_or_sync_pr(str(args.pr_id), draft=bool(args.draft))
+    except (ValueError, RuntimeError, FileNotFoundError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print(json.dumps(res, indent=2))
+    return 0
+
+
+def _cmd_pr_post_audit(
+    args: argparse.Namespace,
+    *,
+    runner: common.Runner = common.run,
+) -> int:
+    """Validate and record `<audit.md>` into `AUDIT-round-<K>.md` (and `gh pr review --comment` in `github` mode)."""
+    import vcs_sync
+
+    resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
+    if isinstance(resolved, int):
+        return resolved
+    real_root, _ = resolved
+
+    if not args.file:
+        print("Error: --file is required for pa pr post-audit", file=sys.stderr)
+        return 1
+
+    audit_file = Path(str(args.file)).expanduser()
+    bus = vcs_sync.get_vcs_bus(real_root, runner=runner)
+    try:
+        res = bus.post_audit(
+            str(args.pr_id),
+            audit_file,
+            commit=not bool(getattr(args, "no_commit", False)),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print(json.dumps(res, indent=2))
+    return 0
+
+
+def _cmd_pr_sync_audit(
+    args: argparse.Namespace,
+    *,
+    runner: common.Runner = common.run,
+) -> int:
+    """Sync the latest Cold-Firewall `AuditReport` for `<pr_id>` into `.state/state.db`."""
+    import vcs_sync
+
+    resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
+    if isinstance(resolved, int):
+        return resolved
+    real_root, _ = resolved
+
+    bus = vcs_sync.get_vcs_bus(real_root, runner=runner)
+    try:
+        res = bus.sync_audit(str(args.pr_id))
+    except (ValueError, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    if res is None:
+        print(
+            f"Error: No Cold-Firewall Audit report found for '{args.pr_id}'.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(json.dumps(res, indent=2))
+    return 0
+
+
+def _sha_matches(sha_a: str, sha_b: str) -> bool:
+    """Return True if two Git commit SHAs match (supporting >=7-char short SHA prefixes)."""
+    a = sha_a.strip().lower()
+    b = sha_b.strip().lower()
+    if len(a) < 7 or len(b) < 7:
+        return False
+    return a == b or a.startswith(b) or b.startswith(a)
+
+
+def _head_matches_audited_sha(
+    real_root: Path,
+    pr_dir: Path,
+    current_head_sha: str,
+    audited_sha: str,
+    *,
+    runner: common.Runner,
+) -> bool:
+    """Verify `audited_sha` matches `current_head_sha` (or `HEAD~1` when `HEAD` is the audit commit itself)."""
+    if _sha_matches(current_head_sha, audited_sha):
+        return True
+
+    parent_res = runner(["git", "rev-parse", "HEAD~1"], cwd=real_root)
+    if parent_res.returncode != 0 or not parent_res.stdout.strip():
+        return False
+
+    parent_sha = parent_res.stdout.strip()
+    if not _sha_matches(parent_sha, audited_sha):
+        return False
+
+    diff_res = runner(
+        ["git", "diff", "--name-only", parent_sha, current_head_sha],
+        cwd=real_root,
+    )
+    if diff_res.returncode != 0:
+        return False
+
+    changed_files = [ln.strip() for ln in diff_res.stdout.splitlines() if ln.strip()]
+    if not changed_files:
+        return True
+
+    pr_dir_rel = pr_dir.resolve().relative_to(real_root).as_posix()
+    allowed_audit_re = re.compile(rf"^{re.escape(pr_dir_rel)}/AUDIT-round-\d+\.md$")
+    proj_rel = f"{pr_dir_rel}/PROJECT.md"
+    return all(cf == proj_rel or bool(allowed_audit_re.match(cf)) for cf in changed_files)
+
+
+def _cmd_pr_graduate(
+    args: argparse.Namespace,
+    *,
+    runner: common.Runner = common.run,
+) -> int:
+    """Verify Rule R6 (`APPROVED` audit on current `HEAD` + `verification_floor`) and graduate `<pr_id>`."""
+    import memory_grad
+    import models
+    import vcs_sync
+
+    resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
+    if isinstance(resolved, int):
+        return resolved
+    real_root, ws_dir = resolved
+
+    pr_dir, proj_doc = vcs_sync._find_pr_dir_and_project(ws_dir, str(args.pr_id))
+    if proj_doc is None:
+        print(f"Error: PROJECT.md for '{args.pr_id}' not found in {ws_dir}", file=sys.stderr)
+        return 1
+
+    pr_id_canonical = proj_doc.spec.charter.pr_id
+    proj_md = pr_dir / "PROJECT.md"
+
+    head_res = runner(["git", "rev-parse", "HEAD"], cwd=real_root)
+    if head_res.returncode != 0 or not head_res.stdout.strip():
+        print("Error: Failed to resolve current git HEAD.", file=sys.stderr)
+        return 1
+    current_head_sha = head_res.stdout.strip()
+
+    bus = vcs_sync.get_vcs_bus(real_root, runner=runner)
+    audit_meta = bus.sync_audit(pr_id_canonical)
+    audited_sha = str((audit_meta or {}).get("head_sha") or "").strip()
+
+    if (
+        audit_meta is None
+        or str(audit_meta.get("verdict") or "").upper() != "APPROVED"
+        or not _head_matches_audited_sha(
+            real_root,
+            pr_dir,
+            current_head_sha,
+            audited_sha,
+            runner=runner,
+        )
+    ):
+        print(
+            f"Error: Cannot graduate {pr_id_canonical}: current HEAD ({current_head_sha}) "
+            f"lacks an APPROVED Cold-Firewall Audit verdict.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not getattr(args, "skip_floor", False):
+        for floor_cmd in proj_doc.spec.charter.verification_floor:
+            cmd_str = str(floor_cmd).strip()
+            if not cmd_str:
+                continue
+            v_res = runner(["/bin/sh", "-c", cmd_str], cwd=real_root, timeout=300.0)
+            if v_res.returncode != 0:
+                if v_res.stdout:
+                    print(
+                        v_res.stdout,
+                        file=sys.stderr,
+                        end="" if v_res.stdout.endswith("\n") else "\n",
+                    )
+                if v_res.stderr:
+                    print(
+                        v_res.stderr,
+                        file=sys.stderr,
+                        end="" if v_res.stderr.endswith("\n") else "\n",
+                    )
+                print(
+                    f"Error: Cannot graduate {pr_id_canonical}: verification_floor command "
+                    f"'{cmd_str}' failed with exit code {v_res.returncode}.",
+                    file=sys.stderr,
+                )
+                return 1
+
+    grad_res = memory_grad.graduate(
+        real_root,
+        pr_id_canonical,
+        completed_date=getattr(args, "completed_date", None),
+    )
+
+    db_file = ws_dir / ".state" / "state.db"
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+    ls_client = models.LanguageServerClient()
+    unpinned_pa: list[str] = []
+    notified_chief: list[str] = []
+
+    with state_db.StateDB(db_file) as db:
+        cur_pa = db.conn.execute(
+            """
+            SELECT conversation_id FROM sessions
+            WHERE UPPER(pr_id) = UPPER(?)
+              AND LOWER(role) IN ('pa', 'pa-principal-architect', 'principal-architect')
+            """,
+            (pr_id_canonical,),
+        )
+        for row_pa in cur_pa.fetchall():
+            pa_cid = str(row_pa["conversation_id"])
+            ls_client.set_pinned(pa_cid, False)
+            db.update_session(pa_cid, pinned=0)
+            unpinned_pa.append(pa_cid)
+
+        cur_chief = db.conn.execute(
+            """
+            SELECT conversation_id FROM sessions
+            WHERE LOWER(role) IN ('chief', 'pa-chief-architect', 'chief-architect')
+            ORDER BY updated_at DESC
+            """
+        )
+        for row_chief in cur_chief.fetchall():
+            chief_cid = str(row_chief["conversation_id"])
+            ls_client.send_message(
+                chief_cid,
+                f"PR {pr_id_canonical} graduated ({grad_res['memory_mode']} mode).",
+            )
+            notified_chief.append(chief_cid)
+
+        for item in db.list_open(pr_id=pr_id_canonical):
+            db.dequeue(str(item["item_id"]), status="RESOLVED")
+
+    paths_to_stage: list[str] = [proj_md.resolve().relative_to(real_root).as_posix()]
+    for prog_md in sorted(ws_dir.glob("programme-*/PROGRAM.md")):
+        if prog_md.is_file():
+            paths_to_stage.append(prog_md.resolve().relative_to(real_root).as_posix())
+    for mf in grad_res.get("memory_files_touched", []):
+        mf_path = Path(str(mf))
+        if mf_path.is_file():
+            paths_to_stage.append(mf_path.resolve().relative_to(real_root).as_posix())
+
+    paths_to_stage = _dedup_preserve_order(paths_to_stage)
+    if paths_to_stage:
+        add_res = runner(["git", "add", "--", *paths_to_stage], cwd=real_root)
+        if add_res.returncode == 0:
+            vcs_sync._git_commit_with_fallback(
+                real_root,
+                f"chore({pr_id_canonical.lower()}): graduate {pr_id_canonical}",
+                runner=runner,
+            )
+
+    post_head = runner(["git", "rev-parse", "HEAD"], cwd=real_root)
+    grad_res["commit_sha"] = (
+        post_head.stdout.strip()
+        if post_head.returncode == 0 and post_head.stdout.strip()
+        else current_head_sha
+    )
+    grad_res["unpinned_pa_sessions"] = unpinned_pa
+    grad_res["notified_chief_sessions"] = notified_chief
+
+    print(json.dumps(grad_res, indent=2))
+    return 0
+
+
+def _cmd_pr_restack(
+    args: argparse.Namespace,
+    *,
+    runner: common.Runner = common.run,
+) -> int:
+    """Rebase stacked PR branches (`git rebase --update-refs`) and retarget GitHub PR bases."""
+    import vcs_sync
+
+    resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
+    if isinstance(resolved, int):
+        return resolved
+    real_root, _ = resolved
+
+    pr_id_val = getattr(args, "pr_id", None) or getattr(args, "pr_id_pos", None)
+    bus = vcs_sync.get_vcs_bus(real_root, runner=runner)
+    try:
+        res = bus.restack_branches(pr_id=pr_id_val, onto_branch=args.onto)
+    except (ValueError, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print(json.dumps(res, indent=2))
+    return 0
+
+
+def _cmd_issue_create(
+    args: argparse.Namespace,
+    *,
+    runner: common.Runner = common.run,
+) -> int:
+    """Record a deferred out-of-scope finding in `DEFERRED_BACKLOG.md` (and `gh issue create --label pa:deferred` in `github` mode)."""
+    import vcs_sync
+
+    resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
+    if isinstance(resolved, int):
+        return resolved
+    real_root, _ = resolved
+
+    title = str(args.title or "").strip()
+    if not title:
+        print("Error: --title is required for pa issue create", file=sys.stderr)
+        return 1
+
+    bus = vcs_sync.get_vcs_bus(real_root, runner=runner)
+    try:
+        res = bus.create_deferred_issue(
+            title=title,
+            summary=str(args.summary or ""),
+            pr_id=args.pr_id,
+            wo_id=args.wo_id,
+            labels=args.label or ("pa:deferred",),
+            file_path=args.file_path,
+        )
+    except (ValueError, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print(json.dumps(res, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the root `pa` ArgumentParser and register all `COMMAND_MODULES`."""
     parser = argparse.ArgumentParser(
@@ -1730,7 +2668,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_status.set_defaults(_handler=_cmd_status)
 
-    # 4. pa mode
+    # 4. pa sync
+    p_sync = subparsers.add_parser(
+        "sync",
+        help="Synchronize VCS commit trailers, audit reports, and specs into .state/state.db.",
+    )
+    p_sync.add_argument(
+        "path",
+        nargs="?",
+        default=".",
+        help="Path to the target repository (default: current directory).",
+    )
+    p_sync.add_argument(
+        "--path",
+        dest="path_opt",
+        default=None,
+        help="Path to the target repository.",
+    )
+    p_sync.set_defaults(_handler=_cmd_sync)
+
+    # 5. pa mode
     p_mode = subparsers.add_parser(
         "mode",
         help="Get or set the repository execution mode (monitored or autonomous).",
@@ -1749,7 +2706,115 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_mode.set_defaults(_handler=_cmd_mode)
 
-    # 5. pa wo <subcommand>
+    # 6. pa programme <subcommand>
+    p_programme = subparsers.add_parser(
+        "programme",
+        help="Programme lifecycle commands (init, charter).",
+    )
+    prog_subparsers = p_programme.add_subparsers(
+        dest="programme_command",
+        metavar="<subcommand>",
+    )
+
+    p_prog_init = prog_subparsers.add_parser(
+        "init",
+        help="Scaffold programme-<slug>/PROGRAM.md and bind Tier 1 Chief Architect session.",
+    )
+    p_prog_init.add_argument(
+        "slug",
+        help="Programme slug (e.g., alpha or prog-alpha).",
+    )
+    p_prog_init.add_argument(
+        "--title",
+        required=True,
+        help="Human-readable programme title.",
+    )
+    p_prog_init.add_argument(
+        "--base-branch",
+        default="main",
+        help="Base branch for the programme (default: main).",
+    )
+    p_prog_init.add_argument(
+        "--path",
+        default=".",
+        help="Path to the target repository (default: current directory).",
+    )
+    p_prog_init.set_defaults(_handler=_cmd_programme_init)
+
+    p_prog_charter = prog_subparsers.add_parser(
+        "charter",
+        help="Author or update Part I (PR Charter) of PROJECT.md and lock charter_hash.",
+    )
+    p_prog_charter.add_argument(
+        "pr_id",
+        help="Pull Request ID (e.g., PR-01).",
+    )
+    p_prog_charter.add_argument(
+        "--slug",
+        default=None,
+        help="PR folder slug (e.g., pr-01-alpha).",
+    )
+    p_prog_charter.add_argument(
+        "--title",
+        default=None,
+        help="PR title.",
+    )
+    p_prog_charter.add_argument(
+        "--branch",
+        default=None,
+        help="PR head branch (default: feat/<slug>).",
+    )
+    p_prog_charter.add_argument(
+        "--base-branch",
+        default=None,
+        help="PR base branch (default: main).",
+    )
+    p_prog_charter.add_argument(
+        "--allowed-module",
+        action="append",
+        default=None,
+        metavar="MODULE",
+        help="Allowed module path or glob (repeatable).",
+    )
+    p_prog_charter.add_argument(
+        "--verification-command",
+        action="append",
+        default=None,
+        metavar="CMD",
+        help="Verification floor command (repeatable).",
+    )
+    p_prog_charter.add_argument(
+        "--depends-on",
+        action="append",
+        default=None,
+        metavar="PR_ID",
+        help="Upstream PR dependency (repeatable).",
+    )
+    p_prog_charter.add_argument(
+        "--required-skill",
+        action="append",
+        default=None,
+        metavar="SKILL",
+        help="Required domain skill (repeatable).",
+    )
+    p_prog_charter.add_argument(
+        "--programme-id",
+        default=None,
+        help="Parent programme ID (e.g., prog-alpha).",
+    )
+    p_prog_charter.add_argument(
+        "--open-draft",
+        action="store_true",
+        help="Create/checkout the PR branch and open a draft PR.",
+    )
+    p_prog_charter.add_argument(
+        "--path",
+        default=".",
+        help="Path to the target repository (default: current directory).",
+    )
+    p_prog_charter.set_defaults(_handler=_cmd_programme_charter)
+
+    # 7. pa wo <subcommand>
     p_wo = subparsers.add_parser(
         "wo",
         help="Work Order lifecycle commands.",
@@ -1811,12 +2876,76 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_wo_resolve.set_defaults(_handler=_cmd_wo_resolve)
 
-    # 6. pa pr <subcommand>
+    # 8. pa pr <subcommand>
     p_pr = subparsers.add_parser(
         "pr",
         help="Pull Request lifecycle commands.",
     )
     pr_subparsers = p_pr.add_subparsers(dest="pr_command", metavar="<subcommand>")
+
+    p_pr_start = pr_subparsers.add_parser(
+        "start",
+        help="Create/checkout stacked branch, verify/scaffold PROJECT.md, and start/pin PA session.",
+    )
+    p_pr_start.add_argument(
+        "pr_id",
+        help="Pull Request ID (e.g. PR-01).",
+    )
+    p_pr_start.add_argument(
+        "--slug",
+        default=None,
+        help="PR folder slug for standalone scaffolding.",
+    )
+    p_pr_start.add_argument(
+        "--title",
+        default=None,
+        help="PR title for standalone scaffolding.",
+    )
+    p_pr_start.add_argument(
+        "--branch",
+        default=None,
+        help="PR head branch override.",
+    )
+    p_pr_start.add_argument(
+        "--base-branch",
+        default=None,
+        help="PR base branch override.",
+    )
+    p_pr_start.add_argument(
+        "--allowed-module",
+        action="append",
+        default=None,
+        metavar="MODULE",
+        help="Allowed module path or glob (repeatable).",
+    )
+    p_pr_start.add_argument(
+        "--verification-command",
+        action="append",
+        default=None,
+        metavar="CMD",
+        help="Verification floor command (repeatable).",
+    )
+    p_pr_start.add_argument(
+        "--path",
+        default=".",
+        help="Path to the target repository (default: current directory).",
+    )
+    p_pr_start.set_defaults(_handler=_cmd_pr_start)
+
+    p_pr_claim = pr_subparsers.add_parser(
+        "claim",
+        help="Sync state, checkout PR branch, and output Tier 2 PA continuation prompt.",
+    )
+    p_pr_claim.add_argument(
+        "pr_id",
+        help="Pull Request ID (e.g. PR-01) or folder slug.",
+    )
+    p_pr_claim.add_argument(
+        "--path",
+        default=".",
+        help="Path to the target repository (default: current directory).",
+    )
+    p_pr_claim.set_defaults(_handler=_cmd_pr_claim)
 
     p_pr_approve = pr_subparsers.add_parser(
         "approve-plan",
@@ -1833,7 +2962,172 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_pr_approve.set_defaults(_handler=_cmd_pr_approve_plan)
 
-    # 7. pa escalate
+    p_pr_open = pr_subparsers.add_parser(
+        "open-or-sync",
+        help="Transition PR to STAGED_FOR_AUDIT and open/update GitHub PR in github mode.",
+    )
+    p_pr_open.add_argument(
+        "pr_id",
+        help="Pull Request ID (e.g. PR-01) or folder slug.",
+    )
+    p_pr_open.add_argument(
+        "--draft",
+        action="store_true",
+        help="Open GitHub PR as a draft.",
+    )
+    p_pr_open.add_argument(
+        "--path",
+        default=".",
+        help="Path to the target repository (default: current directory).",
+    )
+    p_pr_open.set_defaults(_handler=_cmd_pr_open_or_sync)
+
+    p_pr_post_audit = pr_subparsers.add_parser(
+        "post-audit",
+        help="Validate and record Cold-Firewall Audit report (and post gh pr review --comment in github mode).",
+    )
+    p_pr_post_audit.add_argument(
+        "pr_id",
+        help="Pull Request ID (e.g. PR-01).",
+    )
+    p_pr_post_audit.add_argument(
+        "--file",
+        required=True,
+        help="Path to the AuditReport Markdown file.",
+    )
+    p_pr_post_audit.add_argument(
+        "--no-commit",
+        action="store_true",
+        help="Write AUDIT-round-K.md without creating a local git commit.",
+    )
+    p_pr_post_audit.add_argument(
+        "--path",
+        default=".",
+        help="Path to the target repository (default: current directory).",
+    )
+    p_pr_post_audit.set_defaults(_handler=_cmd_pr_post_audit)
+
+    p_pr_sync_audit = pr_subparsers.add_parser(
+        "sync-audit",
+        help="Sync latest AuditReport from AUDIT-round-K.md or GitHub PR review into .state/state.db.",
+    )
+    p_pr_sync_audit.add_argument(
+        "pr_id",
+        help="Pull Request ID (e.g. PR-01).",
+    )
+    p_pr_sync_audit.add_argument(
+        "--path",
+        default=".",
+        help="Path to the target repository (default: current directory).",
+    )
+    p_pr_sync_audit.set_defaults(_handler=_cmd_pr_sync_audit)
+
+    p_pr_graduate = pr_subparsers.add_parser(
+        "graduate",
+        help="Verify APPROVED audit for current HEAD + verification_floor and graduate PR memory.",
+    )
+    p_pr_graduate.add_argument(
+        "pr_id",
+        help="Pull Request ID (e.g. PR-01).",
+    )
+    p_pr_graduate.add_argument(
+        "--skip-floor",
+        action="store_true",
+        help="Skip executing charter.verification_floor commands.",
+    )
+    p_pr_graduate.add_argument(
+        "--completed-date",
+        default=None,
+        help="Override YYYY-MM-DD graduation date.",
+    )
+    p_pr_graduate.add_argument(
+        "--path",
+        default=".",
+        help="Path to the target repository (default: current directory).",
+    )
+    p_pr_graduate.set_defaults(_handler=_cmd_pr_graduate)
+
+    p_pr_restack = pr_subparsers.add_parser(
+        "restack",
+        help="Rebase stacked PR branches onto base branches (git rebase --update-refs).",
+    )
+    p_pr_restack.add_argument(
+        "pr_id_pos",
+        nargs="?",
+        default=None,
+        help="Optional Pull Request ID or branch to restack.",
+    )
+    p_pr_restack.add_argument(
+        "--pr-id",
+        default=None,
+        help="Optional Pull Request ID or branch to restack.",
+    )
+    p_pr_restack.add_argument(
+        "--onto",
+        default=None,
+        help="Override target base branch for rebase.",
+    )
+    p_pr_restack.add_argument(
+        "--path",
+        default=".",
+        help="Path to the target repository (default: current directory).",
+    )
+    p_pr_restack.set_defaults(_handler=_cmd_pr_restack)
+
+    # 9. pa issue <subcommand>
+    p_issue = subparsers.add_parser(
+        "issue",
+        help="Deferred issue and out-of-scope finding commands.",
+    )
+    issue_subparsers = p_issue.add_subparsers(
+        dest="issue_command",
+        metavar="<subcommand>",
+    )
+
+    p_issue_create = issue_subparsers.add_parser(
+        "create",
+        help="Create a pa:deferred GitHub issue or append to DEFERRED_BACKLOG.md.",
+    )
+    p_issue_create.add_argument(
+        "--title",
+        required=True,
+        help="Issue / deferred finding title.",
+    )
+    p_issue_create.add_argument(
+        "--summary",
+        default="",
+        help="Issue / finding summary.",
+    )
+    p_issue_create.add_argument(
+        "--pr-id",
+        default=None,
+        help="Associated PR ID (e.g. PR-03).",
+    )
+    p_issue_create.add_argument(
+        "--wo-id",
+        default=None,
+        help="Associated Work Order ID (e.g. WO-03.5).",
+    )
+    p_issue_create.add_argument(
+        "--file-path",
+        default=None,
+        help="Associated file path.",
+    )
+    p_issue_create.add_argument(
+        "--label",
+        action="append",
+        default=None,
+        metavar="LABEL",
+        help="Issue label (repeatable; 'pa:deferred' always included).",
+    )
+    p_issue_create.add_argument(
+        "--path",
+        default=".",
+        help="Path to the target repository (default: current directory).",
+    )
+    p_issue_create.set_defaults(_handler=_cmd_issue_create)
+
+    # 10. pa escalate
     p_escalate = subparsers.add_parser(
         "escalate",
         help="Record an upward hierarchical escalation in state.db.",

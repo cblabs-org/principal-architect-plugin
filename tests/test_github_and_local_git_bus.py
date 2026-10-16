@@ -1510,3 +1510,665 @@ def test_pa_wo_debug_and_resolve_cli_end_to_end(
         assert dbg_sess_after is not None
         assert dbg_sess_after["pinned"] == 0
 
+
+# ---------------------------------------------------------------------------
+# WO-03.5: Complete `pa` CLI lifecycle commands & Rule R6 graduation gate
+# ---------------------------------------------------------------------------
+
+
+def test_pa_cli_local_git_end_to_end_lifecycle(
+    tmp_repo: Path,
+    daemon_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Verify full `local_git` CLI lifecycle from `pa enroll` through `pa pr graduate` and `restack`."""
+    import pa_cli
+
+    _ = daemon_home
+    monkeypatch.delenv("ANTIGRAVITY_LS_ADDRESS", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_CSRF_TOKEN", raising=False)
+
+    # 1. `pa enroll` in local_git + builtin mode
+    capsys.readouterr()
+    assert (
+        pa_cli.main(
+            [
+                "enroll",
+                str(tmp_repo),
+                "--vcs-mode",
+                "local_git",
+                "--memory-mode",
+                "builtin",
+            ]
+        )
+        == 0
+    )
+
+    ws_dir = common.workspace_dir(tmp_repo)
+
+    # 2. `pa programme init alpha --title "Alpha Programme"`
+    capsys.readouterr()
+    assert (
+        pa_cli.main(
+            [
+                "programme",
+                "init",
+                "alpha",
+                "--title",
+                "Alpha Programme",
+                "--base-branch",
+                "main",
+                "--path",
+                str(tmp_repo),
+            ]
+        )
+        == 0
+    )
+    prog_out = json.loads(capsys.readouterr().out)
+    assert prog_out["programme_id"] == "prog-alpha"
+    prog_md = Path(prog_out["program_md"])
+    assert prog_md.is_file()
+    assert schemas.load_program(prog_md).spec.title == "Alpha Programme"
+
+    # 3. `pa programme charter PR-01`
+    capsys.readouterr()
+    assert (
+        pa_cli.main(
+            [
+                "programme",
+                "charter",
+                "PR-01",
+                "--slug",
+                "pr-01-alpha",
+                "--title",
+                "Alpha Core Feature",
+                "--branch",
+                "feat/pr-01-alpha",
+                "--base-branch",
+                "main",
+                "--allowed-module",
+                "src/",
+                "--verification-command",
+                "python3 -c 'import sys; sys.exit(0)'",
+                "--path",
+                str(tmp_repo),
+            ]
+        )
+        == 0
+    )
+    charter_out = json.loads(capsys.readouterr().out)
+    assert charter_out["pr_id"] == "PR-01"
+    assert charter_out["slug"] == "pr-01-alpha"
+    assert charter_out["charter_locked"] is True
+    proj_md = Path(charter_out["project_md"])
+    assert proj_md.is_file()
+    assert schemas.verify_charter_hash(proj_md)
+
+    # Confirm PROGRAM.md now includes PR-01 node
+    prog_doc = schemas.load_program(prog_md)
+    assert len(prog_doc.spec.prs) == 1
+    assert prog_doc.spec.prs[0].id == "PR-01"
+
+    # Commit the programme & charter scaffolding on main so branch switch is clean
+    subprocess.run(["git", "add", "."], cwd=tmp_repo, check=True)
+    subprocess.run(["git", "commit", "-m", "Scaffold programme and PR-01 charter"], cwd=tmp_repo, check=True)
+
+    # 4. `pa pr start PR-01` -> creates/checks out feat/pr-01-alpha and binds PA session
+    capsys.readouterr()
+    assert pa_cli.main(["pr", "start", "PR-01", "--path", str(tmp_repo)]) == 0
+    start_out = json.loads(capsys.readouterr().out)
+    assert start_out["pr_id"] == "PR-01"
+    assert start_out["branch"] == "feat/pr-01-alpha"
+    assert "PA_ROLE: pa" in start_out["bridge_prompt"]
+
+    # 5. Author WO-01.1 in PROJECT.md Part II and wo1-task/WORKORDER.md, then `pa pr approve-plan`
+    proj_doc = schemas.load_project(proj_md)
+    proj_doc.spec.work_orders = [
+        schemas.WOSummaryRow(
+            id="WO-01.1",
+            slug="wo1-task",
+            title="Implement alpha module",
+            complexity=schemas.ComplexityTier.standard,
+            status=schemas.WorkOrderStatus.PENDING,
+        )
+    ]
+    proj_md.write_text(
+        schemas.dump_document(proj_doc.spec, proj_doc.sections),
+        encoding="utf-8",
+    )
+    wo_md = _write_locked_workorder(
+        proj_md.parent,
+        wo_id="WO-01.1",
+        pr_id="PR-01",
+        slug="wo1-task",
+        allowed_files=["src/app.py"],
+        status=schemas.WorkOrderStatus.PENDING,
+    )
+    wo_doc = schemas.load_workorder(wo_md)
+    wo_doc.spec.verification_command = "python3 -c 'import sys; sys.exit(0)'"
+    wo_doc.spec.spec_hash = schemas.compute_spec_hash(wo_doc.spec, wo_doc.sections)
+    wo_md.write_text(schemas.dump_document(wo_doc.spec, wo_doc.sections), encoding="utf-8")
+
+    assert pa_cli.main(["pr", "approve-plan", "PR-01", "--path", str(tmp_repo)]) == 0
+    assert schemas.load_project(proj_md).spec.status == schemas.PRState.APPROVED
+
+    # Commit the approved plan before worker implementation
+    subprocess.run(["git", "add", "."], cwd=tmp_repo, check=True)
+    subprocess.run(["git", "commit", "-m", "Approve PR-01 plan"], cwd=tmp_repo, check=True)
+
+    # 6. Implement src/app.py and run `pa wo verify WO-01.1`
+    src_dir = tmp_repo / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "app.py").write_text("ALPHA = True\n", encoding="utf-8")
+    assert pa_cli.main(["wo", "verify", "WO-01.1", "--path", str(tmp_repo)]) == 0
+
+    # 7. `pa pr claim PR-01` -> verifies WO-01.1 is listed in completed_wos
+    capsys.readouterr()
+    assert pa_cli.main(["pr", "claim", "PR-01", "--path", str(tmp_repo)]) == 0
+    claim_out = json.loads(capsys.readouterr().out)
+    assert claim_out["pr_id"] == "PR-01"
+    assert claim_out["completed_wos"] == ["WO-01.1"]
+    assert claim_out["pending_wos"] == []
+    assert "PA_ROLE: pa" in claim_out["continuation_prompt"]
+
+    # 8. `pa pr open-or-sync PR-01` -> transitions status to STAGED_FOR_AUDIT
+    capsys.readouterr()
+    assert pa_cli.main(["pr", "open-or-sync", "PR-01", "--path", str(tmp_repo)]) == 0
+    open_out = json.loads(capsys.readouterr().out)
+    assert open_out["mode"] == "local_git"
+    assert open_out["status"] == "STAGED_FOR_AUDIT"
+    staged_head_sha = open_out["head_sha"]
+
+    # 9. `pa pr post-audit PR-01 --file <audit_file>`
+    audit_input = tmp_repo / ".state_audit_input.md"
+    audit_report = schemas.AuditReport(
+        pr_id="PR-01",
+        audit_round=1,
+        head_sha=staged_head_sha[:12],
+        verdict="APPROVED",
+        findings=[],
+    )
+    audit_input.write_text(
+        schemas.dump_document(audit_report, []),
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+    assert (
+        pa_cli.main(
+            [
+                "pr",
+                "post-audit",
+                "PR-01",
+                "--file",
+                str(audit_input),
+                "--path",
+                str(tmp_repo),
+            ]
+        )
+        == 0
+    )
+    post_audit_out = json.loads(capsys.readouterr().out)
+    assert post_audit_out["verdict"] == "APPROVED"
+    assert post_audit_out["audit_round"] == 1
+    audit_input.unlink()
+
+    # 10. `pa pr sync-audit PR-01`
+    capsys.readouterr()
+    assert pa_cli.main(["pr", "sync-audit", "PR-01", "--path", str(tmp_repo)]) == 0
+    sync_audit_out = json.loads(capsys.readouterr().out)
+    assert sync_audit_out["verdict"] == "APPROVED"
+    assert sync_audit_out["head_sha"] == staged_head_sha[:12]
+
+    # 11. `pa pr graduate PR-01` (verifies Rule R6 when HEAD is the audit commit and runs verification_floor)
+    capsys.readouterr()
+    assert (
+        pa_cli.main(
+            [
+                "pr",
+                "graduate",
+                "PR-01",
+                "--completed-date",
+                "2026-10-16",
+                "--path",
+                str(tmp_repo),
+            ]
+        )
+        == 0
+    )
+    grad_out = json.loads(capsys.readouterr().out)
+    assert grad_out["pr_id"] == "PR-01"
+    assert grad_out["status"] == "GRADUATED"
+    assert grad_out["memory_mode"] == "builtin"
+    assert start_out["conversation_id"] in grad_out["unpinned_pa_sessions"]
+    assert prog_out["conversation_id"] in grad_out["notified_chief_sessions"]
+    assert schemas.load_project(proj_md).spec.status == schemas.PRState.GRADUATED
+    assert schemas.load_program(prog_md).spec.prs[0].status == schemas.PRState.GRADUATED
+    assert "pr-01-alpha" in (ws_dir / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+
+    # 12. `pa issue create` & `pa sync` & `pa pr restack`
+    capsys.readouterr()
+    assert (
+        pa_cli.main(
+            [
+                "issue",
+                "create",
+                "--title",
+                "Follow-up cleanup",
+                "--summary",
+                "Defer minor refactor to PR-02",
+                "--pr-id",
+                "PR-01",
+                "--wo-id",
+                "WO-01.1",
+                "--file-path",
+                "src/app.py",
+                "--path",
+                str(tmp_repo),
+            ]
+        )
+        == 0
+    )
+    issue_out = json.loads(capsys.readouterr().out)
+    assert issue_out["mode"] == "local_git"
+    assert Path(issue_out["backlog_path"]).is_file()
+    subprocess.run(["git", "add", "."], cwd=tmp_repo, check=True)
+    subprocess.run(["git", "commit", "-m", "Record deferred backlog"], cwd=tmp_repo, check=True)
+
+    capsys.readouterr()
+    assert pa_cli.main(["sync", "--path", str(tmp_repo)]) == 0
+    sync_out = json.loads(capsys.readouterr().out)
+    assert sync_out["vcs_mode"] == "local_git"
+    assert sync_out["synced_audits"] >= 1
+    assert sync_out["synced_receipts"] >= 1
+
+    capsys.readouterr()
+    assert (
+        pa_cli.main(
+            [
+                "pr",
+                "restack",
+                "--pr-id",
+                "PR-01",
+                "--onto",
+                "main",
+                "--path",
+                str(tmp_repo),
+            ]
+        )
+        == 0
+    )
+    restack_out = json.loads(capsys.readouterr().out)
+    assert "feat/pr-01-alpha" in restack_out["restacked"]
+
+
+def test_pa_pr_graduate_enforces_rule_r6_and_invalidates_on_new_commit(
+    tmp_repo: Path,
+    daemon_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Verify `pa pr graduate` rejects missing/CHANGES_REQUESTED/stale audits and failing verification_floor."""
+    import pa_cli
+
+    _ = daemon_home
+    monkeypatch.delenv("ANTIGRAVITY_LS_ADDRESS", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_CSRF_TOKEN", raising=False)
+
+    assert (
+        pa_cli.main(
+            [
+                "enroll",
+                str(tmp_repo),
+                "--vcs-mode",
+                "local_git",
+                "--memory-mode",
+                "external",
+            ]
+        )
+        == 0
+    )
+    assert (
+        pa_cli.main(
+            [
+                "pr",
+                "start",
+                "PR-01",
+                "--slug",
+                "pr-01-alpha",
+                "--title",
+                "Standalone Alpha PR",
+                "--branch",
+                "feat/pr-01-alpha",
+                "--base-branch",
+                "main",
+                "--allowed-module",
+                "src/",
+                "--verification-command",
+                "python3 -c 'import sys; sys.exit(0)'",
+                "--path",
+                str(tmp_repo),
+            ]
+        )
+        == 0
+    )
+    ws_dir = common.workspace_dir(tmp_repo)
+    proj_md = ws_dir / "pr-01-alpha" / "PROJECT.md"
+    subprocess.run(["git", "add", "."], cwd=tmp_repo, check=True)
+    subprocess.run(["git", "commit", "-m", "Start PR-01"], cwd=tmp_repo, check=True)
+
+    # 1. Attempt graduate before any audit exists -> must fail with exit code 1
+    capsys.readouterr()
+    assert pa_cli.main(["pr", "graduate", "PR-01", "--path", str(tmp_repo)]) == 1
+    err1 = capsys.readouterr().err
+    assert "lacks an APPROVED Cold-Firewall Audit verdict" in err1
+    assert schemas.load_project(proj_md).spec.status != schemas.PRState.GRADUATED
+
+    # 2. Post Round 1 with verdict: CHANGES_REQUESTED -> must fail with exit code 1
+    head_sha_1 = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    audit_file = tmp_repo / "audit_tmp.md"
+    audit_file.write_text(
+        schemas.dump_document(
+            schemas.AuditReport(
+                pr_id="PR-01",
+                audit_round=1,
+                head_sha=head_sha_1[:12],
+                verdict="CHANGES_REQUESTED",
+                findings=[
+                    schemas.AuditFinding(
+                        id="BLOCKING-1",
+                        axis="invariants",
+                        file_path="src/app.py",
+                        summary="Missing invariant check",
+                        remediation="Add invariant check",
+                    )
+                ],
+            ),
+            [],
+        ),
+        encoding="utf-8",
+    )
+    assert (
+        pa_cli.main(
+            [
+                "pr",
+                "post-audit",
+                "PR-01",
+                "--file",
+                str(audit_file),
+                "--path",
+                str(tmp_repo),
+            ]
+        )
+        == 0
+    )
+    audit_file.unlink()
+
+    capsys.readouterr()
+    assert pa_cli.main(["pr", "graduate", "PR-01", "--path", str(tmp_repo)]) == 1
+    err2 = capsys.readouterr().err
+    assert "lacks an APPROVED Cold-Firewall Audit verdict" in err2
+
+    # 3. Post Round 2 with verdict: APPROVED for current HEAD, then land a NEW code commit after the audit!
+    head_sha_2 = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    audit_file.write_text(
+        schemas.dump_document(
+            schemas.AuditReport(
+                pr_id="PR-01",
+                audit_round=2,
+                head_sha=head_sha_2[:12],
+                verdict="APPROVED",
+                findings=[],
+            ),
+            [],
+        ),
+        encoding="utf-8",
+    )
+    assert (
+        pa_cli.main(
+            [
+                "pr",
+                "post-audit",
+                "PR-01",
+                "--file",
+                str(audit_file),
+                "--path",
+                str(tmp_repo),
+            ]
+        )
+        == 0
+    )
+    audit_file.unlink()
+
+    # Land an unaudited code commit on the branch after Round 2 audit
+    (tmp_repo / "src").mkdir(parents=True, exist_ok=True)
+    (tmp_repo / "src" / "unaudited.py").write_text("UNAUDITED = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "src/unaudited.py"], cwd=tmp_repo, check=True)
+    subprocess.run(["git", "commit", "-m", "Unaudited post-audit code change"], cwd=tmp_repo, check=True)
+    new_head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    capsys.readouterr()
+    assert pa_cli.main(["pr", "graduate", "PR-01", "--path", str(tmp_repo)]) == 1
+    err3 = capsys.readouterr().err
+    assert f"current HEAD ({new_head_sha}) lacks an APPROVED Cold-Firewall Audit verdict" in err3
+    assert schemas.load_project(proj_md).spec.status != schemas.PRState.GRADUATED
+
+    # 4. Post Round 3 APPROVED for new_head_sha -> graduate succeeds!
+    audit_file.write_text(
+        schemas.dump_document(
+            schemas.AuditReport(
+                pr_id="PR-01",
+                audit_round=3,
+                head_sha=new_head_sha[:12],
+                verdict="APPROVED",
+                findings=[],
+            ),
+            [],
+        ),
+        encoding="utf-8",
+    )
+    assert (
+        pa_cli.main(
+            [
+                "pr",
+                "post-audit",
+                "PR-01",
+                "--file",
+                str(audit_file),
+                "--path",
+                str(tmp_repo),
+            ]
+        )
+        == 0
+    )
+    audit_file.unlink()
+
+    capsys.readouterr()
+    assert pa_cli.main(["pr", "graduate", "PR-01", "--path", str(tmp_repo)]) == 0
+    grad_out = json.loads(capsys.readouterr().out)
+    assert grad_out["status"] == "GRADUATED"
+    assert grad_out["memory_mode"] == "external"
+    assert grad_out["memory_files_touched"] == []
+    assert not (ws_dir / "memory").exists()
+    assert schemas.load_project(proj_md).spec.status == schemas.PRState.GRADUATED
+
+
+def test_pa_cli_github_mode_lifecycle_with_mocked_gh(
+    tmp_repo: Path,
+    daemon_home: Path,
+    fake_runner: FakeRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Verify `pa` CLI commands in `github` mode against a mocked `gh` runner."""
+    import pa_cli
+
+    _ = daemon_home
+    monkeypatch.delenv("ANTIGRAVITY_LS_ADDRESS", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_CSRF_TOKEN", raising=False)
+
+    # Delegate real `git` commands to common.run while mocking `gh` commands and `git push`/`git fetch`
+    def _hybrid_runner(
+        cmd: list[str],
+        *,
+        cwd: str | Path | None = None,
+        timeout: float | None = None,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        if cmd and (
+            cmd[0] == "gh"
+            or cmd[:2] in (["git", "push"], ["git", "fetch"])
+        ):
+            return fake_runner(cmd, cwd=cwd, timeout=timeout, env=env)
+        return common.run(cmd, cwd=cwd, timeout=timeout, env=env)
+
+    # 1. Enroll in github mode
+    assert (
+        pa_cli.main(
+            [
+                "enroll",
+                str(tmp_repo),
+                "--vcs-mode",
+                "github",
+                "--memory-mode",
+                "external",
+            ],
+            runner=_hybrid_runner,
+        )
+        == 0
+    )
+
+    # 2. Charter PR-01 with --open-draft
+    fake_runner.set_response(["git", "push"], returncode=0, stdout="")
+    fake_runner.set_response(["gh", "pr", "view"], returncode=1, stderr="not found")
+    fake_runner.set_response(
+        ["gh", "pr", "create"],
+        returncode=0,
+        stdout="https://github.com/example/repo/pull/31\n",
+    )
+    capsys.readouterr()
+    assert (
+        pa_cli.main(
+            [
+                "programme",
+                "charter",
+                "PR-01",
+                "--slug",
+                "pr-01-alpha",
+                "--title",
+                "GitHub Mode PR",
+                "--branch",
+                "feat/pr-01-alpha",
+                "--base-branch",
+                "main",
+                "--allowed-module",
+                "src/",
+                "--open-draft",
+                "--path",
+                str(tmp_repo),
+            ],
+            runner=_hybrid_runner,
+        )
+        == 0
+    )
+    charter_out = json.loads(capsys.readouterr().out)
+    assert charter_out["draft_pr"]["github_pr"] == 31
+
+    # 3. `pa pr post-audit` posts via `gh pr review 31 --comment`
+    fake_runner.set_response(["gh", "pr", "review"], returncode=0, stdout="")
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    audit_file = tmp_repo / "gh_audit.md"
+    audit_file.write_text(
+        schemas.dump_document(
+            schemas.AuditReport(
+                pr_id="PR-01",
+                github_pr=31,
+                audit_round=1,
+                head_sha=head_sha[:12],
+                verdict="APPROVED",
+                findings=[],
+            ),
+            [],
+        ),
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+    assert (
+        pa_cli.main(
+            [
+                "pr",
+                "post-audit",
+                "PR-01",
+                "--file",
+                str(audit_file),
+                "--path",
+                str(tmp_repo),
+            ],
+            runner=_hybrid_runner,
+        )
+        == 0
+    )
+    post_out = json.loads(capsys.readouterr().out)
+    assert post_out["mode"] == "github"
+    assert post_out["review_posted"] is True
+    audit_file.unlink()
+
+    review_calls = [c for c in fake_runner.calls if c[:3] == ["gh", "pr", "review"]]
+    assert len(review_calls) == 1
+    assert "--comment" in review_calls[0]
+    assert "--approve" not in review_calls[0]
+
+    # 4. `pa issue create` calls `gh issue create --label pa:deferred`
+    fake_runner.set_response(
+        ["gh", "issue", "create"],
+        returncode=0,
+        stdout="https://github.com/example/repo/issues/99\n",
+    )
+    capsys.readouterr()
+    assert (
+        pa_cli.main(
+            [
+                "issue",
+                "create",
+                "--title",
+                "Deferred GitHub issue",
+                "--summary",
+                "Out of scope finding",
+                "--pr-id",
+                "PR-01",
+                "--path",
+                str(tmp_repo),
+            ],
+            runner=_hybrid_runner,
+        )
+        == 0
+    )
+    issue_out = json.loads(capsys.readouterr().out)
+    assert issue_out["mode"] == "github"
+    assert issue_out["issue_url"] == "https://github.com/example/repo/issues/99"
+
+
