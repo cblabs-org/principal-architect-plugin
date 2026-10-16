@@ -32,9 +32,9 @@ charter:
     - "pytest tests/test_schemas.py tests/test_state_db_and_sync.py"
   charter_locked: true
   charter_hash: "9005d5135f25ae53fd2ed1b6ee63ece115b521cbaccd4469fd690fb6ca061d1a"
-status: APPROVED
+status: STAGED_FOR_AUDIT
 approved_at: "2026-10-16T18:50:00Z"
-github_pr: null
+github_pr: 1
 work_orders:
   - id: WO-01.1
     slug: wo1-dev-bootstrap-and-package-skeleton
@@ -75,9 +75,9 @@ work_orders:
     slug: wo6-pa-cli-enroll-unenroll-status-mode
     title: "pa CLI entrypoint (enroll, unenroll, status --json, mode), wrapper scripts, and README"
     complexity: architect
-    status: IN_PROGRESS
-    attempts: 0
-    commit_sha: null
+    status: COMPLETED
+    attempts: 1
+    commit_sha: "265829cc7c24a34fa79e39382f517097966aafc1"
 ---
 
 # PR-01 — Core Schemas, State DB & Enrollment
@@ -215,7 +215,7 @@ Repository inspection at `main` confirms that `SPEC.md` (v1.1), `docs/positionin
 - **[x] [wo3-schemas-models-and-document-layer](wo3-schemas-models-and-document-layer/WORKORDER.md)** (`WO-01.3`, `complexity: architect`, base: `pr-01-core-schemas-and-enrollment/wo2-common-stdlib-foundations`, commit `555a907`): Implement `scripts/schemas.py` (all SPEC §6.1–6.4 Pydantic v2 models, enums, `EscalationRequest`, `Section`, `parse_document`, `dump_document`, `load_program`/`load_project`/`load_workorder`/`load_audit`, `compute_charter_hash`, `compute_spec_hash`, `verify_charter_hash`, `verify_spec_hash`) and comprehensive tests in `tests/test_schemas.py` including dogfood verification of this committed `PROJECT.md` and `PROGRAM.md`.
 - **[x] [wo4-state-db-and-registry](wo4-state-db-and-registry/WORKORDER.md)** (`WO-01.4`, `complexity: standard`, base: `pr-01-core-schemas-and-enrollment/wo3-schemas-models-and-document-layer`, commit `b0a92c1`): Implement `scripts/state_db.py` (`TABLES`, `StateDB` with WAL + `busy_timeout=5000` + `user_version=1` + typed accessors for all 5 tables, and atomic `Registry`) plus unit tests in `tests/test_state_db_and_sync.py`.
 - **[x] [wo5-templates](wo5-templates/WORKORDER.md)** (`WO-01.5`, `complexity: mechanical`, base: `pr-01-core-schemas-and-enrollment/wo4-state-db-and-registry`, commit `a64da6d`): Author the seven `.md.tpl` templates (`PROGRAM`, `PROJECT`, `WORKORDER`, `AUDIT`, `MEMORY`, `MODULE_INDEX`, `PROJECT_INDEX`), template helpers in `scripts/common.py`, and template render-and-validate tests in `tests/test_schemas.py`.
-- **[-] [wo6-pa-cli-enroll-unenroll-status-mode](wo6-pa-cli-enroll-unenroll-status-mode/WORKORDER.md)** (`WO-01.6`, `complexity: architect`, base: `pr-01-core-schemas-and-enrollment/wo5-templates`): Implement `scripts/pa_cli.py` (`build_parser`, `main`, `COMMAND_MODULES`, `enroll`, `unenroll`, `status [--json]`, `mode`), `scripts/enroll.sh`, `scripts/unenroll.sh`, `README.md`, and the full offline enrollment/migration/status/mode test suite in `tests/test_state_db_and_sync.py`.
+- **[x] [wo6-pa-cli-enroll-unenroll-status-mode](wo6-pa-cli-enroll-unenroll-status-mode/WORKORDER.md)** (`WO-01.6`, `complexity: architect`, base: `pr-01-core-schemas-and-enrollment/wo5-templates`, commit `265829c`): Implement `scripts/pa_cli.py` (`build_parser`, `main`, `COMMAND_MODULES`, `enroll`, `unenroll`, `status [--json]`, `mode`), `scripts/enroll.sh`, `scripts/unenroll.sh`, `README.md`, and the full offline enrollment/migration/status/mode test suite in `tests/test_state_db_and_sync.py`.
 
 <!-- ======================================================================
      PART III — OUTCOME & GRADUATION SUMMARY (authored by the Tier 2 Principal Architect)
@@ -229,3 +229,4 @@ Repository inspection at `main` confirms that `SPEC.md` (v1.1), `docs/positionin
 - **2026-10-16 (`WO-01.3 COMPLETED`, `555a907`):** Delivered `scripts/schemas.py` (all SPEC §6.1–6.4 Pydantic v2 models with `extra="forbid"`, `PRState`/`WorkOrderStatus`/`ComplexityTier` enums, `EscalationRequest`, `Section`/`Document[T]`/`parse_document`/`dump_document` preserving pre-H2 preambles and unknown sections, `load_program`/`load_project`/`load_workorder`/`load_audit`, and normative `compute_charter_hash`/`verify_charter_hash`/`compute_spec_hash`/`verify_spec_hash`) and 16 test functions in `tests/test_schemas.py` including dogfood verification on this committed `PROJECT.md`, `PROGRAM.md`, and `WO-01.1`–`WO-01.3` (29 passed, `ruff check` clean).
 - **2026-10-16 (`WO-01.4 COMPLETED`, `b0a92c1`):** Delivered `scripts/state_db.py` (`TABLES`, `SCHEMA_VERSION = 1`, `StateDB` with WAL mode, `busy_timeout=5000`, `user_version=1`, idempotent `init()`, context manager, and typed accessors for `repo_config`, `sessions`, `verification_receipts`, `escalations`, and `attention_queue`, plus atomic `Registry`) and 9 comprehensive tests in `tests/test_state_db_and_sync.py` (38 passed, `ruff check` clean).
 - **2026-10-16 (`WO-01.5 COMPLETED`, `a64da6d`):** Delivered all seven `.md.tpl` templates (`PROGRAM`, `PROJECT`, `WORKORDER`, `AUDIT`, `MEMORY`, `MODULE_INDEX`, `PROJECT_INDEX`), `common.render_template_file`, and template validation + dogfood tests in `tests/test_schemas.py` (39 passed, `ruff check` clean).
+- **2026-10-16 (`WO-01.6 COMPLETED`, `265829c`):** Delivered `scripts/pa_cli.py` (`COMMAND_MODULES`, `build_parser`, `main`, `detect_vcs_mode`, `detect_memory_mode`, normative 9-step `enroll`, `unenroll`, `status [--json]` reconciling Markdown + `state.db` + git trailers, and `mode`), `scripts/enroll.sh`, `scripts/unenroll.sh`, `README.md`, and 12 comprehensive tests in `tests/test_state_db_and_sync.py` + `tests/test_schemas.py` (51 passed, `ruff check` clean). Transitioned PR-01 to `status: STAGED_FOR_AUDIT`.
