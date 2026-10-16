@@ -4,7 +4,7 @@ wo_id: WO-02.3
 pr_id: PR-02
 title: "PostToolUse receipt invalidation/stamping, deterministic compute_tree_hash, and pa wo verify CLI"
 complexity: standard
-status: PENDING
+status: COMPLETED
 allowed_files:
   - daemon/workspace-plugin/principal-architect/scripts/post_tool_receipt.py
   - daemon/workspace-plugin/principal-architect/scripts/pa_cli.py
@@ -19,7 +19,22 @@ verification_command: "./.venv/bin/pytest tests/test_schemas.py tests/test_state
 max_attempts: 5
 max_structural_failures: 2
 spec_hash: ae7f73c776898f4d46228d05443d4c97c0b974694cc93963363fd2bcbd7ed6d6
-completion: null
+completion:
+  status: COMPLETED
+  attempt_num: 1
+  receipt_id: rcpt_453833f56575
+  commit_sha: null
+  files_modified:
+    - daemon/workspace-plugin/principal-architect/scripts/post_tool_receipt.py
+    - daemon/workspace-plugin/principal-architect/scripts/pa_cli.py
+    - tests/test_hooks_monitored_vs_autonomous.py
+  verification_summary: "72 passed in pytest (test_schemas, test_state_db_and_sync, test_hooks_monitored_vs_autonomous); ruff check daemon tests clean."
+  out_of_scope_findings: []
+  escalation_request: null
+  decisions_made:
+    - "Implemented _upsert_receipt in post_tool_receipt.py to delete any prior receipt row with the same deterministic receipt_id (rcpt_<tree_hash[:12]>) before inserting, avoiding SQLite PRIMARY KEY collisions when re-verifying identical working-tree contents."
+    - "Added .state/ paths to .git/info/exclude in _cmd_wo_verify prior to running git status --porcelain so ephemeral SQLite WAL/SHM files never trigger false-positive scope hygiene errors or leave untracked artifacts after commit."
+  dead_ends: []
 ---
 
 # WO-02.3 — `PostToolUse` Receipt Engine, Deterministic `compute_tree_hash`, and `pa wo verify` CLI
@@ -227,3 +242,18 @@ completion: null
 
 ## Completion Report
 <!-- Written by the Tier 3 Worker at task completion -->
+
+- **Status:** `COMPLETED` (attempt 1)
+- **Receipt ID:** `rcpt_453833f56575`
+- **Tree Hash (`allowed_files`):** `453833f56575316db297e62d194ccda57473215a1c14dfbefa8c52ac8cadadf3`
+- **Files Modified:**
+  - `daemon/workspace-plugin/principal-architect/scripts/post_tool_receipt.py`
+  - `daemon/workspace-plugin/principal-architect/scripts/pa_cli.py`
+  - `tests/test_hooks_monitored_vs_autonomous.py`
+- **Verification Summary:** `./.venv/bin/pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py && ./.venv/bin/ruff check daemon tests` — 72 passed, 0 lint findings.
+- **Key Decisions:**
+  - Implemented `<1ms` unenrolled fast-exit in `post_tool_receipt.py` with zero top-level imports of `pydantic`, `yaml`, or `schemas`.
+  - Implemented deterministic `compute_tree_hash(repo_root, allowed_files)` sorting matched repo-relative POSIX paths and hashing `<rel_posix_path>\0<len>\0<raw_bytes>\n` while pruning `.git/` and `.state/`.
+  - Implemented `_upsert_receipt` to invalidate prior receipts for `wo_id` and replace any existing row with the same deterministic `rcpt_<tree_hash[:12]>` key cleanly.
+  - Added `pa wo verify <WO-ID>` in `pa_cli.py` enforcing `spec_hash` integrity and `git status --porcelain` scope hygiene, executing `verification_command`, stamping `WORKORDER.md` Part II and `PROJECT.md` (preserving `spec_hash` and `charter_hash`), committing with `PA-WorkOrder` and `PA-Verified-Hash` trailers, and recording the receipt in `state.db`.
+- **Out-of-Scope Findings:** None.

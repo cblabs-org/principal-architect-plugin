@@ -13,6 +13,8 @@ from typing import Any
 
 import common
 import escalation
+import pa_cli
+import post_tool_receipt
 import pre_tool_gate
 import pytest
 import schemas
@@ -1281,3 +1283,345 @@ def test_pre_tool_gate_r5_auditor_and_r6_graduation(
     sub_json = json.loads(sub_res.stdout.strip())
     assert sub_json["rule"] == "R4"
     assert sub_json["permissionDecision"] == "deny"
+
+
+# ---------------------------------------------------------------------------
+# WO-02.3: post_tool_receipt.py and pa wo verify tests
+# ---------------------------------------------------------------------------
+
+
+def test_post_tool_receipt_unenrolled_fast_exit_and_import_purity(
+    tmp_path: Path, daemon_home: Path
+) -> None:
+    """Verify post_tool_receipt.py unenrolled fast-exit (<1ms) and zero pydantic/yaml/schemas imports."""
+    _ = daemon_home
+    unenrolled = tmp_path / "unenrolled-post-repo"
+    unenrolled.mkdir(parents=True, exist_ok=True)
+
+    payload: dict[str, Any] = {
+        "workspacePaths": [str(unenrolled)],
+        "conversationId": "conv-eng",
+        "toolCall": {"name": "write_file", "args": {"Path": "src/foo.py", "Content": "x = 1\n"}},
+    }
+
+    # Warm-up call
+    assert post_tool_receipt.evaluate_post_tool(payload) == {}
+
+    iterations = 25
+    start = time.perf_counter()
+    for _ in range(iterations):
+        res = post_tool_receipt.evaluate_post_tool(payload)
+        assert res == {}
+    elapsed_ms = ((time.perf_counter() - start) * 1000.0) / iterations
+    assert elapsed_ms < 1.0, f"Unenrolled fast-exit took {elapsed_ms:.3f} ms (limit < 1.0 ms)"
+
+    # Verify import purity on the unenrolled path in a fresh subprocess
+    script_path = Path(post_tool_receipt.__file__).resolve()
+    scripts_dir = str(script_path.parent)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = scripts_dir
+    code = (
+        "import sys, post_tool_receipt\n"
+        f"res = post_tool_receipt.evaluate_post_tool({{'workspacePaths': [{str(unenrolled)!r}]}})\n"
+        "assert res == {}\n"
+        "assert 'pydantic' not in sys.modules\n"
+        "assert 'yaml' not in sys.modules\n"
+        "assert 'schemas' not in sys.modules\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert proc.returncode == 0, f"Import purity failed:\n{proc.stdout}\n{proc.stderr}"
+
+    # Verify CLI subprocess execution on unenrolled repo outputs {} and exits 0
+    cli_proc = subprocess.run(
+        [sys.executable, str(script_path)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert cli_proc.returncode == 0
+    assert json.loads(cli_proc.stdout.strip()) == {}
+
+
+def test_compute_tree_hash_determinism_and_exclusions(tmp_repo: Path) -> None:
+    """Verify compute_tree_hash determinism, sensitivity to byte edits, and exclusion of .git/.state/outside."""
+    src_dir = tmp_repo / "src" / "sub"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    f_allowed = tmp_repo / "src" / "allowed.py"
+    f_sub = src_dir / "helper.py"
+    f_allowed.write_text("def a():\n    return 1\n", encoding="utf-8")
+    f_sub.write_text("def b():\n    return 2\n", encoding="utf-8")
+
+    allowed = ["src/allowed.py", "src/sub/"]
+    h1 = post_tool_receipt.compute_tree_hash(tmp_repo, allowed)
+    h2 = post_tool_receipt.compute_tree_hash(tmp_repo, list(reversed(allowed)))
+    assert len(h1) == 64
+    assert h1 == h2
+
+    # Modifying a file outside allowed_files or inside .state/ or .git/ does not change tree_hash
+    (tmp_repo / "src" / "outside.py").write_text("outside = True\n", encoding="utf-8")
+    state_dir = tmp_repo / "src" / "sub" / ".state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "ephemeral.db").write_bytes(b"sqlite-bytes")
+    assert post_tool_receipt.compute_tree_hash(tmp_repo, allowed) == h1
+
+    # Modifying a single byte in an allowed file changes tree_hash
+    f_allowed.write_text("def a():\n    return 2\n", encoding="utf-8")
+    h3 = post_tool_receipt.compute_tree_hash(tmp_repo, allowed)
+    assert h3 != h1
+
+
+def test_post_tool_receipt_lifecycle_stamping_invalidation_and_attempts(
+    tmp_repo: Path, daemon_home: Path
+) -> None:
+    """Verify PostToolUse receipt stamping, invalidation on edit/command, and attempt/structural counters."""
+    ws_dir, _, _ = _setup_enrolled_workspace(tmp_repo, daemon_home, mode="autonomous")
+    db_file = ws_dir / ".state" / "state.db"
+
+    allowed_file = tmp_repo / "src" / "allowed.py"
+    allowed_file.parent.mkdir(parents=True, exist_ok=True)
+    allowed_file.write_text("x = 1\n", encoding="utf-8")
+
+    # 1. Run verification_command ("pytest") with exitCode=0 -> stamps valid=1 receipt
+    res_pass = post_tool_receipt.evaluate_post_tool(
+        {
+            "conversationId": "conv-eng",
+            "toolCall": {"name": "run_command", "args": {"CommandLine": "./.venv/bin/pytest -q"}},
+            "exitCode": 0,
+            "output": "Command exited with code 0.\n1 passed in 0.02s\n",
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_pass == {}
+
+    expected_hash = post_tool_receipt.compute_tree_hash(
+        tmp_repo, ["src/allowed.py", "src/sub/"]
+    )
+    with StateDB(db_file) as db:
+        rcpt = db.latest_valid_receipt("WO-02.1", expected_hash)
+        assert rcpt is not None
+        assert rcpt["valid"] == 1
+        assert rcpt["receipt_id"] == f"rcpt_{expected_hash[:12]}"
+        assert rcpt["exit_code"] == 0
+
+    # 2. Subsequent file edit invalidates the receipt (valid=0)
+    allowed_file.write_text("x = 2\n", encoding="utf-8")
+    post_tool_receipt.evaluate_post_tool(
+        {
+            "conversationId": "conv-eng",
+            "toolCall": {
+                "name": "edit_file",
+                "args": {"Path": "src/allowed.py", "Target": "x = 1", "Replacement": "x = 2"},
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    with StateDB(db_file) as db:
+        assert db.latest_valid_receipt("WO-02.1") is None
+
+    # 3. Re-stamp receipt, then invalidate via mutating shell command (redirect / rm)
+    post_tool_receipt.evaluate_post_tool(
+        {
+            "conversationId": "conv-eng",
+            "toolCall": {"name": "run_command", "args": {"CommandLine": "pytest"}},
+            "output": "Command exited with code 0.\n",
+        },
+        repo_root=tmp_repo,
+    )
+    with StateDB(db_file) as db:
+        assert db.latest_valid_receipt("WO-02.1") is not None
+
+    # Read-only shell command does NOT invalidate receipt
+    post_tool_receipt.evaluate_post_tool(
+        {
+            "conversationId": "conv-eng",
+            "toolCall": {"name": "run_command", "args": {"CommandLine": "git status --short"}},
+            "exitCode": 0,
+        },
+        repo_root=tmp_repo,
+    )
+    with StateDB(db_file) as db:
+        assert db.latest_valid_receipt("WO-02.1") is not None
+
+    # Mutating shell command (redirect) invalidates receipt
+    post_tool_receipt.evaluate_post_tool(
+        {
+            "conversationId": "conv-eng",
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": "echo 'x = 3' > src/allowed.py"},
+            },
+            "exitCode": 0,
+        },
+        repo_root=tmp_repo,
+    )
+    with StateDB(db_file) as db:
+        assert db.latest_valid_receipt("WO-02.1") is None
+
+    # 4. Verification failure (normal test assertion error) -> increments attempt_num only
+    post_tool_receipt.evaluate_post_tool(
+        {
+            "conversationId": "conv-eng",
+            "toolCall": {"name": "run_command", "args": {"CommandLine": "pytest"}},
+            "exitCode": 1,
+            "output": "FAILED test_foo.py - AssertionError: assert 2 == 3",
+        },
+        repo_root=tmp_repo,
+    )
+    with StateDB(db_file) as db:
+        sess = db.get_session("conv-eng")
+        assert sess is not None
+        assert sess["attempt_num"] == 2
+        assert sess["structural_failures"] == 0
+        assert db.latest_valid_receipt("WO-02.1") is None
+
+    # 5. Verification failure with structural blocker signature -> increments attempt_num AND structural_failures
+    post_tool_receipt.evaluate_post_tool(
+        {
+            "conversationId": "conv-eng",
+            "toolCall": {"name": "run_command", "args": {"CommandLine": "pytest"}},
+            "toolResult": {
+                "exitCode": 1,
+                "stderr": "Error: Exclusive hardware is currently tied to another process.",
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    with StateDB(db_file) as db:
+        sess2 = db.get_session("conv-eng")
+        assert sess2 is not None
+        assert sess2["attempt_num"] == 3
+        assert sess2["structural_failures"] == 1
+
+
+def test_pa_wo_verify_end_to_end(
+    tmp_repo: Path, daemon_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Verify `pa wo verify <WO-ID>` scope hygiene, spec_hash check, test execution, and git commit."""
+    ws_dir, proj_path, wo_path = _setup_enrolled_workspace(
+        tmp_repo, daemon_home, mode="autonomous"
+    )
+    (ws_dir / ".gitignore").write_text(".state/\n", encoding="utf-8")
+
+    # Configure verification_command to a fast python assertion on src/allowed.py
+    wo_doc = schemas.load_workorder(wo_path)
+    wo_doc.spec.verification_command = (
+        f'{sys.executable} -c "import pathlib; '
+        "assert 'VALUE = 42' in pathlib.Path('src/allowed.py').read_text(encoding='utf-8'); "
+        "print('1 passed in 0.01s')\""
+    )
+    wo_doc.spec.spec_hash = schemas.compute_spec_hash(wo_doc.spec, wo_doc.sections)
+    wo_path.write_text(schemas.dump_document(wo_doc.spec, wo_doc.sections), encoding="utf-8")
+
+    # Commit the baseline workspace files so git status starts clean
+    subprocess.run(["git", "add", "."], cwd=tmp_repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "Initialize workspace for WO-02.1"],
+        cwd=tmp_repo,
+        check=True,
+        capture_output=True,
+    )
+
+    allowed_file = tmp_repo / "src" / "allowed.py"
+    allowed_file.parent.mkdir(parents=True, exist_ok=True)
+    allowed_file.write_text("VALUE = 0\n", encoding="utf-8")
+
+    # 1. Scope hygiene failure: untracked file outside allowed_files -> exit 1
+    rogue_file = tmp_repo / "src" / "rogue.py"
+    rogue_file.write_text("rogue = True\n", encoding="utf-8")
+    capsys.readouterr()
+    rc_scope = pa_cli.main(["wo", "verify", "WO-02.1", "--path", str(tmp_repo)])
+    assert rc_scope == 1
+    scope_err = capsys.readouterr().err
+    assert "Scope hygiene check failed" in scope_err
+    assert "src/rogue.py" in scope_err
+    rogue_file.unlink()
+
+    # 2. Tampered WORKORDER.md Part I spec_hash -> exit 1
+    orig_wo_text = wo_path.read_text(encoding="utf-8")
+    wo_path.write_text(
+        orig_wo_text.replace("Objective text.", "Tampered objective text."),
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+    rc_tamper = pa_cli.main(["wo", "verify", "WO-02.1", "--path", str(tmp_repo)])
+    assert rc_tamper == 1
+    assert "spec_hash verification failed" in capsys.readouterr().err
+    wo_path.write_text(orig_wo_text, encoding="utf-8")
+
+    # 3. Failing verification_command -> exit 1
+    capsys.readouterr()
+    rc_fail_ver = pa_cli.main(["wo", "verify", "WO-02.1", "--path", str(tmp_repo)])
+    assert rc_fail_ver == 1
+    assert "verification_command failed" in capsys.readouterr().err
+
+    # 4. Passing verification_command & clean scope -> exit 0, stamps receipt, updates docs, commits
+    allowed_file.write_text("VALUE = 42\n", encoding="utf-8")
+    capsys.readouterr()
+    rc_ok = pa_cli.main(["wo", "verify", "WO-02.1", "--path", str(tmp_repo)])
+    assert rc_ok == 0
+
+    # Working tree must be completely clean after pa wo verify
+    status_after = subprocess.run(
+        ["git", "status", "--porcelain", "-uall"],
+        cwd=tmp_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert status_after == "", f"Expected clean git status, got:\n{status_after}"
+
+    expected_hash = post_tool_receipt.compute_tree_hash(
+        tmp_repo, ["src/allowed.py", "src/sub/"]
+    )
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    commit_body = subprocess.run(
+        ["git", "log", "-1", "--format=%B"],
+        cwd=tmp_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert "WO-02.1: Implement src/allowed.py" in commit_body
+    assert "PA-WorkOrder: WO-02.1" in commit_body
+    assert f"PA-Verified-Hash: {expected_hash}" in commit_body
+
+    # Check verification_receipts in state.db
+    with StateDB(ws_dir / ".state" / "state.db") as db:
+        rcpt = db.latest_valid_receipt("WO-02.1", expected_hash)
+        assert rcpt is not None
+        assert rcpt["valid"] == 1
+        assert rcpt["receipt_id"] == f"rcpt_{expected_hash[:12]}"
+        assert rcpt["git_head_sha"] == head_sha
+
+    # Check WORKORDER.md Part II and spec_hash preservation
+    verified_wo = schemas.load_workorder(wo_path)
+    assert schemas.verify_spec_hash(wo_path) is True
+    assert verified_wo.spec.status == schemas.WorkOrderStatus.COMPLETED
+    assert verified_wo.spec.completion is not None
+    assert verified_wo.spec.completion.status == schemas.WorkOrderStatus.COMPLETED
+    assert verified_wo.spec.completion.receipt_id == f"rcpt_{expected_hash[:12]}"
+    assert verified_wo.spec.completion.files_modified == ["src/allowed.py"]
+    assert "1 passed in 0.01s" in verified_wo.spec.completion.verification_summary
+
+    # Check PROJECT.md update and charter_hash preservation
+    verified_proj = schemas.load_project(proj_path)
+    assert schemas.verify_charter_hash(proj_path) is True
+    wo_row = verified_proj.spec.work_orders[0]
+    assert wo_row.id == "WO-02.1"
+    assert wo_row.status == schemas.WorkOrderStatus.COMPLETED
+    assert wo_row.attempts >= 1

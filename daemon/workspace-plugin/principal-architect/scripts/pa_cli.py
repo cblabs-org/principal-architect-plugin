@@ -554,7 +554,7 @@ def _cmd_status(args: argparse.Namespace, *, runner: common.Runner = common.run)
 
                 if row.id in git_trailers:
                     t_sha, t_hash = git_trailers[row.id]
-                    if not commit_sha:
+                    if t_sha:
                         commit_sha = t_sha
                     if t_hash:
                         verified_hash = t_hash
@@ -589,7 +589,7 @@ def _cmd_status(args: argparse.Namespace, *, runner: common.Runner = common.run)
                 verified_hash = None
                 if wo_id in git_trailers:
                     t_sha, t_hash = git_trailers[wo_id]
-                    if not commit_sha:
+                    if t_sha:
                         commit_sha = t_sha
                     if t_hash:
                         verified_hash = t_hash
@@ -732,6 +732,313 @@ def _cmd_mode(args: argparse.Namespace, *, runner: common.Runner = common.run) -
     return 0
 
 
+def _parse_porcelain_paths(stdout: str) -> list[str]:
+    """Parse dirty/untracked repo-relative POSIX paths from `git status --porcelain -uall`."""
+    paths: list[str] = []
+    seen: set[str] = set()
+    for line in stdout.splitlines():
+        if len(line) < 4:
+            continue
+        raw_entry = line[3:]
+        parts = raw_entry.split(" -> ", 1) if " -> " in raw_entry else [raw_entry]
+        for part in parts:
+            cleaned = part.strip().strip('"').lstrip("./")
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                paths.append(cleaned)
+    return paths
+
+
+def _is_ephemeral_runtime_path(rel_posix: str) -> bool:
+    """Return True if `rel_posix` is an ephemeral runtime file ignored by scope hygiene."""
+    norm = rel_posix.strip().lstrip("./")
+    if norm == ".agents/plugins.json":
+        return True
+    return ".state" in norm.split("/")
+
+
+def _collect_existing_allowed_files(
+    real_root: Path,
+    allowed_files: Sequence[str],
+    forbidden_files: Sequence[str],
+    matches_any_fn: Any,
+) -> list[str]:
+    """Return sorted existing repo-relative POSIX paths matching `allowed_files` and not `forbidden_files`."""
+    collected: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(real_root):
+        dirnames[:] = [d for d in dirnames if d not in (".git", ".state")]
+        for fname in filenames:
+            fpath = Path(dirpath) / fname
+            try:
+                if not fpath.is_file():
+                    continue
+                rel_posix = fpath.relative_to(real_root).as_posix()
+            except OSError:
+                continue
+            parts = rel_posix.split("/")
+            if ".git" in parts or ".state" in parts:
+                continue
+            if not matches_any_fn(rel_posix, forbidden_files) and matches_any_fn(
+                rel_posix, allowed_files
+            ):
+                collected.append(rel_posix)
+    collected.sort()
+    return collected
+
+
+def _cmd_wo_verify(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
+    """Verify Work Order scope hygiene, run `verification_command`, stamp receipt, and commit."""
+    import post_tool_receipt
+    import pre_tool_gate
+    import schemas
+
+    raw_target = Path(args.path).expanduser()
+    if not raw_target.exists():
+        print(f"Error: Path does not exist: {args.path}", file=sys.stderr)
+        return 2
+
+    repo_root = common.find_repo_root(raw_target, runner=runner)
+    if repo_root is None:
+        print(f"Error: Not inside a git repository: {args.path}", file=sys.stderr)
+        return 2
+
+    real_root = Path(os.path.realpath(repo_root))
+    ws_dir = common.workspace_dir(real_root)
+    wo_id_arg = str(args.wo_id).strip()
+
+    git_dir = real_root / ".git"
+    if git_dir.is_dir():
+        _ensure_line_in_file(git_dir / "info" / "exclude", ".agents/plugins.json")
+        _ensure_line_in_file(
+            git_dir / "info" / "exclude",
+            f"{common.NEW_WORKSPACE_REL.as_posix()}/.state/",
+        )
+        _ensure_line_in_file(
+            git_dir / "info" / "exclude",
+            f"{common.LEGACY_WORKSPACE_REL.as_posix()}/.state/",
+        )
+
+    wo_doc = pre_tool_gate._find_bound_workorder(ws_dir, None, wo_id_arg)
+    if wo_doc is None or wo_doc.path is None:
+        print(f"Error: Work Order '{wo_id_arg}' not found in {ws_dir}", file=sys.stderr)
+        return 1
+
+    # Step 1: Check spec_hash & git status --porcelain scope hygiene
+    if wo_doc.spec.spec_hash and not schemas.verify_spec_hash(wo_doc.path):
+        print(
+            f"Error: WORKORDER.md Part I spec_hash verification failed for {wo_doc.spec.wo_id}.",
+            file=sys.stderr,
+        )
+        return 1
+
+    status_res = runner(["git", "status", "--porcelain", "-uall"], cwd=real_root)
+    if status_res.returncode != 0:
+        print(
+            f"Error: git status failed: {status_res.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return 1
+
+    wo_rel_posix = wo_doc.path.resolve().relative_to(real_root).as_posix()
+    dirty_paths = [
+        p
+        for p in _parse_porcelain_paths(status_res.stdout)
+        if not _is_ephemeral_runtime_path(p)
+    ]
+
+    out_of_scope: list[str] = []
+    for rel_p in dirty_paths:
+        if rel_p == wo_rel_posix:
+            continue
+        if pre_tool_gate.matches_any_pattern(
+            rel_p, wo_doc.spec.forbidden_files
+        ) or not pre_tool_gate.matches_any_pattern(rel_p, wo_doc.spec.allowed_files):
+            out_of_scope.append(rel_p)
+
+    if out_of_scope:
+        print(
+            f"Error: Scope hygiene check failed for {wo_doc.spec.wo_id}; "
+            f"modified or untracked files outside allowed_files: {', '.join(out_of_scope)}",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Step 2: Execute verification_command
+    ver_res = runner(
+        ["/bin/sh", "-c", wo_doc.spec.verification_command],
+        cwd=real_root,
+        timeout=300.0,
+    )
+    if ver_res.returncode != 0:
+        if ver_res.stdout:
+            print(
+                ver_res.stdout,
+                file=sys.stderr,
+                end="" if ver_res.stdout.endswith("\n") else "\n",
+            )
+        if ver_res.stderr:
+            print(
+                ver_res.stderr,
+                file=sys.stderr,
+                end="" if ver_res.stderr.endswith("\n") else "\n",
+            )
+        print(
+            f"Error: verification_command failed with exit code {ver_res.returncode}.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Step 3: Stamp cryptographic receipt in WORKORDER.md Part II (and PROJECT.md if present)
+    t_hash = post_tool_receipt.compute_tree_hash(real_root, wo_doc.spec.allowed_files)
+    receipt_id = f"rcpt_{t_hash[:12]}"
+    pre_head_res = runner(["git", "rev-parse", "HEAD"], cwd=real_root)
+    pre_head_sha = (
+        pre_head_res.stdout.strip()
+        if pre_head_res.returncode == 0 and pre_head_res.stdout.strip()
+        else None
+    )
+
+    files_modified = sorted(
+        p
+        for p in dirty_paths
+        if p != wo_rel_posix
+        and not pre_tool_gate.matches_any_pattern(p, wo_doc.spec.forbidden_files)
+        and pre_tool_gate.matches_any_pattern(p, wo_doc.spec.allowed_files)
+    )
+    if not files_modified:
+        files_modified = _collect_existing_allowed_files(
+            real_root,
+            wo_doc.spec.allowed_files,
+            wo_doc.spec.forbidden_files,
+            pre_tool_gate.matches_any_pattern,
+        )
+
+    prev_comp = wo_doc.spec.completion
+    existing_attempt_num = prev_comp.attempt_num if prev_comp is not None else 1
+    db_file = ws_dir / ".state" / "state.db"
+    if prev_comp is None and db_file.is_file():
+        with state_db.StateDB(db_file) as db:
+            cur = db.conn.execute(
+                "SELECT MAX(attempt_num) FROM sessions WHERE wo_id = ?",
+                (wo_doc.spec.wo_id,),
+            )
+            row_max = cur.fetchone()
+            if row_max is not None and row_max[0] is not None:
+                existing_attempt_num = max(1, min(int(row_max[0]), 5))
+
+    if prev_comp is not None and prev_comp.verification_summary.strip():
+        summary_str = prev_comp.verification_summary.strip()[:280]
+    else:
+        non_empty = [ln.strip() for ln in (ver_res.stdout or "").splitlines() if ln.strip()]
+        if non_empty:
+            summary_str = f"{wo_doc.spec.verification_command}: {non_empty[-1]}"[:280]
+        else:
+            summary_str = f"{wo_doc.spec.verification_command} exited 0"[:280]
+
+    wo_doc.spec.status = schemas.WorkOrderStatus.COMPLETED
+    wo_doc.spec.completion = schemas.CompletionReport(
+        status=schemas.WorkOrderStatus.COMPLETED,
+        attempt_num=existing_attempt_num,
+        receipt_id=receipt_id,
+        commit_sha=pre_head_sha,
+        files_modified=files_modified,
+        verification_summary=summary_str,
+        out_of_scope_findings=list(prev_comp.out_of_scope_findings) if prev_comp else [],
+        escalation_request=prev_comp.escalation_request if prev_comp else None,
+        decisions_made=list(prev_comp.decisions_made) if prev_comp else [],
+        dead_ends=list(prev_comp.dead_ends) if prev_comp else [],
+    )
+    wo_doc.path.write_text(
+        schemas.dump_document(wo_doc.spec, wo_doc.sections),
+        encoding="utf-8",
+    )
+    if wo_doc.spec.spec_hash and not schemas.verify_spec_hash(wo_doc.path):
+        print(
+            f"Error: Internal spec_hash check failed after updating {wo_doc.path}",
+            file=sys.stderr,
+        )
+        return 1
+
+    proj_md = wo_doc.path.parent.parent / "PROJECT.md"
+    proj_rel_posix: str | None = None
+    if proj_md.is_file():
+        proj_doc = schemas.load_project(proj_md)
+        updated_proj = False
+        for row in proj_doc.spec.work_orders:
+            if row.id.upper() == wo_doc.spec.wo_id.upper():
+                row.status = schemas.WorkOrderStatus.COMPLETED
+                row.attempts = max(row.attempts, existing_attempt_num)
+                row.commit_sha = pre_head_sha
+                updated_proj = True
+                break
+        if updated_proj:
+            proj_md.write_text(
+                schemas.dump_document(proj_doc.spec, proj_doc.sections),
+                encoding="utf-8",
+            )
+            if proj_doc.spec.charter.charter_locked and not schemas.verify_charter_hash(proj_md):
+                print(
+                    f"Error: PROJECT.md charter_hash verification failed after update: {proj_md}",
+                    file=sys.stderr,
+                )
+                return 1
+            proj_rel_posix = proj_md.resolve().relative_to(real_root).as_posix()
+
+    # Step 4: Commit allowed_files + WORKORDER.md (and PROJECT.md if updated) and record receipt
+    paths_to_stage = _dedup_preserve_order(
+        [
+            *files_modified,
+            wo_rel_posix,
+            *([proj_rel_posix] if proj_rel_posix is not None else []),
+        ]
+    )
+    add_res = runner(["git", "add", "--", *paths_to_stage], cwd=real_root)
+    if add_res.returncode != 0:
+        print(f"Error: git add failed: {add_res.stderr.strip()}", file=sys.stderr)
+        return 1
+
+    commit_msg = (
+        f"{wo_doc.spec.wo_id}: {wo_doc.spec.title}\n\n"
+        f"PA-WorkOrder: {wo_doc.spec.wo_id}\n"
+        f"PA-Verified-Hash: {t_hash}"
+    )
+    commit_res = runner(["git", "commit", "-m", commit_msg], cwd=real_root)
+    if commit_res.returncode != 0:
+        print(
+            f"Error: git commit failed: {commit_res.stderr.strip() or commit_res.stdout.strip()}",
+            file=sys.stderr,
+        )
+        return 1
+
+    head_res = runner(["git", "rev-parse", "HEAD"], cwd=real_root)
+    new_head_sha = (
+        head_res.stdout.strip()
+        if head_res.returncode == 0 and head_res.stdout.strip()
+        else pre_head_sha
+    )
+
+    with state_db.StateDB(db_file) as db:
+        post_tool_receipt._upsert_receipt(
+            db,
+            wo_id=wo_doc.spec.wo_id,
+            pr_id=wo_doc.spec.pr_id,
+            cmd=wo_doc.spec.verification_command,
+            exit_code=0,
+            tree_hash=t_hash,
+            git_head_sha=new_head_sha,
+            valid=1,
+            receipt_id=receipt_id,
+        )
+
+    print(
+        f"Verified and committed {wo_doc.spec.wo_id} ({new_head_sha[:12] if new_head_sha else 'HEAD'})\n"
+        f"  receipt_id: {receipt_id}\n"
+        f"  tree_hash:  {t_hash}",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the root `pa` ArgumentParser and register all `COMMAND_MODULES`."""
     parser = argparse.ArgumentParser(
@@ -829,6 +1136,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the target repository (default: current directory).",
     )
     p_mode.set_defaults(_handler=_cmd_mode)
+
+    # 5. pa wo <subcommand>
+    p_wo = subparsers.add_parser(
+        "wo",
+        help="Work Order lifecycle commands.",
+    )
+    wo_subparsers = p_wo.add_subparsers(dest="wo_command", metavar="<subcommand>")
+
+    p_wo_verify = wo_subparsers.add_parser(
+        "verify",
+        help="Verify Work Order scope hygiene, run verification_command, stamp receipt, and commit.",
+    )
+    p_wo_verify.add_argument(
+        "wo_id",
+        help="Work Order ID (e.g., WO-02.3).",
+    )
+    p_wo_verify.add_argument(
+        "--path",
+        default=".",
+        help="Path to the target repository (default: current directory).",
+    )
+    p_wo_verify.set_defaults(_handler=_cmd_wo_verify)
 
     # Extension hook for downstream PR modules
     for mod_name in COMMAND_MODULES:
