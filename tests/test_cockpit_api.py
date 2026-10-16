@@ -661,3 +661,125 @@ def test_post_mutation_endpoints(
         assert sync_res["ok"] is True
         assert "synced_audits" in sync_res
         assert sync_res["synced_audits"] >= 1
+
+
+def test_cockpit_frontend_assets_and_ui_contract(
+    daemon_home: Path,
+) -> None:
+    """Verify `daemon/sidecars/pa_cockpit/ui/{index.html,styles.css,app.js}` per SPEC.md §10.3 & Charter G2/R5."""
+    ui_dir = REPO_ROOT / "daemon" / "sidecars" / "pa_cockpit" / "ui"
+    index_path = ui_dir / "index.html"
+    styles_path = ui_dir / "styles.css"
+    app_path = ui_dir / "app.js"
+
+    assert index_path.is_file()
+    assert styles_path.is_file()
+    assert app_path.is_file()
+
+    disk_html = index_path.read_text(encoding="utf-8")
+    disk_css = styles_path.read_text(encoding="utf-8")
+    disk_js = app_path.read_text(encoding="utf-8")
+
+    with running_cockpit_server(daemon_home) as (_, base_url):
+        # 1. Static asset HTTP serving matches disk files
+        for route, expected_ct, expected_body in (
+            ("/", "text/html", disk_html),
+            ("/index.html", "text/html", disk_html),
+            ("/styles.css", "text/css", disk_css),
+            ("/app.js", "application/javascript", disk_js),
+        ):
+            with urllib.request.urlopen(f"{base_url}{route}", timeout=5.0) as resp:
+                assert resp.status == 200
+                assert expected_ct in resp.headers.get("Content-Type", "")
+                served = resp.read().decode("utf-8")
+                assert served == expected_body
+
+        with urllib.request.urlopen(f"{base_url}/preload.js", timeout=5.0) as resp:
+            assert resp.status == 200
+            assert "application/javascript" in resp.headers.get("Content-Type", "")
+            assert "window.sidecar" in resp.read().decode("utf-8")
+
+    # 2. index.html contract checks (SPEC.md §10.3)
+    assert "<title>Principal Architect Cockpit</title>" in disk_html
+    assert '<link rel="stylesheet" href="/styles.css">' in disk_html
+    assert '<script src="/preload.js"></script>' in disk_html
+    assert '<script src="/app.js"' in disk_html
+    for zone_id in (
+        "zone-header",
+        "zone-attention",
+        "zone-dag",
+        "workspace-select",
+        "badge-vcs-mode",
+        "badge-memory-mode",
+        "btn-sync",
+        "btn-mode-monitored",
+        "btn-mode-autonomous",
+        "architect-model-select",
+        "attention-count",
+        "attention-list",
+        "dag-container",
+    ):
+        assert f'id="{zone_id}"' in disk_html
+
+    # 3. styles.css host theme CSS variables & class selectors
+    for css_var in (
+        "--background",
+        "--foreground",
+        "--card",
+        "--border",
+        "--primary",
+        "--muted-foreground",
+    ):
+        assert css_var in disk_css
+        assert f"var({css_var}" in disk_css
+
+    for selector in (
+        ".cockpit-header",
+        ".mode-toggle",
+        ".badge",
+        ".btn",
+        ".btn-primary",
+        ".btn-danger",
+        ".attention-inbox",
+        ".attention-card",
+        ".programme-card",
+        ".pr-card",
+        ".wo-row",
+        ".status-pill",
+        ".charter-badge",
+        ".receipt-badge",
+    ):
+        assert selector in disk_css
+
+    # 4. app.js sidecar bindings, SSE stream, POST endpoints, and SPEC §10.3 UI labels
+    assert "onWorkspaceChange" in disk_js
+    assert "toggleConversation" in disk_js
+    assert "EventSource" in disk_js
+    assert "/api/events" in disk_js
+    assert "/api/workspaces" in disk_js
+    assert "/api/state" in disk_js
+
+    for post_endpoint in (
+        "/api/mode",
+        "/api/pr/approve-plan",
+        "/api/escalation/resolve",
+        "/api/pr/start",
+        "/api/wo/debug",
+        "/api/pr/graduate",
+        "/api/sync",
+    ):
+        assert post_endpoint in disk_js
+
+    for required_label in (
+        "🔔 Human Attention Needed",
+        "🔒 Charter by Chief",
+        "Approve Plan",
+        "Approve & Resume",
+        "Deny",
+        "Launch Interactive Debug",
+        "Graduate PR",
+        "Jump to PA",
+        "Peek Worker",
+    ):
+        assert required_label in disk_js or required_label in disk_html
+
