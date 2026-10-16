@@ -5,7 +5,7 @@ pr_id: PR-03
 title: Mutually exclusive external vs. builtin memory graduation engine (memory_grad.py)
   and byte-stability tests
 complexity: standard
-status: PENDING
+status: COMPLETED
 allowed_files:
 - daemon/workspace-plugin/principal-architect/scripts/memory_grad.py
 - tests/test_memory_modes.py
@@ -21,7 +21,21 @@ verification_command: ./.venv/bin/pytest tests/test_schemas.py tests/test_state_
 max_attempts: 5
 max_structural_failures: 2
 spec_hash: 093f5c61df1b701141ae83bd6ce4772f77493415a0a0deb5ef53b02e49f27573
-completion: null
+completion:
+  status: COMPLETED
+  attempt_num: 1
+  receipt_id: rcpt_c47bd0bfb4fc
+  commit_sha: null
+  files_modified:
+  - daemon/workspace-plugin/principal-architect/scripts/memory_grad.py
+  - tests/test_memory_modes.py
+  verification_summary: "108 passed in 41.32s; ruff check daemon tests: All checks passed!"
+  out_of_scope_findings: []
+  escalation_request: null
+  decisions_made:
+  - "Used bounded <!-- pa:graduation-summary start --> ... <!-- pa:graduation-summary end --> markers in PROJECT.md Part III (## 4.) with deterministic completed_date so repeated graduation runs in both external and builtin modes are 100% byte-for-byte stable."
+  - "Enforced strict zero-touch on <ws_dir>/memory/ when memory_mode == 'external', returning immediately after updating PROJECT.md and PROGRAM.md."
+  dead_ends: []
 ---
 
 # WO-03.3 — Mutually Exclusive `external` vs. `builtin` Memory Graduation (`memory_grad.py`)
@@ -102,4 +116,14 @@ completion: null
 3. **Issue Surfacing:** Surface any out-of-scope findings in `out_of_scope_findings` in your Completion Report rather than filing issues directly.
 
 ## Completion Report
-<!-- Written by the Tier 3 Worker at task completion -->
+
+- **Status:** `COMPLETED` (Attempt 1/5)
+- **Receipt ID:** `rcpt_c47bd0bfb4fc` (`tree_hash`: `c47bd0bfb4fccb16d49a14ba7d2e02982c89908a177d06cb33d877006cfd74ff`)
+- **Files Modified:**
+  - `daemon/workspace-plugin/principal-architect/scripts/memory_grad.py`
+  - `tests/test_memory_modes.py`
+- **Verification Summary:** `108 passed in 41.32s; ruff check daemon tests: All checks passed!`
+- **Decisions Made:**
+  - Used a bounded `<!-- pa:graduation-summary start --> ... <!-- pa:graduation-summary end -->` block in `PROJECT.md` Part III (`## 4.`) keyed by deterministic `completed_date` (`YYYY-MM-DD`) so repeated invocations of `graduate()` in both `external` and `builtin` modes are 100% byte-for-byte identical.
+  - Enforced the strict `external` mode zero-touch boundary (Invariant I6): when `memory_mode == "external"`, `<ws_dir>/memory/` is never created and `MEMORY.md`, `MODULE_INDEX.md`, and `PROJECT_INDEX.md` are never created, read, or modified.
+  - Implemented 5-PR window roll-off in `builtin` mode (`MAX_RECENT_COMPLETED = 5`), archiving overflow rows into `PROJECT_INDEX.md` in chronological order and idempotently updating `MODULE_INDEX.md` sections for `charter.allowed_modules`.
