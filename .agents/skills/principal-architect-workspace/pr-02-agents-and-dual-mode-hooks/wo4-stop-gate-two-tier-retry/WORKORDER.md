@@ -4,7 +4,7 @@ wo_id: WO-02.4
 pr_id: PR-02
 title: "Stop gate implementing two-tier retry ceiling (max_attempts=5 vs max_structural_failures=2) and Case A/B + auditor checks"
 complexity: architect
-status: PENDING
+status: COMPLETED
 allowed_files:
   - daemon/workspace-plugin/principal-architect/scripts/stop_gate.py
   - tests/test_hooks_monitored_vs_autonomous.py
@@ -18,7 +18,21 @@ verification_command: "./.venv/bin/pytest tests/test_schemas.py tests/test_state
 max_attempts: 5
 max_structural_failures: 2
 spec_hash: 2e9932eb895dfa79afc92b34a4b4d7c4a74b1803d6c5b3202d83741b247e282a
-completion: null
+completion:
+  status: COMPLETED
+  attempt_num: 1
+  receipt_id: rcpt_fbfd82dc0557
+  commit_sha: b11eeffaa4a6ae0b632822cdba25780255117b4f
+  files_modified:
+    - daemon/workspace-plugin/principal-architect/scripts/stop_gate.py
+    - tests/test_hooks_monitored_vs_autonomous.py
+  verification_summary: "77 passed in 15.05s across test_schemas, test_state_db_and_sync, and test_hooks_monitored_vs_autonomous; ruff check clean."
+  out_of_scope_findings: []
+  escalation_request: null
+  decisions_made:
+    - "Passed target_role='pa' to schemas.EscalationRequest on fast-fail structural escalation to satisfy Pydantic schema validation."
+    - "Enforced bounded Stop continuations (attempt_num < max_attempts) across both Case A and Case B failure paths so Stop never loops infinitely."
+  dead_ends: []
 ---
 
 # WO-02.4 — `Stop` Gate, Two-Tier Retry Ceiling, and Completion Invariants
@@ -202,3 +216,18 @@ completion: null
 
 ## Completion Report
 <!-- Written by the Tier 3 Worker at task completion -->
+
+- **Status:** `COMPLETED` (`attempt_num: 1`)
+- **Receipt ID:** `rcpt_fbfd82dc0557` (`tree_hash`: `fbfd82dc055780cd4d4035a282261ff21c64e70cec5812b7de614823585dbf3d`)
+- **Files Modified:**
+  - `daemon/workspace-plugin/principal-architect/scripts/stop_gate.py`
+  - `tests/test_hooks_monitored_vs_autonomous.py`
+- **Verification Summary:** `77 passed in 15.05s` (`./.venv/bin/pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py && ./.venv/bin/ruff check daemon tests`)
+- **Key Implementation Details:**
+  - Implemented `stop_gate.py` with `< 1 ms` unenrolled fast-exit (`common.is_repo_enrolled`) and zero top-level `pydantic`, `yaml`, or `schemas` imports.
+  - Enforced the two-tier retry policy for `pa-engineer`: fast-fail structural escalation (`structural_failures >= max_structural_failures` [2] or `>= 3` consecutive `ERROR_MESSAGE` steps in `transcript.jsonl`) transitions `WORKORDER.md` to `ESCALATED_TO_PA` (`reason_code="STRUCTURAL_FAST_FAIL"`) and returns `{}` immediately; productive attempt ceiling (`attempt_num >= max_attempts` [5]) transitions `WORKORDER.md` to `BLOCKED`, records `MAX_ATTEMPTS_EXCEEDED`, enqueues `🔬 [Debug <WO-ID>]` in `attention_queue`, and returns `{}`.
+  - Enforced Case A (blocker/escalation report validation) and Case B (valid receipt matching `post_tool_receipt.compute_tree_hash`, clean `git status --porcelain` on `allowed_files` + `WORKORDER.md` with `<WO-ID>:` commit subject, and valid `CompletionReport` with intact Part I `spec_hash`), incrementing `attempt_num` on every `"decision": "continue"` response so continuations are strictly bounded (Charter R5).
+  - Implemented `pa-auditor` Stop gate requiring a valid `AuditReport` (`AUDIT-round-*.md`) matching current `HEAD` SHA with a bounded 5-continuation ceiling.
+  - Added 5 unit and subprocess tests in `tests/test_hooks_monitored_vs_autonomous.py` covering unenrolled fast-exit/import purity, structural/transcript fast-fail, bounded productive retries & debugger escalation, Case A/B completion invariants, and Auditor Stop checks.
+- **Out-of-Scope Findings:** None.
+

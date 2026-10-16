@@ -18,6 +18,7 @@ import post_tool_receipt
 import pre_tool_gate
 import pytest
 import schemas
+import stop_gate
 from state_db import Registry, StateDB
 
 
@@ -1625,3 +1626,386 @@ def test_pa_wo_verify_end_to_end(
     assert wo_row.id == "WO-02.1"
     assert wo_row.status == schemas.WorkOrderStatus.COMPLETED
     assert wo_row.attempts >= 1
+
+
+# ---------------------------------------------------------------------------
+# WO-02.4: stop_gate.py tests (Fast-exit, Two-Tier Retry Ceiling, Case A/B, Auditor)
+# ---------------------------------------------------------------------------
+
+
+def test_stop_gate_unenrolled_fast_exit_and_import_purity(
+    tmp_path: Path, daemon_home: Path
+) -> None:
+    """Verify stop_gate.py unenrolled fast-exit (<1ms) and zero pydantic/yaml/schemas imports."""
+    _ = daemon_home
+    unenrolled = tmp_path / "unenrolled-stop-repo"
+    unenrolled.mkdir(parents=True, exist_ok=True)
+
+    payload: dict[str, Any] = {
+        "workspacePaths": [str(unenrolled)],
+        "conversationId": "conv-eng",
+        "terminationReason": "NO_TOOL_CALL",
+    }
+
+    # Warm-up call
+    assert stop_gate.evaluate_stop(payload) == {}
+
+    iterations = 25
+    start = time.perf_counter()
+    for _ in range(iterations):
+        res = stop_gate.evaluate_stop(payload)
+        assert res == {}
+    elapsed_ms = ((time.perf_counter() - start) * 1000.0) / iterations
+    assert elapsed_ms < 1.0, f"Unenrolled fast-exit took {elapsed_ms:.3f} ms (limit < 1.0 ms)"
+
+    # Verify import purity on the unenrolled path in a fresh subprocess
+    script_path = Path(stop_gate.__file__).resolve()
+    scripts_dir = str(script_path.parent)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = scripts_dir
+    code = (
+        "import sys, stop_gate\n"
+        f"res = stop_gate.evaluate_stop({{'workspacePaths': [{str(unenrolled)!r}]}})\n"
+        "assert res == {}\n"
+        "assert 'pydantic' not in sys.modules\n"
+        "assert 'yaml' not in sys.modules\n"
+        "assert 'schemas' not in sys.modules\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert proc.returncode == 0, f"Import purity failed:\n{proc.stdout}\n{proc.stderr}"
+
+    # Verify CLI subprocess execution on unenrolled repo outputs {} and exits 0
+    cli_proc = subprocess.run(
+        [sys.executable, str(script_path)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert cli_proc.returncode == 0
+    assert json.loads(cli_proc.stdout.strip()) == {}
+
+
+def test_stop_gate_two_tier_retry_fast_fail_structural_and_transcript_errors(
+    tmp_repo: Path, daemon_home: Path
+) -> None:
+    """Verify fast-fail structural escalation on structural_failures >= 2 or 3 consecutive error steps."""
+    ws_dir, _, wo_path = _setup_enrolled_workspace(tmp_repo, daemon_home, mode="autonomous")
+    db_file = ws_dir / ".state" / "state.db"
+
+    # 1. structural_failures >= 2 (at attempt_num == 1) -> fast-fails immediately with {}
+    with StateDB(db_file) as db:
+        db.update_session("conv-eng", attempt_num=1, structural_failures=2)
+
+    res_struct = stop_gate.evaluate_stop(
+        {"conversationId": "conv-eng", "terminationReason": "NO_TOOL_CALL"},
+        repo_root=tmp_repo,
+    )
+    assert res_struct == {}
+
+    wo_after = schemas.load_workorder(wo_path)
+    assert wo_after.spec.status == schemas.WorkOrderStatus.ESCALATED_TO_PA
+    assert wo_after.spec.completion is not None
+    assert wo_after.spec.completion.status == schemas.WorkOrderStatus.ESCALATED_TO_PA
+    assert wo_after.spec.completion.escalation_request is not None
+    assert wo_after.spec.completion.escalation_request.reason_code == "STRUCTURAL_FAST_FAIL"
+    assert schemas.verify_spec_hash(wo_path) is True
+
+    with StateDB(db_file) as db:
+        escs = db.open_escalations(wo_id="WO-02.1")
+        assert len(escs) == 1
+        assert escs[0]["reason_code"] == "STRUCTURAL_FAST_FAIL"
+        assert escs[0]["blocker_type"] == "structural"
+        attn = db.list_open(pr_id="PR-02")
+        assert any("Structural blocker on WO-02.1" in i["title"] for i in attn)
+
+    # 2. Reset WORKORDER.md to PENDING and structural_failures=0, but provide a transcript with 3 consecutive ERROR_MESSAGE steps
+    wo_after.spec.status = schemas.WorkOrderStatus.PENDING
+    wo_after.spec.completion = None
+    wo_path.write_text(
+        schemas.dump_document(wo_after.spec, wo_after.sections),
+        encoding="utf-8",
+    )
+    with StateDB(db_file) as db:
+        db.update_session("conv-eng", attempt_num=1, structural_failures=0)
+
+    transcript_file = tmp_repo / "transcript_errors.jsonl"
+    transcript_steps = [
+        {"step_index": 0, "type": "USER_INPUT", "status": "DONE", "content": "Start work"},
+        {"step_index": 1, "type": "ERROR_MESSAGE", "status": "ERROR", "content": "Err 1"},
+        {"step_index": 2, "type": "CORTEX_STEP_TYPE_ERROR_MESSAGE", "status": "DONE", "content": "Err 2"},
+        {"step_index": 3, "type": "PLANNER_RESPONSE", "status": "ERROR", "content": "Err 3"},
+    ]
+    transcript_file.write_text(
+        "\n".join(json.dumps(s) for s in transcript_steps) + "\n",
+        encoding="utf-8",
+    )
+
+    res_err_steps = stop_gate.evaluate_stop(
+        {
+            "conversationId": "conv-eng",
+            "terminationReason": "NO_TOOL_CALL",
+            "transcriptPath": f"file://{transcript_file}",
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_err_steps == {}
+
+    wo_after_err = schemas.load_workorder(wo_path)
+    assert wo_after_err.spec.status == schemas.WorkOrderStatus.ESCALATED_TO_PA
+    with StateDB(db_file) as db:
+        escs2 = db.open_escalations(wo_id="WO-02.1")
+        assert len(escs2) == 2
+
+
+def test_stop_gate_productive_retries_and_bounded_continuation_ceiling(
+    tmp_repo: Path, daemon_home: Path
+) -> None:
+    """Verify productive retries (1..4 -> continue) and 5-attempt ceiling (5 -> BLOCKED + pa-debugger)."""
+    ws_dir, _, wo_path = _setup_enrolled_workspace(tmp_repo, daemon_home, mode="autonomous")
+    db_file = ws_dir / ".state" / "state.db"
+
+    # Calling evaluate_stop repeatedly starting at attempt_num=1 must return "continue" 4 times
+    # (1->2, 2->3, 3->4, 4->5) and on the 5th call (attempt_num=5) terminate with {} and BLOCKED.
+    for expected_att in (1, 2, 3, 4):
+        res = stop_gate.evaluate_stop(
+            {"conversationId": "conv-eng", "terminationReason": "NO_TOOL_CALL"},
+            repo_root=tmp_repo,
+        )
+        assert res["decision"] == "continue"
+        assert f"(attempt {expected_att}/5)" in res["reason"]
+        assert "missing verification receipt" in res["reason"]
+        with StateDB(db_file) as db:
+            sess = db.get_session("conv-eng")
+            assert sess is not None
+            assert sess["attempt_num"] == expected_att + 1
+
+    # 5th call (attempt_num == 5): hits productive ceiling, marks BLOCKED, enqueues pa-debugger, returns {}
+    res_ceiling = stop_gate.evaluate_stop(
+        {"conversationId": "conv-eng", "terminationReason": "NO_TOOL_CALL"},
+        repo_root=tmp_repo,
+    )
+    assert res_ceiling == {}
+
+    wo_blocked = schemas.load_workorder(wo_path)
+    assert wo_blocked.spec.status == schemas.WorkOrderStatus.BLOCKED
+    assert wo_blocked.spec.completion is not None
+    assert wo_blocked.spec.completion.status == schemas.WorkOrderStatus.BLOCKED
+    assert schemas.verify_spec_hash(wo_path) is True
+
+    with StateDB(db_file) as db:
+        escs = db.open_escalations(wo_id="WO-02.1")
+        assert len(escs) == 1
+        assert escs[0]["target_role"] == "debugger"
+        assert escs[0]["reason_code"] == "MAX_ATTEMPTS_EXCEEDED"
+        attn = db.list_open(pr_id="PR-02")
+        assert any(
+            i["kind"] == "debugger_escalation" and "🔬 [Debug WO-02.1]" in i["title"]
+            for i in attn
+        )
+
+
+def test_stop_gate_case_a_and_case_b_invariants(
+    tmp_repo: Path, daemon_home: Path
+) -> None:
+    """Verify Case A (explicit escalation) and Case B (receipt, git clean/commit, CompletionReport)."""
+    ws_dir, _, wo_path = _setup_enrolled_workspace(tmp_repo, daemon_home, mode="autonomous")
+    (ws_dir / ".gitignore").write_text(".state/\n", encoding="utf-8")
+    db_file = ws_dir / ".state" / "state.db"
+
+    # 1. Case A with missing CompletionReport -> returns "continue" and increments attempt_num
+    wo_doc = schemas.load_workorder(wo_path)
+    wo_doc.spec.status = schemas.WorkOrderStatus.ESCALATED_TO_PA
+    wo_doc.spec.completion = None
+    wo_path.write_text(schemas.dump_document(wo_doc.spec, wo_doc.sections), encoding="utf-8")
+
+    res_case_a_incomplete = stop_gate.evaluate_stop(
+        {"conversationId": "conv-eng", "terminationReason": "NO_TOOL_CALL"},
+        repo_root=tmp_repo,
+    )
+    assert res_case_a_incomplete["decision"] == "continue"
+    assert "lacks a valid CompletionReport/escalation_request" in res_case_a_incomplete["reason"]
+
+    # 2. Case A with valid escalation_request -> records escalation in state.db and returns {}
+    wo_doc.spec.completion = schemas.CompletionReport(
+        status=schemas.WorkOrderStatus.ESCALATED_TO_PA,
+        attempt_num=2,
+        verification_summary="Blocked by boundary restriction on src/extra.py.",
+        escalation_request=schemas.EscalationRequest(
+            blocker_type="boundary",
+            reason_code="BOUNDARY_EXPANSION_NEEDED",
+            target_role="pa",
+            requested_files=["src/extra.py"],
+            summary="Need src/extra.py added to allowed_files.",
+        ),
+    )
+    wo_path.write_text(schemas.dump_document(wo_doc.spec, wo_doc.sections), encoding="utf-8")
+
+    res_case_a_ok = stop_gate.evaluate_stop(
+        {"conversationId": "conv-eng", "terminationReason": "NO_TOOL_CALL"},
+        repo_root=tmp_repo,
+    )
+    assert res_case_a_ok == {}
+    with StateDB(db_file) as db:
+        escs = db.open_escalations(wo_id="WO-02.1")
+        assert len(escs) == 1
+        assert escs[0]["reason_code"] == "BOUNDARY_EXPANSION_NEEDED"
+        assert json.loads(escs[0]["requested_files_json"]) == ["src/extra.py"]
+
+    # 3. Reset to Case B and test individual failure modes before full `pa wo verify` success
+    with StateDB(db_file) as db:
+        db.update_session("conv-eng", attempt_num=1, structural_failures=0)
+
+    wo_doc = schemas.load_workorder(wo_path)
+    wo_doc.spec.status = schemas.WorkOrderStatus.PENDING
+    wo_doc.spec.completion = None
+    wo_doc.spec.verification_command = (
+        f'{sys.executable} -c "import pathlib; '
+        "assert 'READY = True' in pathlib.Path('src/allowed.py').read_text(encoding='utf-8')\""
+    )
+    wo_doc.spec.spec_hash = schemas.compute_spec_hash(wo_doc.spec, wo_doc.sections)
+    wo_path.write_text(schemas.dump_document(wo_doc.spec, wo_doc.sections), encoding="utf-8")
+
+    subprocess.run(["git", "add", "."], cwd=tmp_repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "Baseline before WO-02.1"],
+        cwd=tmp_repo,
+        check=True,
+        capture_output=True,
+    )
+
+    allowed_file = tmp_repo / "src" / "allowed.py"
+    allowed_file.parent.mkdir(parents=True, exist_ok=True)
+    allowed_file.write_text("READY = True\n", encoding="utf-8")
+
+    # Run `pa wo verify WO-02.1` so all 3 Case B invariants are satisfied
+    rc_verify = pa_cli.main(["wo", "verify", "WO-02.1", "--path", str(tmp_repo)])
+    assert rc_verify == 0
+
+    # Case B success: evaluate_stop returns {}
+    assert (
+        stop_gate.evaluate_stop(
+            {"conversationId": "conv-eng", "terminationReason": "NO_TOOL_CALL"},
+            repo_root=tmp_repo,
+        )
+        == {}
+    )
+
+    # Case B failure mode (a) & (b): post-verify edit to src/allowed.py -> stale receipt & uncommitted file
+    allowed_file.write_text("READY = True\nEXTRA = 1\n", encoding="utf-8")
+    res_stale = stop_gate.evaluate_stop(
+        {"conversationId": "conv-eng", "terminationReason": "NO_TOOL_CALL"},
+        repo_root=tmp_repo,
+    )
+    assert res_stale["decision"] == "continue"
+    assert "missing verification receipt" in res_stale["reason"]
+    assert "uncommitted files in allowed_files or WORKORDER.md" in res_stale["reason"]
+
+    # Restore src/allowed.py to clean verified state
+    allowed_file.write_text("READY = True\n", encoding="utf-8")
+    assert (
+        stop_gate.evaluate_stop(
+            {"conversationId": "conv-eng", "terminationReason": "NO_TOOL_CALL"},
+            repo_root=tmp_repo,
+        )
+        == {}
+    )
+
+    # Case B failure mode (c): incomplete CompletionReport (receipt_id=None) -> "continue"
+    with StateDB(db_file) as db:
+        db.update_session("conv-eng", attempt_num=1, structural_failures=0)
+    wo_verified = schemas.load_workorder(wo_path)
+    assert wo_verified.spec.completion is not None
+    wo_verified.spec.completion.receipt_id = None
+    wo_path.write_text(
+        schemas.dump_document(wo_verified.spec, wo_verified.sections),
+        encoding="utf-8",
+    )
+    res_bad_comp = stop_gate.evaluate_stop(
+        {"conversationId": "conv-eng", "terminationReason": "NO_TOOL_CALL"},
+        repo_root=tmp_repo,
+    )
+    assert res_bad_comp["decision"] == "continue"
+    assert "incomplete Completion Report" in res_bad_comp["reason"]
+
+
+def test_stop_gate_auditor_requires_audit_report_for_current_head(
+    tmp_repo: Path, daemon_home: Path
+) -> None:
+    """Verify pa-auditor Stop gate blocks until AUDIT-round-*.md exists for current HEAD."""
+    ws_dir, proj_path, _ = _setup_enrolled_workspace(tmp_repo, daemon_home, mode="autonomous")
+    db_file = ws_dir / ".state" / "state.db"
+
+    # 1. Without AUDIT-round-1.md -> returns "continue" and increments attempt_num
+    res_missing = stop_gate.evaluate_stop(
+        {"conversationId": "conv-auditor", "terminationReason": "NO_TOOL_CALL"},
+        repo_root=tmp_repo,
+    )
+    assert res_missing["decision"] == "continue"
+    assert "pa pr post-audit PR-02" in res_missing["reason"]
+    with StateDB(db_file) as db:
+        sess = db.get_session("conv-auditor")
+        assert sess is not None
+        assert sess["attempt_num"] == 2
+
+    # 2. Write AUDIT-round-1.md with a stale SHA -> still returns "continue"
+    audit_path = proj_path.parent / "AUDIT-round-1.md"
+    stale_audit = schemas.AuditReport(
+        pr_id="PR-02",
+        audit_round=1,
+        head_sha="000000000000",
+        verdict="APPROVED",
+        findings=[],
+    )
+    audit_path.write_text(
+        schemas.dump_document(stale_audit, [schemas.Section("## Audit Summary", "Stale.\n")]),
+        encoding="utf-8",
+    )
+    res_stale = stop_gate.evaluate_stop(
+        {"conversationId": "conv-auditor", "terminationReason": "NO_TOOL_CALL"},
+        repo_root=tmp_repo,
+    )
+    assert res_stale["decision"] == "continue"
+
+    # 3. Update AUDIT-round-1.md to match current HEAD SHA -> returns {}
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    valid_audit = schemas.AuditReport(
+        pr_id="PR-02",
+        audit_round=1,
+        head_sha=head_sha,
+        verdict="CHANGES_REQUESTED",
+        findings=[
+            schemas.AuditFinding(
+                id="BLOCKING-1",
+                axis="edge_cases",
+                file_path="src/allowed.py",
+                summary="Handle empty input",
+                remediation="Add guard clause",
+            )
+        ],
+    )
+    audit_path.write_text(
+        schemas.dump_document(valid_audit, [schemas.Section("## Audit Summary", "Findings.\n")]),
+        encoding="utf-8",
+    )
+    assert (
+        stop_gate.evaluate_stop(
+            {"conversationId": "conv-auditor", "terminationReason": "NO_TOOL_CALL"},
+            repo_root=tmp_repo,
+        )
+        == {}
+    )
+
