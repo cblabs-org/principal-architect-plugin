@@ -10,7 +10,7 @@
 ## Active Projects
 | Project | Status | Modules | Context |
 |---|---|---|---|
-| pr-02-agents-and-dual-mode-hooks | APPROVED — WO4/6 in progress (`wo4-stop-gate-two-tier-retry`) | agents, hooks.json, escalation, pre-invocation, pre-tool-gate, post-tool-receipt, stop-gate, pa-cli (approve-plan/wo-verify/escalate) | [PROJECT.md](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) |
+| pr-02-agents-and-dual-mode-hooks | APPROVED — WO5/6 in progress (`wo5-pre-invocation-role-binding-and-injection`) | agents, hooks.json, escalation, pre-invocation, pre-tool-gate, post-tool-receipt, stop-gate, pa-cli (approve-plan/wo-verify/escalate) | [PROJECT.md](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) |
 
 ## Recently Completed (last 5)
 | Project | Completed | Modules | Key Outcome |
