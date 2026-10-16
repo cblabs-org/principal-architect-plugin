@@ -10,7 +10,7 @@
 ## Active Projects
 | Project | Status | Modules | Context |
 |---|---|---|---|
-| pr-01-core-schemas-and-enrollment | IN_PROGRESS (WO1/6 — wo1-dev-bootstrap-and-package-skeleton) | daemon-package, schemas, state-db, common, pa-cli (enroll/unenroll/status/mode), templates, tests, dev-bootstrap | [PROJECT.md](../pr-01-core-schemas-and-enrollment/PROJECT.md) |
+| pr-01-core-schemas-and-enrollment | IN_PROGRESS (WO2/6 — wo2-common-stdlib-foundations) | daemon-package, schemas, state-db, common, pa-cli (enroll/unenroll/status/mode), templates, tests, dev-bootstrap | [PROJECT.md](../pr-01-core-schemas-and-enrollment/PROJECT.md) |
 
 ## Recently Completed (last 5)
 | Project | Completed | Modules | Key Outcome |

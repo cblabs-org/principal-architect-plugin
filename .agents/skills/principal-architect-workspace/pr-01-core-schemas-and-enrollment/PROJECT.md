@@ -40,14 +40,14 @@ work_orders:
     slug: wo1-dev-bootstrap-and-package-skeleton
     title: "Developer toolchain bootstrap, pyproject.toml, plugin manifests, and test floor skeleton"
     complexity: standard
-    status: IN_PROGRESS
-    attempts: 0
-    commit_sha: null
+    status: COMPLETED
+    attempts: 1
+    commit_sha: "84c04d8e7c54cde5b3852f3750504e652aed5d44"
   - id: WO-01.2
     slug: wo2-common-stdlib-foundations
     title: "Stdlib-only common.py foundations, fast enrollment check, and shared pytest fixtures"
     complexity: standard
-    status: PENDING
+    status: IN_PROGRESS
     attempts: 0
     commit_sha: null
   - id: WO-01.3
@@ -210,8 +210,8 @@ Repository inspection at `main` confirms that `SPEC.md` (v1.1), `docs/positionin
 
 ### 3.2 Work Order Ledger
 
-- **[-] [wo1-dev-bootstrap-and-package-skeleton](wo1-dev-bootstrap-and-package-skeleton/WORKORDER.md)** (`WO-01.1`, `complexity: standard`, base: `main`): Provision `./.venv` via `scripts/dev-bootstrap.sh`, configure `pyproject.toml`, root and `daemon/` `.gitignore` files, `daemon/plugin.json`, `daemon/workspace-plugin/principal-architect/plugin.json`, `scripts/__init__.py`, and initial test suite skeleton (`tests/conftest.py`, `tests/test_schemas.py`, `tests/test_state_db_and_sync.py`).
-- **[ ] [wo2-common-stdlib-foundations](wo2-common-stdlib-foundations/WORKORDER.md)** (`WO-01.2`, `complexity: standard`, base: `pr-01-core-schemas-and-enrollment/wo1-dev-bootstrap-and-package-skeleton`): Implement stdlib-only `scripts/common.py` (`find_repo_root`, `workspace_dir`, `daemon_home`, `is_repo_enrolled`, `read_transcript`, `latest_checkpoint_step`, `run`, `render_template`), shared fixtures in `tests/conftest.py` (`tmp_repo`, `daemon_home`, `fake_runner`), and unit/import-purity tests in `tests/test_state_db_and_sync.py`.
+- **[x] [wo1-dev-bootstrap-and-package-skeleton](wo1-dev-bootstrap-and-package-skeleton/WORKORDER.md)** (`WO-01.1`, `complexity: standard`, base: `main`, commit `84c04d8`): Provision `./.venv` via `scripts/dev-bootstrap.sh`, configure `pyproject.toml`, root and `daemon/` `.gitignore` files, `daemon/plugin.json`, `daemon/workspace-plugin/principal-architect/plugin.json`, `scripts/__init__.py`, and initial test suite skeleton (`tests/conftest.py`, `tests/test_schemas.py`, `tests/test_state_db_and_sync.py`).
+- **[-] [wo2-common-stdlib-foundations](wo2-common-stdlib-foundations/WORKORDER.md)** (`WO-01.2`, `complexity: standard`, base: `pr-01-core-schemas-and-enrollment/wo1-dev-bootstrap-and-package-skeleton`): Implement stdlib-only `scripts/common.py` (`find_repo_root`, `workspace_dir`, `daemon_home`, `is_repo_enrolled`, `read_transcript`, `latest_checkpoint_step`, `run`, `render_template`), shared fixtures in `tests/conftest.py` (`tmp_repo`, `daemon_home`, `fake_runner`), and unit/import-purity tests in `tests/test_state_db_and_sync.py`.
 - **[ ] [wo3-schemas-models-and-document-layer](wo3-schemas-models-and-document-layer/WORKORDER.md)** (`WO-01.3`, `complexity: architect`, base: `pr-01-core-schemas-and-enrollment/wo2-common-stdlib-foundations`): Implement `scripts/schemas.py` (all SPEC §6.1–6.4 Pydantic v2 models, enums, `EscalationRequest`, `Section`, `parse_document`, `dump_document`, `load_program`/`load_project`/`load_workorder`/`load_audit`, `compute_charter_hash`, `compute_spec_hash`, `verify_charter_hash`, `verify_spec_hash`) and comprehensive tests in `tests/test_schemas.py` including dogfood verification of this committed `PROJECT.md` and `PROGRAM.md`.
 - **[ ] [wo4-state-db-and-registry](wo4-state-db-and-registry/WORKORDER.md)** (`WO-01.4`, `complexity: standard`, base: `pr-01-core-schemas-and-enrollment/wo3-schemas-models-and-document-layer`): Implement `scripts/state_db.py` (`TABLES`, `StateDB` with WAL + `busy_timeout=5000` + `user_version=1` + typed accessors for all 5 tables, and atomic `Registry`) plus unit tests in `tests/test_state_db_and_sync.py`.
 - **[ ] [wo5-templates](wo5-templates/WORKORDER.md)** (`WO-01.5`, `complexity: mechanical`, base: `pr-01-core-schemas-and-enrollment/wo4-state-db-and-registry`): Author the seven `.md.tpl` templates (`PROGRAM`, `PROJECT`, `WORKORDER`, `AUDIT`, `MEMORY`, `MODULE_INDEX`, `PROJECT_INDEX`), template helpers in `scripts/common.py`, and template render-and-validate tests in `tests/test_schemas.py`.
@@ -224,3 +224,4 @@ Repository inspection at `main` confirms that `SPEC.md` (v1.1), `docs/positionin
 ## 4. Outcome & Session Log
 
 - **2026-10-16 (`status: APPROVED`):** User approved the full Programme Plan (`PROGRAM.md` `status: APPROVED`) and explicitly authorized autonomous execution and sub-agent spawning across the programme (Decision D11, 2026-10-16). Part II Work Order decomposition (`WO-01.1` through `WO-01.6`) authored and approved under standing user programme authorization (`approved_at: 2026-10-16T18:50:00Z`).
+- **2026-10-16 (`WO-01.1 COMPLETED`, `84c04d8`):** Delivered `scripts/dev-bootstrap.sh` (3-strategy fallback: `uv` -> `ensurepip` -> `--without-pip` + `get-pip.py`, verified on reference Python 3.13 host and idempotent on re-run), `pyproject.toml`, root and `daemon/` `.gitignore` files, `daemon/plugin.json`, `daemon/workspace-plugin/principal-architect/plugin.json`, `scripts/__init__.py`, and initial smoke test floor (3 passed, `ruff check` clean).
