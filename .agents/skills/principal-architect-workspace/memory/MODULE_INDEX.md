@@ -3,10 +3,11 @@
      work has touched a specific domain or module.
      Domains are architect-defined based on the codebase architecture (SPEC.md §4.1). -->
 
-## daemon-package (`daemon/plugin.json`, `daemon/workspace-plugin/principal-architect/plugin.json`, `scripts/dev-bootstrap.sh`, `pyproject.toml`, packaging)
+## daemon-package (`daemon/plugin.json`, `daemon/workspace-plugin/principal-architect/plugin.json`, `scripts/dev-bootstrap.sh`, `scripts/install.sh`, `scripts/uninstall.sh`, `pyproject.toml`, `README.md`, packaging)
 | Project | Scope | Context |
 |---|---|---|
 | [pr-01-core-schemas-and-enrollment](../pr-01-core-schemas-and-enrollment/PROJECT.md) | Delivered `daemon/plugin.json` (`pa-daemon` v0.1.0), `daemon/workspace-plugin/principal-architect/plugin.json` (`principal-architect` v0.1.0), `pyproject.toml`, root and `daemon/` `.gitignore`, `README.md`, and 3-strategy `scripts/dev-bootstrap.sh`. | [PROJECT.md](../pr-01-core-schemas-and-enrollment/PROJECT.md) |
+| [pr-04-cockpit-auxpane-ui](../pr-04-cockpit-auxpane-ui/PROJECT.md) | Delivered `scripts/install.sh` and `scripts/uninstall.sh` (`chmod +x`, honouring `PA_DAEMON_HOME` and `PA_BIN_DIR`, preserving `<PA_DAEMON_HOME>/state/registry.json` across upgrades, and managing the `pa` CLI symlink) and the full user-facing `README.md`. | [PROJECT.md](../pr-04-cockpit-auxpane-ui/PROJECT.md) |
 
 ## common (`scripts/common.py` — stdlib-only `<1ms` fast-path helpers, template rendering, subprocess runner)
 | Project | Scope | Context |
@@ -58,6 +59,7 @@
 ## cockpit (`daemon/sidecars/pa_cockpit/`, `scripts/cockpit.py`)
 | Project | Scope | Context |
 |---|---|---|
+| [pr-04-cockpit-auxpane-ui](../pr-04-cockpit-auxpane-ui/PROJECT.md) | Delivered `daemon/sidecars/pa_cockpit/sidecar.json` (`SIDECAR_UI_ENTRYPOINT_AUX_PANE`, zero `agent_permissions`), stdlib `CockpitHTTPServer` + `create_server` + `build_workspace_state` in `daemon/workspace-plugin/principal-architect/scripts/cockpit.py` (`GET /api/workspaces`, `GET /api/state`, `GET /api/events` SSE with `?once=1` and live mtime fingerprinting, `POST /api/{mode,pr/approve-plan,escalation/resolve,pr/start,wo/debug,pr/graduate,sync}`), and `daemon/sidecars/pa_cockpit/ui/{index.html,styles.css,app.js}` implementing Zone 1/2/3 with host CSS variables and guarded `window.sidecar` bindings. | [PROJECT.md](../pr-04-cockpit-auxpane-ui/PROJECT.md) |
 
 ## templates (`skills/principal-architect/templates/*.tpl`)
 | Project | Scope | Context |
@@ -70,3 +72,4 @@
 | [pr-01-core-schemas-and-enrollment](../pr-01-core-schemas-and-enrollment/PROJECT.md) | Delivered `tests/conftest.py` (`tmp_repo`, `daemon_home`, `fake_runner`), `tests/test_schemas.py` (17 tests), and `tests/test_state_db_and_sync.py` (34 tests). | [PROJECT.md](../pr-01-core-schemas-and-enrollment/PROJECT.md) |
 | [pr-02-agents-and-dual-mode-hooks](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) | Delivered `tests/test_hooks_monitored_vs_autonomous.py` (34 unit, subprocess, CLI, and dogfood tests; total floor 85 passed). | [PROJECT.md](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) |
 | [pr-03-vcs-bus-models-and-memory-modes](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) | Delivered `tests/test_github_and_local_git_bus.py` (23 tests covering `LocalGitBus`, `GitHubBus`, `models.py`, and end-to-end `pa` CLI lifecycles + R6 graduation gate) and `tests/test_memory_modes.py` (7 tests covering `external` vs. `builtin` graduation and byte-stability; total floor 115 passed). | [PROJECT.md](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) |
+| [pr-04-cockpit-auxpane-ui](../pr-04-cockpit-auxpane-ui/PROJECT.md) | Delivered `tests/test_cockpit_api.py` (6 integration tests covering `sidecar.json` contract, `GET /api/{workspaces,state}`, `GET /api/events` SSE once & live push, all 7 `POST` mutation endpoints, frontend DOM/CSS/JS contracts, and isolated `tmp_path` `install.sh`/`uninstall.sh` registry preservation; total floor 121 passed). | [PROJECT.md](../pr-04-cockpit-auxpane-ui/PROJECT.md) |
