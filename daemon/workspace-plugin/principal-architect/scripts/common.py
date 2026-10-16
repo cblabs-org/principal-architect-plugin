@@ -206,3 +206,16 @@ def render_template(template_text: str, values: Mapping[str, Any]) -> str:
         return str(values[key])
 
     return pattern.sub(_repl, template_text)
+
+
+def render_template_file(template_name: str, values: Mapping[str, Any] | None = None) -> str:
+    """Read a template file by name (adding .md.tpl if needed) and render it with values."""
+    name = str(template_name)
+    if not name.endswith(".tpl"):
+        name = f"{name}.md.tpl"
+    p = templates_dir() / name
+    if not p.is_file():
+        raise FileNotFoundError(f"Template file not found: {p}")
+    text = p.read_text(encoding="utf-8")
+    return render_template(text, values or {})
+

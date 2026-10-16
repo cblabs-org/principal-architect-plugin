@@ -654,17 +654,110 @@ def test_dogfood_committed_programme_project_and_workorders() -> None:
     assert verify_charter_hash(proj_doc) is True
     assert verify_charter_hash(proj_path) is True
 
-    # 3. WORKORDER.md files for WO-01.1, WO-01.2, and WO-01.3
+    # 3. WORKORDER.md files for WO-01.1 through WO-01.5
     for wo_slug in (
         "wo1-dev-bootstrap-and-package-skeleton",
         "wo2-common-stdlib-foundations",
         "wo3-schemas-models-and-document-layer",
+        "wo4-state-db-and-registry",
+        "wo5-templates",
     ):
         wo_path = ws_dir / "pr-01-core-schemas-and-enrollment" / wo_slug / "WORKORDER.md"
         wo_doc = load_workorder(wo_path)
         assert wo_doc.spec.pr_id == "PR-01"
         assert verify_spec_hash(wo_doc) is True, f"spec_hash verification failed for {wo_slug}"
         assert verify_spec_hash(wo_path) is True
+
+
+def test_templates_exist_and_render_successfully(tmp_path: Path) -> None:
+    t_dir = common.templates_dir()
+    for name in (
+        "PROGRAM.md.tpl",
+        "PROJECT.md.tpl",
+        "WORKORDER.md.tpl",
+        "AUDIT.md.tpl",
+        "MEMORY.md.tpl",
+        "MODULE_INDEX.md.tpl",
+        "PROJECT_INDEX.md.tpl",
+    ):
+        assert (t_dir / name).is_file(), f"Template {name} must exist"
+
+    # Render PROGRAM
+    prog_text = common.render_template_file(
+        "PROGRAM",
+        {
+            "programme_id": "prog-test",
+            "title": "Test Programme",
+            "base_branch": "main",
+        },
+    )
+    prog_path = tmp_path / "PROGRAM.md"
+    prog_path.write_text(prog_text, encoding="utf-8")
+    doc_prog = load_program(prog_path)
+    assert doc_prog.spec.programme_id == "prog-test"
+
+    # Render PROJECT
+    proj_text = common.render_template_file(
+        "PROJECT",
+        {
+            "pr_id": "PR-01",
+            "programme_id": "prog-test",
+            "slug": "pr-01-test",
+            "title": "Test PR",
+            "branch": "feat/pr-01-test",
+            "base_branch": "main",
+            "allowed_module": "daemon/",
+            "verification_command": "pytest",
+        },
+    )
+    proj_path = tmp_path / "PROJECT.md"
+    proj_path.write_text(proj_text, encoding="utf-8")
+    doc_proj = load_project(proj_path)
+    assert doc_proj.spec.charter.pr_id == "PR-01"
+
+    # Render WORKORDER
+    wo_text = common.render_template_file(
+        "WORKORDER",
+        {
+            "wo_id": "WO-01.1",
+            "pr_id": "PR-01",
+            "title": "Test Work Order",
+            "complexity": "mechanical",
+            "allowed_file": "daemon/",
+            "verification_command": "pytest",
+        },
+    )
+    wo_path = tmp_path / "WORKORDER.md"
+    wo_path.write_text(wo_text, encoding="utf-8")
+    doc_wo = load_workorder(wo_path)
+    assert doc_wo.spec.wo_id == "WO-01.1"
+
+    # Render AUDIT
+    audit_text = common.render_template_file(
+        "AUDIT",
+        {
+            "pr_id": "PR-01",
+            "audit_round": 1,
+            "head_sha": "abcdef1234567",
+            "auditor_harness": "cli",
+            "verdict": "APPROVED",
+        },
+    )
+    audit_path = tmp_path / "AUDIT-round-1.md"
+    audit_path.write_text(audit_text, encoding="utf-8")
+    doc_audit = load_audit(audit_path)
+    assert doc_audit.spec.verdict == "APPROVED"
+
+    # Render memory templates
+    mem_text = common.render_template_file("MEMORY", {"updated_at": "2026-10-16"})
+    assert "{{" not in mem_text
+    assert "PROJECT_INDEX.md" in mem_text
+
+    mod_text = common.render_template_file("MODULE_INDEX", {})
+    assert "{{" not in mod_text
+
+    proj_idx_text = common.render_template_file("PROJECT_INDEX", {})
+    assert "{{" not in proj_idx_text
 
 
 def test_canonical_json_and_norm_section_helpers() -> None:

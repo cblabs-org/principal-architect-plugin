@@ -4,7 +4,7 @@ wo_id: WO-01.5
 pr_id: PR-01
 title: "Seven Split-Authority and built-in memory .md.tpl templates and validation tests"
 complexity: mechanical
-status: IN_PROGRESS
+status: COMPLETED
 allowed_files:
   - daemon/workspace-plugin/principal-architect/skills/principal-architect/templates/PROGRAM.md.tpl
   - daemon/workspace-plugin/principal-architect/skills/principal-architect/templates/PROJECT.md.tpl
@@ -25,7 +25,29 @@ verification_command: "./.venv/bin/pytest tests/test_schemas.py tests/test_state
 max_attempts: 5
 max_structural_failures: 2
 spec_hash: "c50767609a217366f744e9546d52a7d4f8e4de04cfe821062a64170f8e9ac03f"
-completion: null
+completion:
+  status: COMPLETED
+  attempt_num: 1
+  receipt_id: "rcpt-wo01.5-templates"
+  commit_sha: null
+  files_modified:
+    - daemon/workspace-plugin/principal-architect/skills/principal-architect/templates/PROGRAM.md.tpl
+    - daemon/workspace-plugin/principal-architect/skills/principal-architect/templates/PROJECT.md.tpl
+    - daemon/workspace-plugin/principal-architect/skills/principal-architect/templates/WORKORDER.md.tpl
+    - daemon/workspace-plugin/principal-architect/skills/principal-architect/templates/AUDIT.md.tpl
+    - daemon/workspace-plugin/principal-architect/skills/principal-architect/templates/MEMORY.md.tpl
+    - daemon/workspace-plugin/principal-architect/skills/principal-architect/templates/MODULE_INDEX.md.tpl
+    - daemon/workspace-plugin/principal-architect/skills/principal-architect/templates/PROJECT_INDEX.md.tpl
+    - daemon/workspace-plugin/principal-architect/scripts/common.py
+    - tests/test_schemas.py
+  verification_summary: "39 passed in 1.89s, ruff check clean"
+  out_of_scope_findings: []
+  escalation_request: null
+  decisions_made:
+    - "Created all seven Split-Authority and built-in memory .md.tpl templates with correct placeholders and section structures."
+    - "Added render_template_file helper in common.py."
+    - "Added comprehensive test suite for templates and dogfooded WO-01.4 and WO-01.5 work orders in test_schemas.py."
+  dead_ends: []
 ---
 
 # WO-01.5 — Split-Authority & Built-in Memory Templates (`.md.tpl`)
@@ -150,4 +172,18 @@ completion: null
 ## Completion Report
 <!-- Written by the Tier 3 Worker at task completion -->
 
-_Pending execution by Tier 3 Worker (`WO-01.5`)._
+- **Status:** `COMPLETED`
+- **Attempt Number:** 1
+- **Receipt ID:** `rcpt-wo01.5-templates`
+- **Verification Summary:** `39 passed in 1.89s, ruff check clean`
+- **Files Modified:**
+  - `daemon/workspace-plugin/principal-architect/skills/principal-architect/templates/PROGRAM.md.tpl`
+  - `daemon/workspace-plugin/principal-architect/skills/principal-architect/templates/PROJECT.md.tpl`
+  - `daemon/workspace-plugin/principal-architect/skills/principal-architect/templates/WORKORDER.md.tpl`
+  - `daemon/workspace-plugin/principal-architect/skills/principal-architect/templates/AUDIT.md.tpl`
+  - `daemon/workspace-plugin/principal-architect/skills/principal-architect/templates/MEMORY.md.tpl`
+  - `daemon/workspace-plugin/principal-architect/skills/principal-architect/templates/MODULE_INDEX.md.tpl`
+  - `daemon/workspace-plugin/principal-architect/skills/principal-architect/templates/PROJECT_INDEX.md.tpl`
+  - `daemon/workspace-plugin/principal-architect/scripts/common.py`
+  - `tests/test_schemas.py`
+- **Decisions Made:** Created all 7 Split-Authority and built-in memory `.md.tpl` templates, added `render_template_file` to `common.py`, added comprehensive test coverage in `tests/test_schemas.py`, and dogfooded WO-01.4 and WO-01.5 in tests.
