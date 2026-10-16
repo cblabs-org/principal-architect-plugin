@@ -10,7 +10,7 @@
 ## Active Projects
 | Project | Status | Modules | Context |
 |---|---|---|---|
-| pr-03-vcs-bus-models-and-memory-modes | IN_PROGRESS — WO3/5 (`wo3-memory-graduation-modes`) | vcs-sync, models, memory-grad, pa-cli (lifecycle commands), tests | [PROJECT.md](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) |
+| pr-03-vcs-bus-models-and-memory-modes | IN_PROGRESS — WO4/5 (`wo4-models-routing-and-ide-client`) | vcs-sync, models, memory-grad, pa-cli (lifecycle commands), tests | [PROJECT.md](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) |
 
 ## Recently Completed (last 5)
 | Project | Completed | Modules | Key Outcome |
