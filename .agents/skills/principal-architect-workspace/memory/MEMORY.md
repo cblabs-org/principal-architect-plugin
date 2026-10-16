@@ -10,7 +10,7 @@
 ## Active Projects
 | Project | Status | Modules | Context |
 |---|---|---|---|
-| pr-03-vcs-bus-models-and-memory-modes | IN_PROGRESS — WO5/5 (`wo5-lifecycle-cli-commands`) | vcs-sync, models, memory-grad, pa-cli (lifecycle commands), tests | [PROJECT.md](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) |
+| pr-03-vcs-bus-models-and-memory-modes | STAGED_FOR_AUDIT — WO5/5 COMPLETED (`wo5-lifecycle-cli-commands`) | vcs-sync, models, memory-grad, pa-cli (lifecycle commands), tests | [PROJECT.md](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) |
 
 ## Recently Completed (last 5)
 | Project | Completed | Modules | Key Outcome |

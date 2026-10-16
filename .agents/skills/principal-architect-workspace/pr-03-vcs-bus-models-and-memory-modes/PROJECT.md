@@ -26,7 +26,7 @@ charter:
     - "pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py tests/test_github_and_local_git_bus.py tests/test_memory_modes.py"
   charter_locked: true
   charter_hash: "ad7e71f954cd3d2b3db2eed6c4e55ef17b855bd01bfeefa2c59246c44c5d4e21"
-status: APPROVED
+status: STAGED_FOR_AUDIT
 approved_at: "2026-10-16T21:37:00Z"
 github_pr: null
 work_orders:
@@ -62,9 +62,9 @@ work_orders:
     slug: wo5-lifecycle-cli-commands
     title: "Complete pa CLI lifecycle commands (sync, programme init/charter, pr start/claim/open-or-sync/post-audit/sync-audit/graduate/restack, issue create)"
     complexity: architect
-    status: IN_PROGRESS
-    attempts: 0
-    commit_sha: null
+    status: COMPLETED
+    attempts: 1
+    commit_sha: "bff9b0be922fc56d6577bb03fcb222891a4ba78c"
 ---
 
 # PR-03 — VCS Bus, Model Routing & Memory Graduation Modes
@@ -164,7 +164,7 @@ To build PR-03 cleanly with zero circular dependencies and keep the full verific
 - **[x] [wo2-github-bus](wo2-github-bus/WORKORDER.md)** (`WO-03.2`, `complexity: standard`, base: `pr-03-vcs-bus-models-and-memory-modes/wo1-local-git-bus`): Extend `scripts/vcs_sync.py` with `GitHubBus`, `get_vcs_bus`, and `parse_pa_audit_comment`, plus mocked-`gh` tests in `tests/test_github_and_local_git_bus.py`.
 - **[x] [wo3-memory-graduation-modes](wo3-memory-graduation-modes/WORKORDER.md)** (`WO-03.3`, `complexity: standard`, base: `pr-03-vcs-bus-models-and-memory-modes/wo2-github-bus`): Implement `scripts/memory_grad.py` (`graduate` for `external` vs. `builtin` modes) and comprehensive tests in `tests/test_memory_modes.py`.
 - **[x] [wo4-models-routing-and-ide-client](wo4-models-routing-and-ide-client/WORKORDER.md)** (`WO-03.4`, `complexity: standard`, base: `pr-03-vcs-bus-models-and-memory-modes/wo3-memory-graduation-modes`): Implement `scripts/models.py` (`ARCHITECT_MODEL_PREFERENCE`, `route`, `step_up`, `select_architect_model`, `LanguageServerClient`) and `pa wo debug`/`pa wo resolve` in `scripts/pa_cli.py`, plus tests in `tests/test_github_and_local_git_bus.py`.
-- **[ ] [wo5-lifecycle-cli-commands](wo5-lifecycle-cli-commands/WORKORDER.md)** (`WO-03.5`, `complexity: architect`, base: `pr-03-vcs-bus-models-and-memory-modes/wo4-models-routing-and-ide-client`): Implement `pa sync`, `pa programme init/charter`, `pa pr start/claim/open-or-sync/post-audit/sync-audit/graduate/restack`, and `pa issue create` in `scripts/pa_cli.py`, plus end-to-end scripted CLI lifecycle tests in `tests/test_github_and_local_git_bus.py`.
+- **[x] [wo5-lifecycle-cli-commands](wo5-lifecycle-cli-commands/WORKORDER.md)** (`WO-03.5`, `complexity: architect`, base: `pr-03-vcs-bus-models-and-memory-modes/wo4-models-routing-and-ide-client`): Implement `pa sync`, `pa programme init/charter`, `pa pr start/claim/open-or-sync/post-audit/sync-audit/graduate/restack`, and `pa issue create` in `scripts/pa_cli.py`, plus end-to-end scripted CLI lifecycle tests in `tests/test_github_and_local_git_bus.py`.
 
 <!-- ======================================================================
      PART III — OUTCOME & GRADUATION SUMMARY (authored by the Tier 2 Principal Architect)
@@ -177,3 +177,4 @@ To build PR-03 cleanly with zero circular dependencies and keep the full verific
 - **2026-10-16 (`WO-03.2 COMPLETED`, `1d33f70`):** Extended `scripts/vcs_sync.py` with `GitHubBus(LocalGitBus)` (`open_or_sync_pr`, `view_pr`, `diff_pr`, `post_audit` via `gh pr review --comment`, `sync_audit` ingesting `<!-- pa:audit ... -->` review blocks, `create_deferred_issue` with `--label pa:deferred`, `sync_state`, `restack_branches` with `--force-with-lease` + `gh pr edit --base`) and wired `get_vcs_bus` (`102 passed`, `ruff check` clean).
 - **2026-10-16 (`WO-03.3 COMPLETED`, `bfe09c3`):** Delivered `daemon/workspace-plugin/principal-architect/scripts/memory_grad.py` (`graduate` enforcing zero-touch on `memory/` in `external` mode and 5-PR window roll-off to `PROJECT_INDEX.md` + idempotent `MODULE_INDEX.md` updates in `builtin` mode) and 7 tests in `tests/test_memory_modes.py` (`108 passed`, `ruff check` clean).
 - **2026-10-16 (`WO-03.4 COMPLETED`, `df83f72`):** Delivered `daemon/workspace-plugin/principal-architect/scripts/models.py` (`ARCHITECT_MODEL_PREFERENCE`, `route`, `step_up`, `select_architect_model`, `LanguageServerClient` with headless fallback), `pa wo debug` and `pa wo resolve` in `scripts/pa_cli.py` (preserving stdlib-only top-level lazy imports), and 4 test suites in `tests/test_github_and_local_git_bus.py` (`112 passed`, `ruff check` clean).
+- **2026-10-16 (`WO-03.5 COMPLETED`, `bff9b0b`):** Delivered all remaining `pa` CLI lifecycle commands in `scripts/pa_cli.py` (`pa sync`, `pa programme init/charter`, `pa pr start/claim/open-or-sync/post-audit/sync-audit/graduate/restack` enforcing Rule R6, and `pa issue create`) and end-to-end `local_git` + `github` CLI lifecycle tests in `tests/test_github_and_local_git_bus.py` (`115 passed`, `ruff check` clean). Transitioned `PR-03` to `status: STAGED_FOR_AUDIT`.
