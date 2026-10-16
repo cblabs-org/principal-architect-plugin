@@ -1041,6 +1041,370 @@ def _cmd_wo_verify(args: argparse.Namespace, *, runner: common.Runner = common.r
     return 0
 
 
+def _cmd_wo_debug(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
+    """Transition a Work Order to `BLOCKED`, spawn/prepare `pa-debugger`, and record escalation."""
+    import escalation
+    import models
+    import pre_tool_gate
+    import schemas
+
+    raw_target = Path(args.path).expanduser()
+    if not raw_target.exists():
+        print(f"Error: Path does not exist: {args.path}", file=sys.stderr)
+        return 2
+
+    repo_root = common.find_repo_root(raw_target, runner=runner)
+    if repo_root is None:
+        print(f"Error: Not inside a git repository: {args.path}", file=sys.stderr)
+        return 2
+
+    real_root = Path(os.path.realpath(repo_root))
+    ws_dir = common.workspace_dir(real_root)
+    wo_id_arg = str(args.wo_id).strip()
+
+    wo_doc = pre_tool_gate._find_bound_workorder(ws_dir, None, wo_id_arg)
+    if wo_doc is None or wo_doc.path is None:
+        print(f"Error: Work Order '{wo_id_arg}' not found in {ws_dir}", file=sys.stderr)
+        return 1
+
+    # 1. Transition WORKORDER.md to BLOCKED and verify spec_hash remains intact
+    wo_doc.spec.status = schemas.WorkOrderStatus.BLOCKED
+    wo_doc.path.write_text(
+        schemas.dump_document(wo_doc.spec, wo_doc.sections),
+        encoding="utf-8",
+    )
+    if wo_doc.spec.spec_hash and not schemas.verify_spec_hash(wo_doc.path):
+        print(
+            f"Error: Internal spec_hash check failed after updating {wo_doc.path}",
+            file=sys.stderr,
+        )
+        return 1
+
+    proj_md = wo_doc.path.parent.parent / "PROJECT.md"
+    if proj_md.is_file():
+        proj_doc = schemas.load_project(proj_md)
+        updated_proj = False
+        for row in proj_doc.spec.work_orders:
+            if row.id.upper() == wo_doc.spec.wo_id.upper():
+                row.status = schemas.WorkOrderStatus.BLOCKED
+                updated_proj = True
+                break
+        if updated_proj:
+            proj_md.write_text(
+                schemas.dump_document(proj_doc.spec, proj_doc.sections),
+                encoding="utf-8",
+            )
+            if proj_doc.spec.charter.charter_locked and not schemas.verify_charter_hash(proj_md):
+                print(
+                    f"Error: PROJECT.md charter_hash verification failed after update: {proj_md}",
+                    file=sys.stderr,
+                )
+                return 1
+
+    # 2. Gather failure context (open escalations, completion summary, git status --short)
+    db_file = ws_dir / ".state" / "state.db"
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+    with state_db.StateDB(db_file) as db:
+        open_escs = db.open_escalations(wo_id=wo_doc.spec.wo_id)
+
+    comp_summary = (
+        wo_doc.spec.completion.verification_summary.strip()
+        if (wo_doc.spec.completion and wo_doc.spec.completion.verification_summary)
+        else ""
+    )
+    reason_arg = str(getattr(args, "reason", None) or "").strip()
+    reason_str = (
+        reason_arg
+        or comp_summary
+        or f"Work Order {wo_doc.spec.wo_id} escalated to pa-debugger."
+    )
+
+    git_res = runner(["git", "status", "--short"], cwd=real_root)
+    git_short = (
+        git_res.stdout.strip()
+        if (git_res.returncode == 0 and git_res.stdout.strip())
+        else "(clean)"
+    )
+
+    wo_rel_posix = wo_doc.path.resolve().relative_to(real_root).as_posix()
+    esc_lines = [
+        f"- [{e.get('reason_code', 'ESC')}] {e.get('summary', '')}"
+        for e in open_escs
+    ] or ["- (no prior open escalations)"]
+
+    bridge_prompt = (
+        f"PA_ROLE: debugger\n"
+        f"PR_ID: {wo_doc.spec.pr_id}\n"
+        f"WO_ID: {wo_doc.spec.wo_id}\n\n"
+        f"You are `pa-debugger` investigating blocked Work Order `{wo_doc.spec.wo_id}` "
+        f"({wo_doc.spec.title}).\n\n"
+        f"### Context\n"
+        f"- **Work Order Spec:** `{wo_rel_posix}`\n"
+        f"- **Allowed Files:** {', '.join(wo_doc.spec.allowed_files)}\n"
+        f"- **Verification Command:** `{wo_doc.spec.verification_command}`\n"
+        f"- **Failure Reason / Summary:** {reason_str}\n\n"
+        f"### Open Escalations\n"
+        + "\n".join(esc_lines)
+        + f"\n\n### Git Status (`git status --short`)\n```text\n{git_short}\n```\n\n"
+        f"### Instructions\n"
+        f"1. Diagnose and fix the root cause within `allowed_files`.\n"
+        f"2. Run `{wo_doc.spec.verification_command}` to confirm all checks pass.\n"
+        f"3. Run `pa wo resolve {wo_doc.spec.wo_id} --summary \"<concise root cause and fix>\"`.\n"
+    )
+
+    # 3. Start (and JIT-pin) debugger conversation or fall back to headless bridge prompt
+    ls_client = models.LanguageServerClient()
+    ls_res = ls_client.start_conversation(
+        title=f"🔬 [Debug {wo_doc.spec.wo_id}] {wo_doc.spec.title}",
+        prompt=bridge_prompt,
+        role="debugger",
+        workspace_root=real_root,
+        pin=True,
+    )
+    conv_id = str(ls_res["conversation_id"])
+
+    # 4. Record debugger session and escalation in state.db
+    with state_db.StateDB(db_file) as db:
+        db.bind_session(
+            conv_id,
+            role="debugger",
+            pr_id=wo_doc.spec.pr_id,
+            wo_id=wo_doc.spec.wo_id,
+            pinned=1 if ls_res.get("pinned") else 0,
+        )
+        esc_row = escalation.record_escalation(
+            db,
+            level="wo_to_pa",
+            source_role="engineer",
+            target_role="debugger",
+            pr_id=wo_doc.spec.pr_id,
+            wo_id=wo_doc.spec.wo_id,
+            blocker_type="verification",
+            reason_code="DEBUG_ESCALATION",
+            summary=reason_str[:500],
+            enqueue_if_needed=True,
+            attention_kind="debugger_escalation",
+            attention_title=f"🔬 [Debug {wo_doc.spec.wo_id}] {wo_doc.spec.title}",
+            attention_priority=10,
+        )
+
+    out_payload = {
+        "wo_id": wo_doc.spec.wo_id,
+        "pr_id": wo_doc.spec.pr_id,
+        "status": wo_doc.spec.status.value,
+        "conversation_id": conv_id,
+        "connected": bool(ls_res.get("connected")),
+        "pinned": bool(ls_res.get("pinned")),
+        "model": ls_res.get("model"),
+        "escalation_id": esc_row["escalation_id"],
+        "bridge_prompt": bridge_prompt,
+    }
+    print(json.dumps(out_payload, indent=2))
+    return 0
+
+
+def _cmd_wo_resolve(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
+    """Verify and resolve a blocked Work Order from `pa-debugger`, unpinning and notifying PA."""
+    import models
+    import post_tool_receipt
+    import pre_tool_gate
+    import schemas
+
+    raw_target = Path(args.path).expanduser()
+    if not raw_target.exists():
+        print(f"Error: Path does not exist: {args.path}", file=sys.stderr)
+        return 2
+
+    repo_root = common.find_repo_root(raw_target, runner=runner)
+    if repo_root is None:
+        print(f"Error: Not inside a git repository: {args.path}", file=sys.stderr)
+        return 2
+
+    real_root = Path(os.path.realpath(repo_root))
+    ws_dir = common.workspace_dir(real_root)
+    wo_id_arg = str(args.wo_id).strip()
+    summary_str = str(getattr(args, "summary", None) or "").strip()
+    if not summary_str:
+        print("Error: --summary is required for pa wo resolve", file=sys.stderr)
+        return 1
+
+    wo_doc = pre_tool_gate._find_bound_workorder(ws_dir, None, wo_id_arg)
+    if wo_doc is None or wo_doc.path is None:
+        print(f"Error: Work Order '{wo_id_arg}' not found in {ws_dir}", file=sys.stderr)
+        return 1
+
+    # 1. Execute verification_command
+    ver_res = runner(
+        ["/bin/sh", "-c", wo_doc.spec.verification_command],
+        cwd=real_root,
+        timeout=300.0,
+    )
+    if ver_res.returncode != 0:
+        if ver_res.stdout:
+            print(
+                ver_res.stdout,
+                file=sys.stderr,
+                end="" if ver_res.stdout.endswith("\n") else "\n",
+            )
+        if ver_res.stderr:
+            print(
+                ver_res.stderr,
+                file=sys.stderr,
+                end="" if ver_res.stderr.endswith("\n") else "\n",
+            )
+        print(
+            f"Error: verification_command failed with exit code {ver_res.returncode}.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # 2. Compute tree_hash and receipt_id
+    t_hash = post_tool_receipt.compute_tree_hash(real_root, wo_doc.spec.allowed_files)
+    receipt_id = f"rcpt_{t_hash[:12]}"
+    head_res = runner(["git", "rev-parse", "HEAD"], cwd=real_root)
+    head_sha = (
+        head_res.stdout.strip()
+        if head_res.returncode == 0 and head_res.stdout.strip()
+        else None
+    )
+
+    files_modified = _collect_existing_allowed_files(
+        real_root,
+        wo_doc.spec.allowed_files,
+        wo_doc.spec.forbidden_files,
+        pre_tool_gate.matches_any_pattern,
+    )
+
+    # 3. Update WORKORDER.md to COMPLETED with summary in verification_summary & decisions_made
+    prev_comp = wo_doc.spec.completion
+    existing_attempt_num = prev_comp.attempt_num if prev_comp is not None else 1
+    prev_decisions = list(prev_comp.decisions_made) if prev_comp else []
+    decisions_made = _dedup_preserve_order([*prev_decisions, summary_str])
+
+    wo_doc.spec.status = schemas.WorkOrderStatus.COMPLETED
+    wo_doc.spec.completion = schemas.CompletionReport(
+        status=schemas.WorkOrderStatus.COMPLETED,
+        attempt_num=existing_attempt_num,
+        receipt_id=receipt_id,
+        commit_sha=head_sha,
+        files_modified=files_modified,
+        verification_summary=summary_str[:280],
+        out_of_scope_findings=list(prev_comp.out_of_scope_findings) if prev_comp else [],
+        escalation_request=None,
+        decisions_made=decisions_made,
+        dead_ends=list(prev_comp.dead_ends) if prev_comp else [],
+    )
+    wo_doc.path.write_text(
+        schemas.dump_document(wo_doc.spec, wo_doc.sections),
+        encoding="utf-8",
+    )
+    if wo_doc.spec.spec_hash and not schemas.verify_spec_hash(wo_doc.path):
+        print(
+            f"Error: Internal spec_hash check failed after updating {wo_doc.path}",
+            file=sys.stderr,
+        )
+        return 1
+
+    proj_md = wo_doc.path.parent.parent / "PROJECT.md"
+    if proj_md.is_file():
+        proj_doc = schemas.load_project(proj_md)
+        updated_proj = False
+        for row in proj_doc.spec.work_orders:
+            if row.id.upper() == wo_doc.spec.wo_id.upper():
+                row.status = schemas.WorkOrderStatus.COMPLETED
+                row.attempts = max(row.attempts, existing_attempt_num)
+                if head_sha:
+                    row.commit_sha = head_sha
+                updated_proj = True
+                break
+        if updated_proj:
+            proj_md.write_text(
+                schemas.dump_document(proj_doc.spec, proj_doc.sections),
+                encoding="utf-8",
+            )
+            if proj_doc.spec.charter.charter_locked and not schemas.verify_charter_hash(proj_md):
+                print(
+                    f"Error: PROJECT.md charter_hash verification failed after update: {proj_md}",
+                    file=sys.stderr,
+                )
+                return 1
+
+    # 4. Upsert receipt, resolve escalations & attention items, unpin debugger, notify PA
+    db_file = ws_dir / ".state" / "state.db"
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+    ls_client = models.LanguageServerClient()
+    unpinned_sessions: list[str] = []
+    notified_pa_sessions: list[str] = []
+
+    with state_db.StateDB(db_file) as db:
+        post_tool_receipt._upsert_receipt(
+            db,
+            wo_id=wo_doc.spec.wo_id,
+            pr_id=wo_doc.spec.pr_id,
+            cmd=wo_doc.spec.verification_command,
+            exit_code=0,
+            tree_hash=t_hash,
+            git_head_sha=head_sha,
+            valid=1,
+            receipt_id=receipt_id,
+        )
+
+        for esc in db.open_escalations(wo_id=wo_doc.spec.wo_id):
+            db.resolve_escalation(str(esc["escalation_id"]), status="RESOLVED")
+
+        for item in db.list_open():
+            if str(item.get("wo_id") or "").upper() == wo_doc.spec.wo_id.upper():
+                db.dequeue(str(item["item_id"]), status="RESOLVED")
+
+        cur_dbg = db.conn.execute(
+            """
+            SELECT conversation_id FROM sessions
+            WHERE UPPER(wo_id) = UPPER(?)
+              AND LOWER(role) IN ('debugger', 'pa-debugger')
+            """,
+            (wo_doc.spec.wo_id,),
+        )
+        for row_dbg in cur_dbg.fetchall():
+            dbg_cid = str(row_dbg["conversation_id"])
+            ls_client.set_pinned(dbg_cid, False)
+            db.update_session(dbg_cid, pinned=0)
+            unpinned_sessions.append(dbg_cid)
+
+        cur_pa = db.conn.execute(
+            """
+            SELECT conversation_id FROM sessions
+            WHERE UPPER(pr_id) = UPPER(?)
+              AND LOWER(role) IN ('pa', 'pa-principal-architect', 'principal-architect')
+            ORDER BY updated_at DESC
+            """,
+            (wo_doc.spec.pr_id,),
+        )
+        for row_pa in cur_pa.fetchall():
+            pa_cid = str(row_pa["conversation_id"])
+            ls_client.send_message(
+                pa_cid,
+                f"Work Order {wo_doc.spec.wo_id} resolved by pa-debugger: {summary_str}",
+            )
+            notified_pa_sessions.append(pa_cid)
+
+    out_payload = {
+        "wo_id": wo_doc.spec.wo_id,
+        "pr_id": wo_doc.spec.pr_id,
+        "status": wo_doc.spec.status.value,
+        "receipt_id": receipt_id,
+        "tree_hash": t_hash,
+        "summary": summary_str,
+        "unpinned_debugger_sessions": unpinned_sessions,
+        "notified_pa_sessions": notified_pa_sessions,
+    }
+    print(json.dumps(out_payload, indent=2))
+    print(
+        f"Resolved {wo_doc.spec.wo_id} (receipt_id: {receipt_id})",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def _is_pattern_within_allowed_modules(
     pattern: str,
     allowed_modules: Sequence[str],
@@ -1406,6 +1770,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the target repository (default: current directory).",
     )
     p_wo_verify.set_defaults(_handler=_cmd_wo_verify)
+
+    p_wo_debug = wo_subparsers.add_parser(
+        "debug",
+        help="Transition Work Order to BLOCKED and spawn/prepare a pinned pa-debugger session.",
+    )
+    p_wo_debug.add_argument(
+        "wo_id",
+        help="Work Order ID (e.g., WO-03.4).",
+    )
+    p_wo_debug.add_argument(
+        "--path",
+        default=".",
+        help="Path to the target repository (default: current directory).",
+    )
+    p_wo_debug.add_argument(
+        "--reason",
+        default=None,
+        help="Optional failure reason or context summary.",
+    )
+    p_wo_debug.set_defaults(_handler=_cmd_wo_debug)
+
+    p_wo_resolve = wo_subparsers.add_parser(
+        "resolve",
+        help="Verify and resolve a blocked Work Order from pa-debugger, unpinning and notifying PA.",
+    )
+    p_wo_resolve.add_argument(
+        "wo_id",
+        help="Work Order ID (e.g., WO-03.4).",
+    )
+    p_wo_resolve.add_argument(
+        "--summary",
+        default=None,
+        help="Concise root-cause and fix summary (required).",
+    )
+    p_wo_resolve.add_argument(
+        "--path",
+        default=".",
+        help="Path to the target repository (default: current directory).",
+    )
+    p_wo_resolve.set_defaults(_handler=_cmd_wo_resolve)
 
     # 6. pa pr <subcommand>
     p_pr = subparsers.add_parser(

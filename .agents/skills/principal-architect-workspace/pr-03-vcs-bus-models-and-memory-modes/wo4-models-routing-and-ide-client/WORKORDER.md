@@ -5,7 +5,7 @@ pr_id: PR-03
 title: Dynamic complexity model routing, retry step-up, LanguageServerClient with
   headless fallback (models.py), and pa wo debug/resolve
 complexity: standard
-status: PENDING
+status: COMPLETED
 allowed_files:
 - daemon/workspace-plugin/principal-architect/scripts/models.py
 - daemon/workspace-plugin/principal-architect/scripts/pa_cli.py
@@ -22,7 +22,23 @@ verification_command: ./.venv/bin/pytest tests/test_schemas.py tests/test_state_
 max_attempts: 5
 max_structural_failures: 2
 spec_hash: b1032705889a3fd4442f6a2dfdadaa0ae32c8be88028d9ee4b2bac9d7f2ad942
-completion: null
+completion:
+  status: COMPLETED
+  attempt_num: 1
+  receipt_id: rcpt_d5e922b5681b
+  commit_sha: f56e9cbd00d8c8420332068a4a6cc5c86308ad92
+  files_modified:
+  - daemon/workspace-plugin/principal-architect/scripts/models.py
+  - daemon/workspace-plugin/principal-architect/scripts/pa_cli.py
+  - tests/test_github_and_local_git_bus.py
+  verification_summary: "pytest (112 passed) and ruff check (All checks passed)"
+  out_of_scope_findings: []
+  escalation_request: null
+  decisions_made:
+  - "Enforced top-tier ceiling in step_up and route so 'flash' and 'inherit' never step to 'pro'."
+  - "Implemented graceful headless bridge-prompt fallback in LanguageServerClient when ANTIGRAVITY_LS_ADDRESS/ANTIGRAVITY_CSRF_TOKEN is unset or RPC fails."
+  - "Preserved stdlib-only top-level imports in pa_cli.py by importing models, schemas, pre_tool_gate, post_tool_receipt, and escalation lazily inside _cmd_wo_debug and _cmd_wo_resolve."
+  dead_ends: []
 ---
 
 # WO-03.4 — Model Routing, Retry Step-Up, `LanguageServerClient` (`models.py`), & `pa wo debug`/`resolve`
@@ -139,3 +155,16 @@ completion: null
 
 ## Completion Report
 <!-- Written by the Tier 3 Worker at task completion -->
+
+- **Status:** `COMPLETED` (attempt 1)
+- **Receipt ID:** `rcpt_d5e922b5681b` (`tree_hash: d5e922b5681bee1fb12243a4b5581a6e4b42b26c9a523b4a957712a273604e93`)
+- **Files Modified:**
+  - `daemon/workspace-plugin/principal-architect/scripts/models.py`
+  - `daemon/workspace-plugin/principal-architect/scripts/pa_cli.py`
+  - `tests/test_github_and_local_git_bus.py`
+- **Verification Summary:** `pytest` (`112 passed`) and `ruff check daemon tests` (`All checks passed!`).
+- **Key Decisions:**
+  - Enforced the `step_up` and `route` top-tier ceiling (`"flash_lite" -> "flash" -> "inherit" -> "inherit"`) so `"inherit"` never downgrades a parent running on Argon or Opus to `"pro"`.
+  - Built `LanguageServerClient` (`start_conversation`, `set_pinned`, `send_message`) with injectable `transport` for unit testing and graceful headless fallback (`"connected": False`, `"fallback": "bridge_prompt"` / `"headless"`).
+  - Added `pa wo debug` and `pa wo resolve` to `pa_cli.py` while preserving top-level stdlib-only lazy imports (`test_pa_cli_lazy_import_purity` passes).
+

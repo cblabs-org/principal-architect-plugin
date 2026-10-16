@@ -1114,3 +1114,399 @@ def test_github_bus_view_pr_and_diff_pr_with_local_fallback(
     fallback_diff = bus.diff_pr("PR-01")
     assert "diff_target.py" in fallback_diff
     assert "+VALUE = 42" in fallback_diff
+
+
+# ---------------------------------------------------------------------------
+# WO-03.4: models.py (route, step_up, select_architect_model, LanguageServerClient)
+# and pa wo debug / pa wo resolve CLI tests
+# ---------------------------------------------------------------------------
+
+
+def test_models_step_up_and_route_all_complexities_and_attempts() -> None:
+    """Verify models.step_up and models.route across attempts 1..5, never returning 'pro'."""
+    import models
+
+    # 1. step_up mapping & top-tier ceiling ("inherit" never steps to "pro")
+    assert models.step_up("flash_lite") == "flash"
+    assert models.step_up("flash") == "inherit"
+    assert models.step_up("inherit") == "inherit"
+
+    with pytest.raises(ValueError, match="Unrecognized model tier"):
+        models.step_up("pro")
+    with pytest.raises(ValueError, match="Unrecognized model tier"):
+        models.step_up("unknown_tier")
+
+    # 2. route across attempts 1..5 for all 4 complexity tiers (strings and enums)
+    for attempt in (1, 2):
+        assert models.route("mechanical", attempt=attempt) == "flash_lite"
+        assert models.route(schemas.ComplexityTier.mechanical, attempt=attempt) == "flash_lite"
+        assert models.route("standard", attempt=attempt) == "flash"
+        assert models.route(schemas.ComplexityTier.standard, attempt=attempt) == "flash"
+        assert models.route("architect", attempt=attempt) == "inherit"
+        assert models.route(schemas.ComplexityTier.architect, attempt=attempt) == "inherit"
+        assert models.route("interactive", attempt=attempt) == "inherit"
+        assert models.route(schemas.ComplexityTier.interactive, attempt=attempt) == "inherit"
+
+    for attempt in (3, 4, 5):
+        assert models.route("mechanical", attempt=attempt) == "flash"
+        assert models.route(schemas.ComplexityTier.mechanical, attempt=attempt) == "flash"
+        assert models.route("standard", attempt=attempt) == "inherit"
+        assert models.route(schemas.ComplexityTier.standard, attempt=attempt) == "inherit"
+        assert models.route("architect", attempt=attempt) == "inherit"
+        assert models.route("interactive", attempt=attempt) == "inherit"
+
+    # 3. Verify parent_model on Argon or Opus never causes "pro" downgrade
+    for parent in ("inherit", "gemini-4-argon-high", "claude-opus-5-5-high"):
+        for comp in ("mechanical", "standard", "architect", "interactive"):
+            for att in range(1, 6):
+                routed = models.route(comp, attempt=att, parent_model=parent)
+                assert routed != "pro"
+                assert routed in ("flash_lite", "flash", "inherit")
+
+    # 4. Invalid complexity or attempt < 1 raises ValueError
+    with pytest.raises(ValueError, match="Unknown complexity tier"):
+        models.route("invalid_complexity", attempt=1)
+    with pytest.raises(ValueError, match="attempt must be an integer >= 1"):
+        models.route("standard", attempt=0)
+    with pytest.raises(ValueError, match="attempt must be an integer >= 1"):
+        models.route("standard", attempt=-1)
+
+
+def test_select_architect_model_preferences_catalog_and_state_db(tmp_repo: Path) -> None:
+    """Verify select_architect_model preference order, substring match, state.db lookup, and fallback."""
+    import models
+
+    assert models.ARCHITECT_MODEL_PREFERENCE == (
+        "gemini-4-argon-high",
+        "gemini-3.1-pro-high",
+        "claude-opus-5-5-high",
+    )
+
+    # 1. Default when catalog is None or empty
+    assert models.select_architect_model() == "gemini-4-argon-high"
+    assert models.select_architect_model([]) == "gemini-4-argon-high"
+
+    # 2. Preference order matching against catalog
+    assert (
+        models.select_architect_model(["claude-opus-5-5-high", "gemini-3.1-pro-high"])
+        == "gemini-3.1-pro-high"
+    )
+    assert (
+        models.select_architect_model(["claude-opus-5-5-high", "gemini-4-argon-high"])
+        == "gemini-4-argon-high"
+    )
+    assert (
+        models.select_architect_model(["custom-local-model", "claude-opus-5-5-high"])
+        == "claude-opus-5-5-high"
+    )
+
+    # 3. Case-insensitive substring matching & fallback to catalog[0]
+    assert (
+        models.select_architect_model(["provider/GEMINI-3.1-PRO-HIGH-v2", "other"])
+        == "provider/GEMINI-3.1-PRO-HIGH-v2"
+    )
+    assert (
+        models.select_architect_model(["custom-model-a", "custom-model-b"])
+        == "custom-model-a"
+    )
+
+    # 4. Explicit preferred parameter
+    assert (
+        models.select_architect_model(preferred="claude-opus-5-5-high")
+        == "claude-opus-5-5-high"
+    )
+    assert (
+        models.select_architect_model(
+            ["gemini-4-argon-high", "claude-opus-5-5-high"],
+            preferred="claude-opus-5-5-high",
+        )
+        == "claude-opus-5-5-high"
+    )
+
+    # 5. Lookup from <ws_dir>/.state/state.db repo_config["architect_model"]
+    ws_dir = common.workspace_dir(tmp_repo)
+    db_file = ws_dir / ".state" / "state.db"
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+    with state_db.StateDB(db_file) as db:
+        db.set_config("architect_model", "claude-opus-5-5-high")
+
+    assert models.select_architect_model(repo_root=tmp_repo) == "claude-opus-5-5-high"
+    assert (
+        models.select_architect_model(
+            ["gemini-4-argon-high", "claude-opus-5-5-high"],
+            repo_root=tmp_repo,
+        )
+        == "claude-opus-5-5-high"
+    )
+
+
+def test_language_server_client_connected_and_headless_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify LanguageServerClient RPC calls when connected and graceful fallback when headless or failing."""
+    import models
+
+    monkeypatch.delenv("ANTIGRAVITY_LS_ADDRESS", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_CSRF_TOKEN", raising=False)
+
+    # 1. Headless mode when env vars unset and no custom transport
+    headless_client = models.LanguageServerClient()
+    assert not headless_client.is_connected()
+
+    res_start_hl = headless_client.start_conversation(
+        title="🔬 [Debug WO-03.4] Test",
+        prompt="PA_ROLE: debugger\nWO_ID: WO-03.4",
+        role="debugger",
+        pin=True,
+    )
+    assert res_start_hl["connected"] is False
+    assert res_start_hl["pinned"] is False
+    assert res_start_hl["conversation_id"].startswith("headless-debugger-")
+    assert res_start_hl["bridge_prompt"] == "PA_ROLE: debugger\nWO_ID: WO-03.4"
+    assert res_start_hl["fallback"] == "bridge_prompt"
+
+    res_pin_hl = headless_client.set_pinned(res_start_hl["conversation_id"], True)
+    assert res_pin_hl == {
+        "connected": False,
+        "conversation_id": res_start_hl["conversation_id"],
+        "pinned": False,
+        "fallback": "headless",
+    }
+
+    res_msg_hl = headless_client.send_message(res_start_hl["conversation_id"], "Wakeup")
+    assert res_msg_hl == {
+        "connected": False,
+        "conversation_id": res_start_hl["conversation_id"],
+        "delivered": False,
+        "bridge_prompt": "Wakeup",
+        "fallback": "bridge_prompt",
+    }
+
+    # 2. Connected mode with mock transport
+    rpc_calls: list[tuple[str, dict[str, object], dict[str, str]]] = []
+
+    def _mock_transport(
+        endpoint: str,
+        payload: dict[str, object],
+        headers: dict[str, str],
+    ) -> dict[str, object]:
+        rpc_calls.append((endpoint, dict(payload), dict(headers)))
+        if endpoint.endswith("StartConversation"):
+            return {"conversationId": "conv-ide-999"}
+        return {"ok": True}
+
+    connected_client = models.LanguageServerClient(
+        address="127.0.0.1:42100",
+        csrf_token="csrf-secret",
+        transport=_mock_transport,
+    )
+    assert connected_client.is_connected()
+
+    res_start_ok = connected_client.start_conversation(
+        title="PA Session",
+        prompt="PA_ROLE: pa\nPR_ID: PR-03",
+        role="pa",
+        model="gemini-4-argon-high",
+        pin=True,
+    )
+    assert res_start_ok["connected"] is True
+    assert res_start_ok["conversation_id"] == "conv-ide-999"
+    assert res_start_ok["pinned"] is True
+    assert res_start_ok["fallback"] is None
+    assert len(rpc_calls) == 2
+    assert rpc_calls[0][0].endswith("StartConversation")
+    assert rpc_calls[0][2]["x-codeium-csrf-token"] == "csrf-secret"
+    assert rpc_calls[1][0].endswith("SetPinned")
+    assert rpc_calls[1][1] == {"conversationId": "conv-ide-999", "pinned": True}
+
+    res_unpin_ok = connected_client.set_pinned("conv-ide-999", False)
+    assert res_unpin_ok == {
+        "connected": True,
+        "conversation_id": "conv-ide-999",
+        "pinned": False,
+    }
+
+    res_send_ok = connected_client.send_message("conv-ide-999", "Resolved WO-03.4")
+    assert res_send_ok == {
+        "connected": True,
+        "conversation_id": "conv-ide-999",
+        "delivered": True,
+    }
+
+    # 3. Transport raising OSError falls back cleanly without raising
+    def _failing_transport(
+        _endpoint: str,
+        _payload: dict[str, object],
+        _headers: dict[str, str],
+    ) -> dict[str, object]:
+        raise OSError("connection refused")
+
+    failing_client = models.LanguageServerClient(
+        address="127.0.0.1:42100",
+        csrf_token="csrf-secret",
+        transport=_failing_transport,
+    )
+    res_fail_start = failing_client.start_conversation(
+        title="Fail Session",
+        prompt="Prompt",
+        role="debugger",
+    )
+    assert res_fail_start["connected"] is False
+    assert res_fail_start["fallback"] == "bridge_prompt"
+
+    res_fail_pin = failing_client.set_pinned("conv-ide-999", True)
+    assert res_fail_pin["connected"] is False
+    assert res_fail_pin["fallback"] == "headless"
+
+    res_fail_msg = failing_client.send_message("conv-ide-999", "Ping")
+    assert res_fail_msg["connected"] is False
+    assert res_fail_msg["fallback"] == "bridge_prompt"
+
+
+def test_pa_wo_debug_and_resolve_cli_end_to_end(
+    tmp_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Verify `pa wo debug` and `pa wo resolve` end-to-end against tmp_repo."""
+    import pa_cli
+
+    monkeypatch.delenv("ANTIGRAVITY_LS_ADDRESS", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_CSRF_TOKEN", raising=False)
+
+    ws_dir = common.workspace_dir(tmp_repo)
+    src_dir = tmp_repo / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    app_py = src_dir / "app.py"
+    app_py.write_text("VALUE = 1\n", encoding="utf-8")
+
+    proj_md = _write_locked_project(
+        ws_dir,
+        pr_id="PR-01",
+        slug="pr-01-alpha",
+        work_orders=[
+            schemas.WOSummaryRow(
+                id="WO-01.1",
+                slug="wo1-task",
+                title="Implement WO-01.1",
+                complexity=schemas.ComplexityTier.standard,
+                status=schemas.WorkOrderStatus.IN_PROGRESS,
+                attempts=2,
+            )
+        ],
+    )
+    wo_md = _write_locked_workorder(
+        proj_md.parent,
+        wo_id="WO-01.1",
+        pr_id="PR-01",
+        slug="wo1-task",
+        allowed_files=["src/app.py"],
+        status=schemas.WorkOrderStatus.IN_PROGRESS,
+    )
+    # Set verification_command to a fast python check on src/app.py
+    wo_doc = schemas.load_workorder(wo_md)
+    wo_doc.spec.verification_command = "python3 -c 'import sys; sys.exit(0)'"
+    wo_doc.spec.spec_hash = schemas.compute_spec_hash(wo_doc.spec, wo_doc.sections)
+    wo_md.write_text(schemas.dump_document(wo_doc.spec, wo_doc.sections), encoding="utf-8")
+    assert schemas.verify_spec_hash(wo_md)
+
+    db_file = ws_dir / ".state" / "state.db"
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+    with state_db.StateDB(db_file) as db:
+        db.bind_session(
+            "conv-pa-owner",
+            role="pa",
+            pr_id="PR-01",
+            pinned=1,
+        )
+
+    # 1. Run `pa wo debug WO-01.1 --path <tmp_repo> --reason "Unit test failure in app.py"`
+    capsys.readouterr()
+    rc_debug = pa_cli.main(
+        [
+            "wo",
+            "debug",
+            "WO-01.1",
+            "--path",
+            str(tmp_repo),
+            "--reason",
+            "Unit test failure in app.py",
+        ]
+    )
+    assert rc_debug == 0
+    debug_out = json.loads(capsys.readouterr().out)
+    assert debug_out["wo_id"] == "WO-01.1"
+    assert debug_out["pr_id"] == "PR-01"
+    assert debug_out["status"] == "BLOCKED"
+    assert debug_out["conversation_id"].startswith("headless-debugger-")
+    assert "PA_ROLE: debugger" in debug_out["bridge_prompt"]
+    assert "Unit test failure in app.py" in debug_out["bridge_prompt"]
+
+    # Verify WORKORDER.md and PROJECT.md transitioned to BLOCKED with hashes intact
+    wo_after_debug = schemas.load_workorder(wo_md)
+    assert wo_after_debug.spec.status == schemas.WorkOrderStatus.BLOCKED
+    assert schemas.verify_spec_hash(wo_md)
+    proj_after_debug = schemas.load_project(proj_md)
+    assert proj_after_debug.spec.work_orders[0].status == schemas.WorkOrderStatus.BLOCKED
+    assert schemas.verify_charter_hash(proj_md)
+
+    # Verify debugger session and open escalation in state.db
+    dbg_conv_id = debug_out["conversation_id"]
+    with state_db.StateDB(db_file) as db:
+        dbg_sess = db.get_session(dbg_conv_id)
+        assert dbg_sess is not None
+        assert dbg_sess["role"] == "debugger"
+        assert dbg_sess["wo_id"] == "WO-01.1"
+        open_escs = db.open_escalations(wo_id="WO-01.1")
+        assert len(open_escs) == 1
+        assert open_escs[0]["reason_code"] == "DEBUG_ESCALATION"
+        assert open_escs[0]["target_role"] == "debugger"
+        open_attn = [
+            i for i in db.list_open() if i.get("wo_id") == "WO-01.1"
+        ]
+        assert len(open_attn) == 1
+
+    # 2. Missing --summary returns exit code 1
+    assert pa_cli.main(["wo", "resolve", "WO-01.1", "--path", str(tmp_repo)]) == 1
+
+    # 3. Run `pa wo resolve WO-01.1 --summary "Fixed off-by-one in app.py" --path <tmp_repo>`
+    app_py.write_text("VALUE = 2\n", encoding="utf-8")
+    capsys.readouterr()
+    rc_resolve = pa_cli.main(
+        [
+            "wo",
+            "resolve",
+            "WO-01.1",
+            "--summary",
+            "Fixed off-by-one in app.py",
+            "--path",
+            str(tmp_repo),
+        ]
+    )
+    assert rc_resolve == 0
+    resolve_out = json.loads(capsys.readouterr().out)
+    assert resolve_out["wo_id"] == "WO-01.1"
+    assert resolve_out["status"] == "COMPLETED"
+    assert resolve_out["receipt_id"].startswith("rcpt_")
+    assert dbg_conv_id in resolve_out["unpinned_debugger_sessions"]
+    assert "conv-pa-owner" in resolve_out["notified_pa_sessions"]
+
+    # Verify WORKORDER.md is COMPLETED with summary in verification_summary and decisions_made
+    wo_after_resolve = schemas.load_workorder(wo_md)
+    assert wo_after_resolve.spec.status == schemas.WorkOrderStatus.COMPLETED
+    assert wo_after_resolve.spec.completion is not None
+    assert wo_after_resolve.spec.completion.verification_summary == "Fixed off-by-one in app.py"
+    assert "Fixed off-by-one in app.py" in wo_after_resolve.spec.completion.decisions_made
+    assert schemas.verify_spec_hash(wo_md)
+
+    # Verify state.db receipt is valid, escalations & attention items resolved, debugger unpinned
+    with state_db.StateDB(db_file) as db:
+        rcpt = db.latest_valid_receipt("WO-01.1", tree_hash=resolve_out["tree_hash"])
+        assert rcpt is not None
+        assert rcpt["receipt_id"] == resolve_out["receipt_id"]
+        assert db.open_escalations(wo_id="WO-01.1") == []
+        assert [i for i in db.list_open() if i.get("wo_id") == "WO-01.1"] == []
+        dbg_sess_after = db.get_session(dbg_conv_id)
+        assert dbg_sess_after is not None
+        assert dbg_sess_after["pinned"] == 0
+
