@@ -56,8 +56,8 @@ prs:
       - tests/conftest.py
       - tests/test_hooks_monitored_vs_autonomous.py
     required_skills: []
-    status: IN_PROGRESS
-    github_pr: null
+    status: GRADUATED
+    github_pr: 2
   - id: PR-03
     slug: pr-03-vcs-bus-models-and-memory-modes
     title: "Local-git floor + GitHub bus (vcs_sync), model routing (models), and memory graduation modes (memory_grad)"
@@ -77,7 +77,7 @@ prs:
       - tests/test_github_and_local_git_bus.py
       - tests/test_memory_modes.py
     required_skills: []
-    status: PLANNED
+    status: IN_PROGRESS
     github_pr: null
   - id: PR-04
     slug: pr-04-cockpit-auxpane-ui
@@ -118,7 +118,7 @@ prs:
 
 > **Programme:** Build `principal-architect-plugin` — a self-contained Python 3.11+ / Pydantic v2 split-daemon Antigravity plugin that turns the prompt-driven `principal-architect` skill into a mechanically enforced, token-efficient, multi-tier orchestration system.
 > **Specification:** [SPEC.md](../../../../SPEC.md) v1.1 (2026-10-16) + [Positioning Paper](../../../../docs/positioning-paper.md) Rev 3
-> **Status:** Approved — autonomous execution authorized (2026-10-16). **1/5 PRs graduated (PR-01).** **Active:** PR-02 (`pr-02-agents-and-dual-mode-hooks`).
+> **Status:** Approved — autonomous execution authorized (2026-10-16). **2/5 PRs graduated (PR-01, PR-02).** **Active:** PR-03 (`pr-03-vcs-bus-models-and-memory-modes`).
 > **Base branch:** `main` (`a16d659`; `origin` = `github.com/matthewmcneill/principal-architect-plugin`, `vcs_mode: github`, `memory_mode: builtin`)
 > **Execution plan:** [PROGRAM-PLAN.md](PROGRAM-PLAN.md) — dependency graph, branching, per-PR protocol, indicative Work Orders, human tasks, decisions, risks, status tracker.
 
@@ -226,7 +226,7 @@ Specification frozen at v1.1; governance rule provisioned; PA workspace and `bui
 | **Deliverables** | `vcs_sync.py` (`VcsBus` protocol; `LocalGitBus`: stacked branch create/checkout, trailer read/write, `AUDIT-round-K.md` commit, `DEFERRED_BACKLOG.md`; `GitHubBus`: push, `gh pr create/edit/view/diff`, `gh pr review --comment` with the machine-parseable `<!-- pa:audit -->` block, `gh pr comment`, `gh issue create --label pa:deferred`; `pa sync` state rebuild from trailers/audits/PR comments; `pa pr restack` via `git rebase --update-refs` + base retarget); `models.py` (`route(complexity, attempt, parent) → tier`, step-up after attempt 2, architect-model preference list, Language Server client for `pa pr start` / `pa programme init` / `pa wo debug` conversation creation + JIT pin/unpin, printing a bridge prompt when no IDE is present); `memory_grad.py` (`external`: succinct Part III writer only; `builtin`: `MEMORY.md` 5-PR window, roll-off to `PROJECT_INDEX.md`, `MODULE_INDEX.md` rows under `allowed_modules`); CLI: `pa programme init`, `pa programme charter`, `pa pr start`, `pa pr claim`, `pa pr open-or-sync`, `pa pr post-audit`, `pa pr sync-audit`, `pa pr graduate`, `pa pr restack`, `pa wo debug`, `pa wo resolve`, `pa issue create`, `pa sync`; `tests/test_github_and_local_git_bus.py` (real temp git repos + fake `gh`), `tests/test_memory_modes.py`. |
 | **Verification floor** | `pytest tests/test_github_and_local_git_bus.py tests/test_memory_modes.py` |
 | **Exit criteria** | Floors of PR-01..03 green; a scripted end-to-end run in `local_git` mode (programme init → charter → pr start → approve-plan → wo verify → open-or-sync → post-audit → graduate) passes with no `gh` on `PATH`; the same run in `github` mode against the fake `gh` records identical local state plus the projected PR/review calls; graduation is refused without an `APPROVED` audit on `HEAD` (R6); `builtin` graduation produces byte-stable memory files; `external` graduation touches no `memory/` file; Cold-Firewall `APPROVED`. |
-| **Charter** | Stub — refined and locked when PR-02 graduates. |
+| **Charter** | [PROJECT.md](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) — Part I **locked** (`ad7e71f9…`). |
 
 ### Phase 4 — Visibility: PR-04 `pr-04-cockpit-auxpane-ui`
 
@@ -323,3 +323,8 @@ Downstream PRs may make **additive-only** changes to upstream modules (new funct
 - **Summary (`PR-01`, GitHub PR `#1`, `b3a9e773`):** Tier 2 PA (`18498c8a`) decomposed `PR-01` into 6 sequential Work Orders (`WO-01.1`..`WO-01.6`), spawned 6 dedicated Tier 3 Execution Workers (`ce18a7ea`, `2c7d0f68`, `6ccd1320`, `0dfb941c`, `71973f79`, `a7af1930`), and delivered `scripts/dev-bootstrap.sh`, stdlib-only `common.py` (`<1ms` `is_repo_enrolled`), `schemas.py` (all SPEC §6.1–6.4 Pydantic v2 models, lossless H2 parser/renderer, `charter_hash`/`spec_hash`), `state_db.py` (`StateDB` WAL + 5 tables, atomic `Registry`), 7 `.md.tpl` templates, `pa_cli.py` (`enroll`, `unenroll`, `status [--json]`, `mode`), and 51 passing tests (`ruff` clean). Cold-Firewall Auditor (`06c008f6`) audited `be21bcc8` on Round 1 and returned `APPROVED (0 blocking, 0 major, 0 minor)` (`ce4950c2`).
 - **Cross-PR decisions & interface notes:** `schemas.parse_document` preserves pre-H2 preambles and HTML banners inside the preceding `Section.body` (so `PROJECT.md` `## 2.` includes the Part II HTML separator banner; Part II/III edits must occur from `## 3.` onward to keep `charter_hash` intact). `pa status` is strictly read-only on unenrolled repositories.
 - **Next:** Authored and locked Part I Charter of [`pr-02-agents-and-dual-mode-hooks/PROJECT.md`](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) (`charter_hash: c4101d401d3bfce795e277df30e49ffc534e9e1d2c835788a433f342d95ddbde`) using `schemas.compute_charter_hash` and spawned the Tier 2 Principal Architect for `PR-02`.
+
+### 2026-10-16 — PR-02 graduated; PR-03 Chartered & PA spawned (session 1)
+- **Summary (`PR-02`, GitHub PR `#2`, `3c8584a8`):** Tier 2 PA (`3f93d1e5`) decomposed `PR-02` into 6 sequential Work Orders (`WO-02.1`..`WO-02.6`), spawned 6 dedicated Tier 3 Execution Workers (`a926d401`, `5830074c`, `5954d924`, `8f82b5c3`, `a0f09939`, `776fb15d`), and delivered `escalation.py` (pure R1–R6 dual-mode engine, structural signatures, hook I/O helpers), `hooks.json`, `pre_tool_gate.py` (`<1ms` fast-exit, `os.path.realpath` traversal defense, R1/R1b/R2/R3/R4/R5/R6), `post_tool_receipt.py` (shared `compute_tree_hash`, receipt stamping/invalidation, attempt/structural tracking), `stop_gate.py` (two-tier retry ceiling `max_attempts: 5` vs. `max_structural_failures: 2`, Case A/B checks, bounded continuation cap), `pre_invocation.py` (`parse_spawn_header`, Turn 1 binding, `CHECKPOINT`/rewind re-injection, `builtin` vs. `external` memory injection), 5 custom role agents (`agents/pa-*.md`), `rules/00-pa-operating-model.md`, `skills/principal-architect/SKILL.md`, `pa pr approve-plan`, `pa wo verify`, `pa escalate`, and 34 new tests (`85 passed` total, `ruff` clean). Cold-Firewall Auditor (`716160dd`) audited `53697f5b` on Round 1 and returned `APPROVED (0 blocking, 0 major, 0 minor)` (`0d35a8e6`).
+- **Self-hosting decision (`D10`):** Following the user's explicit guidance (`"proceed with current principal-architect skill ... my instincts are to simplify and go with current skill implementation"`), `PR-03` and `PR-04` continue under the current skill implementation while `PR-05` executes end-to-end self-enrollment and dogfood verification.
+- **Next:** Authored and locked Part I Charter of [`pr-03-vcs-bus-models-and-memory-modes/PROJECT.md`](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) (`charter_hash: ad7e71f954cd3d2b3db2eed6c4e55ef17b855bd01bfeefa2c59246c44c5d4e21`) and spawned the Tier 2 Principal Architect for `PR-03`.
