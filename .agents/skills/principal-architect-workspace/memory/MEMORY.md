@@ -10,7 +10,7 @@
 ## Active Projects
 | Project | Status | Modules | Context |
 |---|---|---|---|
-| pr-01-core-schemas-and-enrollment | IN_PROGRESS — Tier 2 PA spawned (Part I Charter locked; autonomous execution to Step 6A) | daemon-package, schemas, state-db, common, pa-cli (enroll/unenroll/status/mode), templates, tests, dev-bootstrap | [PROJECT.md](../pr-01-core-schemas-and-enrollment/PROJECT.md) |
+| pr-01-core-schemas-and-enrollment | IN_PROGRESS (WO1/6 — wo1-dev-bootstrap-and-package-skeleton) | daemon-package, schemas, state-db, common, pa-cli (enroll/unenroll/status/mode), templates, tests, dev-bootstrap | [PROJECT.md](../pr-01-core-schemas-and-enrollment/PROJECT.md) |
 
 ## Recently Completed (last 5)
 | Project | Completed | Modules | Key Outcome |

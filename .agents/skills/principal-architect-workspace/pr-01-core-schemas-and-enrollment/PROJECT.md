@@ -32,10 +32,52 @@ charter:
     - "pytest tests/test_schemas.py tests/test_state_db_and_sync.py"
   charter_locked: true
   charter_hash: "9005d5135f25ae53fd2ed1b6ee63ece115b521cbaccd4469fd690fb6ca061d1a"
-status: PLANNED
-approved_at: null
+status: APPROVED
+approved_at: "2026-10-16T18:50:00Z"
 github_pr: null
-work_orders: []
+work_orders:
+  - id: WO-01.1
+    slug: wo1-dev-bootstrap-and-package-skeleton
+    title: "Developer toolchain bootstrap, pyproject.toml, plugin manifests, and test floor skeleton"
+    complexity: standard
+    status: IN_PROGRESS
+    attempts: 0
+    commit_sha: null
+  - id: WO-01.2
+    slug: wo2-common-stdlib-foundations
+    title: "Stdlib-only common.py foundations, fast enrollment check, and shared pytest fixtures"
+    complexity: standard
+    status: PENDING
+    attempts: 0
+    commit_sha: null
+  - id: WO-01.3
+    slug: wo3-schemas-models-and-document-layer
+    title: "Pydantic v2 Split-Authority models, Markdown frontmatter/section parser, and normative hashes"
+    complexity: architect
+    status: PENDING
+    attempts: 0
+    commit_sha: null
+  - id: WO-01.4
+    slug: wo4-state-db-and-registry
+    title: "Repo-local SQLite StateDB (WAL, 5 SPEC §6.5 tables) and global atomic Registry"
+    complexity: standard
+    status: PENDING
+    attempts: 0
+    commit_sha: null
+  - id: WO-01.5
+    slug: wo5-templates
+    title: "Seven Split-Authority and built-in memory .md.tpl templates and validation tests"
+    complexity: mechanical
+    status: PENDING
+    attempts: 0
+    commit_sha: null
+  - id: WO-01.6
+    slug: wo6-pa-cli-enroll-unenroll-status-mode
+    title: "pa CLI entrypoint (enroll, unenroll, status --json, mode), wrapper scripts, and README"
+    complexity: architect
+    status: PENDING
+    attempts: 0
+    commit_sha: null
 ---
 
 # PR-01 — Core Schemas, State DB & Enrollment
@@ -155,7 +197,25 @@ Downstream PRs may add to these; they may not rename, remove, or change the sema
 
 ## 3. Implementation Plan & Work Order Breakdown
 
-_To be authored by the Tier 2 Principal Architect for PR-01 after file-level discovery. Ledger rows must link to each `woM-<topic>/WORKORDER.md`._
+### 3.1 File-Level Discovery & Sequencing Strategy
+
+Repository inspection at `main` confirms that `SPEC.md` (v1.1), `docs/positioning-paper.md`, `.agents/rules/00-operating-model.md`, and the legacy PA workspace `.agents/skills/principal-architect-workspace/` are committed, while the host Python 3.13 environment lacks system `pip`/`ensurepip`/`pydantic`/`pytest`. Consequently:
+
+1. **Bootstrap first (`WO-01.1`):** Nothing in the verification floor can execute until `scripts/dev-bootstrap.sh` provisions `./.venv` (via `uv` -> `python3 -m venv` -> `python3 -m venv --without-pip` + `get-pip.py` fallback) and installs `-e .[dev]`, paired with the `daemon/` package manifests and initial smoke tests so `pytest tests/test_schemas.py tests/test_state_db_and_sync.py` exits `0` from `WO-01.1` onward.
+2. **Stdlib foundations second (`WO-01.2`):** `common.py` provides zero-third-party-import helpers (`find_repo_root`, `workspace_dir` with `.agents/plugins/...` -> `.agents/skills/...` fallback, `daemon_home`, `<1ms` `is_repo_enrolled`, `read_transcript`, `latest_checkpoint_step`, injectable `run`, and `render_template`) plus `tests/conftest.py` fixtures (`tmp_repo`, `daemon_home`, `fake_runner`).
+3. **Contracts & hashing third (`WO-01.3`):** `schemas.py` implements all SPEC §6.1–6.4 Pydantic v2 models (`extra="forbid"`), string enums (`PRState`, `WorkOrderStatus`, `ComplexityTier`), `EscalationRequest`, the lossless H2 `Section` document parser/renderer, and the normative `compute_charter_hash` / `compute_spec_hash` / `verify_charter_hash` / `verify_spec_hash` functions, dogfood-verified directly against this committed `PROJECT.md` and `PROGRAM.md`.
+4. **Persistence fourth (`WO-01.4`):** `state_db.py` implements `StateDB` (`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA user_version=1;` and all 5 SPEC §6.5 tables with typed transactional accessors) and `Registry` (atomic temp-file + `os.replace` writes to `daemon/state/registry.json`).
+5. **Templates fifth (`WO-01.5`):** The seven `.md.tpl` files (`PROGRAM`, `PROJECT`, `WORKORDER`, `AUDIT`, `MEMORY`, `MODULE_INDEX`, `PROJECT_INDEX`) and template rendering helpers, validated against `schemas.py` loaders.
+6. **CLI integration sixth (`WO-01.6`):** `pa_cli.py` (`build_parser`, `main`, `COMMAND_MODULES`, lazy heavy imports, and `enroll` / `unenroll` / `status [--json]` / `mode`), `scripts/enroll.sh`, `scripts/unenroll.sh`, `README.md`, and the complete offline enrollment/migration/idempotency/status test matrix.
+
+### 3.2 Work Order Ledger
+
+- **[-] [wo1-dev-bootstrap-and-package-skeleton](wo1-dev-bootstrap-and-package-skeleton/WORKORDER.md)** (`WO-01.1`, `complexity: standard`, base: `main`): Provision `./.venv` via `scripts/dev-bootstrap.sh`, configure `pyproject.toml`, root and `daemon/` `.gitignore` files, `daemon/plugin.json`, `daemon/workspace-plugin/principal-architect/plugin.json`, `scripts/__init__.py`, and initial test suite skeleton (`tests/conftest.py`, `tests/test_schemas.py`, `tests/test_state_db_and_sync.py`).
+- **[ ] [wo2-common-stdlib-foundations](wo2-common-stdlib-foundations/WORKORDER.md)** (`WO-01.2`, `complexity: standard`, base: `pr-01-core-schemas-and-enrollment/wo1-dev-bootstrap-and-package-skeleton`): Implement stdlib-only `scripts/common.py` (`find_repo_root`, `workspace_dir`, `daemon_home`, `is_repo_enrolled`, `read_transcript`, `latest_checkpoint_step`, `run`, `render_template`), shared fixtures in `tests/conftest.py` (`tmp_repo`, `daemon_home`, `fake_runner`), and unit/import-purity tests in `tests/test_state_db_and_sync.py`.
+- **[ ] [wo3-schemas-models-and-document-layer](wo3-schemas-models-and-document-layer/WORKORDER.md)** (`WO-01.3`, `complexity: architect`, base: `pr-01-core-schemas-and-enrollment/wo2-common-stdlib-foundations`): Implement `scripts/schemas.py` (all SPEC §6.1–6.4 Pydantic v2 models, enums, `EscalationRequest`, `Section`, `parse_document`, `dump_document`, `load_program`/`load_project`/`load_workorder`/`load_audit`, `compute_charter_hash`, `compute_spec_hash`, `verify_charter_hash`, `verify_spec_hash`) and comprehensive tests in `tests/test_schemas.py` including dogfood verification of this committed `PROJECT.md` and `PROGRAM.md`.
+- **[ ] [wo4-state-db-and-registry](wo4-state-db-and-registry/WORKORDER.md)** (`WO-01.4`, `complexity: standard`, base: `pr-01-core-schemas-and-enrollment/wo3-schemas-models-and-document-layer`): Implement `scripts/state_db.py` (`TABLES`, `StateDB` with WAL + `busy_timeout=5000` + `user_version=1` + typed accessors for all 5 tables, and atomic `Registry`) plus unit tests in `tests/test_state_db_and_sync.py`.
+- **[ ] [wo5-templates](wo5-templates/WORKORDER.md)** (`WO-01.5`, `complexity: mechanical`, base: `pr-01-core-schemas-and-enrollment/wo4-state-db-and-registry`): Author the seven `.md.tpl` templates (`PROGRAM`, `PROJECT`, `WORKORDER`, `AUDIT`, `MEMORY`, `MODULE_INDEX`, `PROJECT_INDEX`), template helpers in `scripts/common.py`, and template render-and-validate tests in `tests/test_schemas.py`.
+- **[ ] [wo6-pa-cli-enroll-unenroll-status-mode](wo6-pa-cli-enroll-unenroll-status-mode/WORKORDER.md)** (`WO-01.6`, `complexity: architect`, base: `pr-01-core-schemas-and-enrollment/wo5-templates`): Implement `scripts/pa_cli.py` (`build_parser`, `main`, `COMMAND_MODULES`, `enroll`, `unenroll`, `status [--json]`, `mode`), `scripts/enroll.sh`, `scripts/unenroll.sh`, `README.md`, and the full offline enrollment/migration/status/mode test suite in `tests/test_state_db_and_sync.py`.
 
 <!-- ======================================================================
      PART III — OUTCOME & GRADUATION SUMMARY (authored by the Tier 2 Principal Architect)
@@ -163,4 +223,4 @@ _To be authored by the Tier 2 Principal Architect for PR-01 after file-level dis
 
 ## 4. Outcome & Session Log
 
-_To be authored by the Tier 2 Principal Architect. memory_mode is `builtin`: record full architectural distillation (decisions, dead ends, surfaced findings, audit rounds, final head_sha)._
+- **2026-10-16 (`status: APPROVED`):** User approved the full Programme Plan (`PROGRAM.md` `status: APPROVED`) and explicitly authorized autonomous execution and sub-agent spawning across the programme (Decision D11, 2026-10-16). Part II Work Order decomposition (`WO-01.1` through `WO-01.6`) authored and approved under standing user programme authorization (`approved_at: 2026-10-16T18:50:00Z`).
