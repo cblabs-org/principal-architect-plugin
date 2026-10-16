@@ -37,12 +37,14 @@ work_orders:
     slug: wo2-cockpit-ui
     title: "Cockpit AuxPane frontend (index.html, styles.css, app.js)"
     complexity: standard
-    status: IN_PROGRESS
+    status: COMPLETED
+    attempts: 1
+    commit_sha: "571d705728ef1cb803c1021219b94a9c1d289c95"
   - id: WO-04.3
     slug: wo3-install-uninstall-and-docs
     title: "Host install/uninstall scripts and user-facing README"
     complexity: mechanical
-    status: PENDING
+    status: IN_PROGRESS
 ---
 
 # PR-04 — Principal Architect Cockpit AuxPane UI & Installer
@@ -149,8 +151,8 @@ PR-04 delivers the **AuxPane UI visibility layer and host installation scripts**
 | WO ID | Slug & Branch | Base Branch | Complexity | Allowed Files | Summary | Status |
 |---|---|---|---|---|---|---|
 | **WO-04.1** | [`wo1-cockpit-backend-http-sse`](wo1-cockpit-backend-http-sse/WORKORDER.md)<br>`pr-04-cockpit-auxpane-ui/wo1-cockpit-backend-http-sse` | `feat/pr-03-vcs-bus-models-and-memory-modes` | `architect` | `daemon/sidecars/pa_cockpit/sidecar.json`, `daemon/workspace-plugin/principal-architect/scripts/cockpit.py`, `tests/conftest.py`, `tests/test_cockpit_api.py` | `sidecar.json` manifest + stdlib `ThreadingHTTPServer` HTTP/SSE backend (`cockpit.py`) implementing all 10 API endpoints and live ephemeral-port test suite. | `COMPLETED` (`1580e76`, `rcpt_124a60280b90`) |
-| **WO-04.2** | [`wo2-cockpit-ui`](wo2-cockpit-ui/WORKORDER.md)<br>`pr-04-cockpit-auxpane-ui/wo2-cockpit-ui` | `pr-04-cockpit-auxpane-ui/wo1-cockpit-backend-http-sse` | `standard` | `daemon/sidecars/pa_cockpit/ui/index.html`, `daemon/sidecars/pa_cockpit/ui/styles.css`, `daemon/sidecars/pa_cockpit/ui/app.js`, `tests/test_cockpit_api.py` | Cockpit AuxPane frontend (`index.html`, `styles.css`, `app.js`) implementing Zone 1, Zone 2, and Zone 3 with host CSS variables, SSE binding, and `window.sidecar` integration + UI contract tests. | `IN_PROGRESS` |
-| **WO-04.3** | [`wo3-install-uninstall-and-docs`](wo3-install-uninstall-and-docs/WORKORDER.md)<br>`pr-04-cockpit-auxpane-ui/wo3-install-uninstall-and-docs` | `pr-04-cockpit-auxpane-ui/wo2-cockpit-ui` | `mechanical` | `scripts/install.sh`, `scripts/uninstall.sh`, `README.md`, `tests/test_cockpit_api.py` | Environment-isolatable `install.sh` & `uninstall.sh` preserving `state/registry.json`, full user-facing `README.md`, and end-to-end installer tests in `tmp_path`. | `PLANNED` |
+| **WO-04.2** | [`wo2-cockpit-ui`](wo2-cockpit-ui/WORKORDER.md)<br>`pr-04-cockpit-auxpane-ui/wo2-cockpit-ui` | `pr-04-cockpit-auxpane-ui/wo1-cockpit-backend-http-sse` | `standard` | `daemon/sidecars/pa_cockpit/ui/index.html`, `daemon/sidecars/pa_cockpit/ui/styles.css`, `daemon/sidecars/pa_cockpit/ui/app.js`, `tests/test_cockpit_api.py` | Cockpit AuxPane frontend (`index.html`, `styles.css`, `app.js`) implementing Zone 1, Zone 2, and Zone 3 with host CSS variables, SSE binding, and `window.sidecar` integration + UI contract tests. | `COMPLETED` (`571d705`, `rcpt_42c8bdb73051`) |
+| **WO-04.3** | [`wo3-install-uninstall-and-docs`](wo3-install-uninstall-and-docs/WORKORDER.md)<br>`pr-04-cockpit-auxpane-ui/wo3-install-uninstall-and-docs` | `pr-04-cockpit-auxpane-ui/wo2-cockpit-ui` | `mechanical` | `scripts/install.sh`, `scripts/uninstall.sh`, `README.md`, `tests/test_cockpit_api.py` | Environment-isolatable `install.sh` & `uninstall.sh` preserving `state/registry.json`, full user-facing `README.md`, and end-to-end installer tests in `tmp_path`. | `IN_PROGRESS` |
 
 <!-- ======================================================================
      PART III — OUTCOME & GRADUATION SUMMARY (authored by the Tier 2 Principal Architect)
@@ -160,3 +162,4 @@ PR-04 delivers the **AuxPane UI visibility layer and host installation scripts**
 
 - **2026-10-16T23:01:30Z — Part II Implementation Plan Approved:** Recorded user's standing programme-level autonomous execution authorization (`status: APPROVED`). Decomposed `PR-04` into 3 sequential single-writer Work Orders (`WO-04.1` `wo1-cockpit-backend-http-sse`, `WO-04.2` `wo2-cockpit-ui`, `WO-04.3` `wo3-install-uninstall-and-docs`).
 - **2026-10-16T23:21:31Z — `WO-04.1` (`wo1-cockpit-backend-http-sse`) Completed:** Delivered `daemon/sidecars/pa_cockpit/sidecar.json` (`SIDECAR_UI_ENTRYPOINT_AUX_PANE`, zero `agent_permissions`), stdlib `CockpitHTTPServer` + `create_server` + `build_workspace_state` in `daemon/workspace-plugin/principal-architect/scripts/cockpit.py` implementing all 10 `GET`/`SSE`/`POST` routes, and live ephemeral-port tests in `tests/test_cockpit_api.py` (`119 passed`, `ruff check` clean, commit `1580e760053977b20b5e944d78a5d1e45028c7fb`, receipt `rcpt_124a60280b90`).
+- **2026-10-16T23:31:30Z — `WO-04.2` (`wo2-cockpit-ui`) Completed:** Delivered `daemon/sidecars/pa_cockpit/ui/{index.html,styles.css,app.js}` implementing Zone 1 (header/sync/mode/model), Zone 2 (`🔔 Human Attention Needed` inbox), and Zone 3 (Programme -> Stacked PR -> Work Order DAG with `🔒 Charter by Chief`, receipt badges, and `window.sidecar.ui.toggleConversation` bindings) using all 6 Antigravity host CSS variables, plus UI contract tests in `tests/test_cockpit_api.py` (`120 passed`, `ruff check` clean, commit `571d705728ef1cb803c1021219b94a9c1d289c95`, receipt `rcpt_42c8bdb73051`). Surfaced note for `PR-05`: invoking `pa_cli.py wo verify` directly on an unenrolled repo creates `.state/state.db`, which must remain absent while testing unenrolled status prior to `PR-05` self-enrollment.
