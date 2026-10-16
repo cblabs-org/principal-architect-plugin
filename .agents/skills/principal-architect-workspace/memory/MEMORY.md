@@ -10,7 +10,7 @@
 ## Active Projects
 | Project | Status | Modules | Context |
 |---|---|---|---|
-| pr-03-vcs-bus-models-and-memory-modes | IN_PROGRESS — Tier 2 PA spawned (Part I Charter locked; autonomous execution to Step 6A) | vcs-sync, models, memory-grad, pa-cli (lifecycle commands), tests | [PROJECT.md](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) |
+| pr-03-vcs-bus-models-and-memory-modes | IN_PROGRESS — WO1/5 (`wo1-local-git-bus`) | vcs-sync, models, memory-grad, pa-cli (lifecycle commands), tests | [PROJECT.md](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) |
 
 ## Recently Completed (last 5)
 | Project | Completed | Modules | Key Outcome |

@@ -26,10 +26,45 @@ charter:
     - "pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py tests/test_github_and_local_git_bus.py tests/test_memory_modes.py"
   charter_locked: true
   charter_hash: "ad7e71f954cd3d2b3db2eed6c4e55ef17b855bd01bfeefa2c59246c44c5d4e21"
-status: PLANNED
-approved_at: null
+status: APPROVED
+approved_at: "2026-10-16T21:37:00Z"
 github_pr: null
-work_orders: []
+work_orders:
+  - id: WO-03.1
+    slug: wo1-local-git-bus
+    title: "Local-Git floor (VcsBus protocol, LocalGitBus stacked branches, commit trailers, AUDIT-round-K.md, DEFERRED_BACKLOG.md, sync_state, restack)"
+    complexity: architect
+    status: IN_PROGRESS
+    attempts: 0
+    commit_sha: null
+  - id: WO-03.2
+    slug: wo2-github-bus
+    title: "GitHub multi-machine bus (GitHubBus, get_vcs_bus, parse_pa_audit_comment, PR create/edit/view/diff, gh pr review --comment, pa:deferred issues)"
+    complexity: standard
+    status: PENDING
+    attempts: 0
+    commit_sha: null
+  - id: WO-03.3
+    slug: wo3-memory-graduation-modes
+    title: "Mutually exclusive external vs. builtin memory graduation engine (memory_grad.py) and byte-stability tests"
+    complexity: standard
+    status: PENDING
+    attempts: 0
+    commit_sha: null
+  - id: WO-03.4
+    slug: wo4-models-routing-and-ide-client
+    title: "Dynamic complexity model routing, retry step-up, LanguageServerClient with headless fallback (models.py), and pa wo debug/resolve"
+    complexity: standard
+    status: PENDING
+    attempts: 0
+    commit_sha: null
+  - id: WO-03.5
+    slug: wo5-lifecycle-cli-commands
+    title: "Complete pa CLI lifecycle commands (sync, programme init/charter, pr start/claim/open-or-sync/post-audit/sync-audit/graduate/restack, issue create)"
+    complexity: architect
+    status: PENDING
+    attempts: 0
+    commit_sha: null
 ---
 
 # PR-03 — VCS Bus, Model Routing & Memory Graduation Modes
@@ -111,7 +146,25 @@ PR-03 delivers the **transport, model routing, memory graduation, and full CLI l
 
 ## 3. Implementation Plan & Work Order Breakdown
 
-_To be authored by the Tier 2 Principal Architect for PR-03 after file-level discovery. Ledger rows must link to each `woM-<topic>/WORKORDER.md`._
+### 3.1 File-Level Discovery & Sequencing Strategy
+
+Inspection of `feat/pr-02-agents-and-dual-mode-hooks` (`bfda2d4`) confirms that `common.py` (stdlib-only `<1ms` helpers, `find_repo_root`, `workspace_dir`, `render_template_file`, `run`), `schemas.py` (`ProgramSpec`, `PRNodeSpec`, `ProjectSpec`, `PRCharterSpec`, `WOSummaryRow`, `WorkOrderSpec`, `CompletionReport`, `AuditReport`, `AuditFinding`, `compute_charter_hash`, `verify_charter_hash`, `compute_spec_hash`, `verify_spec_hash`, `parse_document`, `dump_document`), `state_db.py` (`StateDB` with `repo_config`, `sessions`, `verification_receipts`, `escalations`, `attention_queue`, and `Registry`), `escalation.py`, the four hooks (`pre_invocation.py`, `pre_tool_gate.py`, `post_tool_receipt.py`, `stop_gate.py`), and `pa_cli.py` (`enroll`, `unenroll`, `status`, `mode`, `pr approve-plan`, `wo verify`, `escalate`) are in place with 85 passing tests.
+
+To build PR-03 cleanly with zero circular dependencies and keep the full verification floor (`pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py tests/test_github_and_local_git_bus.py tests/test_memory_modes.py`) green at the tip of every Work Order:
+
+1. **Local-Git Floor first (`WO-03.1`, `wo1-local-git-bus`):** Implement `scripts/vcs_sync.py` with the `VcsBus` protocol/base class and `LocalGitBus` (stacked branch creation/checkout `create_or_checkout_branch`, commit trailer helpers `read_commit_trailers` and `format_commit_with_trailers`, `write_audit_round` validating `AuditReport` up to `max_audit_rounds: 5` and committing `AUDIT-round-<K>.md` with the machine-parseable `<!-- pa:audit ... -->` header and trailer `PA-Audit-Verdict: <verdict> (<head_sha>)`, `append_deferred_backlog` writing/appending `<workspace_dir>/DEFERRED_BACKLOG.md`, `sync_state` rebuilding `state.db` from local trailers + committed `WORKORDER.md`/`AUDIT-round-*.md`, and `restack_branches` via `git rebase --update-refs`), plus initial unit tests in `tests/test_github_and_local_git_bus.py` and placeholder tests in `tests/test_memory_modes.py`.
+2. **GitHub Multi-Machine Bus second (`WO-03.2`, `wo2-github-bus`):** Extend `scripts/vcs_sync.py` with `GitHubBus`, `get_vcs_bus(repo_root, *, vcs_mode=None, runner=common.run)`, and `parse_pa_audit_comment(text)` (branch push to `origin`, `gh pr create --base <base> --head <head>` / `gh pr edit`, `gh pr review <N> --comment --body-file ...` containing `<!-- pa:audit ... -->` [never `--approve` or `--request-changes`], `gh pr view` / `gh pr diff`, `gh issue create --label pa:deferred` with `DEFERRED_BACKLOG.md` fallback, remote sync in `sync_state`, and base retargeting in `restack_branches`), plus fake-`gh` tests in `tests/test_github_and_local_git_bus.py`.
+3. **Memory Graduation Modes third (`WO-03.3`, `wo3-memory-graduation-modes`):** Implement `scripts/memory_grad.py` with `graduate(repo_root, pr_id, *, memory_mode=None) -> dict[str, Any]` enforcing the strict mutual-exclusion boundary between `external` mode (never creates, reads, or mutates `memory/{MEMORY.md, MODULE_INDEX.md, PROJECT_INDEX.md}`; writes only a succinct mechanical graduation summary to `PROJECT.md` Part III and sets `status: GRADUATED`) and `builtin` mode (removes PR from `MEMORY.md` `## Active Projects`, prepends to `## Recently Completed (last 5)`, rolls entries `> 5` into `PROJECT_INDEX.md`, idempotently updates `MODULE_INDEX.md` rows under `charter.allowed_modules`, and sets `PROJECT.md` `status: GRADUATED`), plus comprehensive tests in `tests/test_memory_modes.py`.
+4. **Model Routing & IDE Client fourth (`WO-03.4`, `wo4-models-routing-and-ide-client`):** Implement `scripts/models.py` (`ARCHITECT_MODEL_PREFERENCE = ("gemini-4-argon-high", "gemini-3.1-pro-high", "claude-opus-5-5-high")`, `route(complexity, attempt=1, parent_model="inherit") -> str`, `step_up(tier) -> str`, `select_architect_model`, and `LanguageServerClient` with `start_conversation`, `set_pinned`, and graceful headless bridge-prompt fallback when `ANTIGRAVITY_LS_ADDRESS` is unset/unreachable), and add `pa wo debug <WO-ID>` and `pa wo resolve <WO-ID> --summary "..."` to `scripts/pa_cli.py`, plus unit tests in `tests/test_github_and_local_git_bus.py`.
+5. **Lifecycle CLI Commands fifth (`WO-03.5`, `wo5-lifecycle-cli-commands`):** Extend `scripts/pa_cli.py` (preserving top-level stdlib-only lazy imports!) with `pa sync`, `pa programme init`, `pa programme charter`, `pa pr start`, `pa pr claim`, `pa pr open-or-sync`, `pa pr post-audit`, `pa pr sync-audit`, `pa pr graduate` (enforcing Rule R6: refusing graduation with exit `1` unless a valid `AuditReport` with `verdict == "APPROVED"` matches current `HEAD` [or its parent when `HEAD` is the `audit(pr-NN):` commit], running `charter.verification_floor`, calling `memory_grad.graduate`, updating `PROGRAM.md` PR status to `GRADUATED`, and unpinning the PA session), `pa pr restack`, and `pa issue create`, plus end-to-end scripted CLI lifecycle tests in `tests/test_github_and_local_git_bus.py`.
+
+### 3.2 Work Order Ledger
+
+- **[ ] [wo1-local-git-bus](wo1-local-git-bus/WORKORDER.md)** (`WO-03.1`, `complexity: architect`, base: `feat/pr-02-agents-and-dual-mode-hooks`): Implement `scripts/vcs_sync.py` (`VcsBus` protocol + `LocalGitBus` stacked branches, commit trailers, `write_audit_round`, `append_deferred_backlog`, `sync_state`, `restack_branches`), initial `tests/test_github_and_local_git_bus.py`, and placeholder `tests/test_memory_modes.py`.
+- **[ ] [wo2-github-bus](wo2-github-bus/WORKORDER.md)** (`WO-03.2`, `complexity: standard`, base: `pr-03-vcs-bus-models-and-memory-modes/wo1-local-git-bus`): Extend `scripts/vcs_sync.py` with `GitHubBus`, `get_vcs_bus`, and `parse_pa_audit_comment`, plus mocked-`gh` tests in `tests/test_github_and_local_git_bus.py`.
+- **[ ] [wo3-memory-graduation-modes](wo3-memory-graduation-modes/WORKORDER.md)** (`WO-03.3`, `complexity: standard`, base: `pr-03-vcs-bus-models-and-memory-modes/wo2-github-bus`): Implement `scripts/memory_grad.py` (`graduate` for `external` vs. `builtin` modes) and comprehensive tests in `tests/test_memory_modes.py`.
+- **[ ] [wo4-models-routing-and-ide-client](wo4-models-routing-and-ide-client/WORKORDER.md)** (`WO-03.4`, `complexity: standard`, base: `pr-03-vcs-bus-models-and-memory-modes/wo3-memory-graduation-modes`): Implement `scripts/models.py` (`ARCHITECT_MODEL_PREFERENCE`, `route`, `step_up`, `select_architect_model`, `LanguageServerClient`) and `pa wo debug`/`pa wo resolve` in `scripts/pa_cli.py`, plus tests in `tests/test_github_and_local_git_bus.py`.
+- **[ ] [wo5-lifecycle-cli-commands](wo5-lifecycle-cli-commands/WORKORDER.md)** (`WO-03.5`, `complexity: architect`, base: `pr-03-vcs-bus-models-and-memory-modes/wo4-models-routing-and-ide-client`): Implement `pa sync`, `pa programme init/charter`, `pa pr start/claim/open-or-sync/post-audit/sync-audit/graduate/restack`, and `pa issue create` in `scripts/pa_cli.py`, plus end-to-end scripted CLI lifecycle tests in `tests/test_github_and_local_git_bus.py`.
 
 <!-- ======================================================================
      PART III — OUTCOME & GRADUATION SUMMARY (authored by the Tier 2 Principal Architect)
@@ -119,4 +172,4 @@ _To be authored by the Tier 2 Principal Architect for PR-03 after file-level dis
 
 ## 4. Outcome & Session Log
 
-_To be authored by the Tier 2 Principal Architect. memory_mode is `builtin`: record full architectural distillation (decisions, dead ends, surfaced findings, audit rounds, final head_sha)._
+- **2026-10-16 (`status: APPROVED`):** User approved the full Programme Plan (`PROGRAM.md` `status: APPROVED`) and explicitly authorized autonomous execution and sub-agent spawning across the programme (Decision D11, 2026-10-16). Part II Work Order decomposition (`WO-03.1` through `WO-03.5`) authored and approved under standing user programme authorization (`approved_at: 2026-10-16T21:37:00Z`).
