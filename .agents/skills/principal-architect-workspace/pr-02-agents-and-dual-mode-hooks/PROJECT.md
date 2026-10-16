@@ -32,7 +32,7 @@ charter:
   charter_hash: "c4101d401d3bfce795e277df30e49ffc534e9e1d2c835788a433f342d95ddbde"
 status: STAGED_FOR_AUDIT
 approved_at: "2026-10-16T20:05:00Z"
-github_pr: null
+github_pr: 2
 work_orders:
   - id: WO-02.1
     slug: wo1-escalation-engine-and-hook-io

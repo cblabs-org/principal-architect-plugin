@@ -10,7 +10,7 @@
 ## Active Projects
 | Project | Status | Modules | Context |
 |---|---|---|---|
-| pr-02-agents-and-dual-mode-hooks | STAGED_FOR_AUDIT — 6/6 WOs completed (`WO-02.1`..`WO-02.6`) | agents, hooks.json, escalation, pre-invocation, pre-tool-gate, post-tool-receipt, stop-gate, pa-cli (approve-plan/wo-verify/escalate) | [PROJECT.md](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) |
+| pr-02-agents-and-dual-mode-hooks | STAGED_FOR_AUDIT (PR #2) — 6/6 WOs completed (`WO-02.1`..`WO-02.6`) | agents, hooks.json, escalation, pre-invocation, pre-tool-gate, post-tool-receipt, stop-gate, pa-cli (approve-plan/wo-verify/escalate) | [PROJECT.md](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) |
 
 ## Recently Completed (last 5)
 | Project | Completed | Modules | Key Outcome |
