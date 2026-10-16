@@ -14,7 +14,8 @@ Implements SPEC §8 & §11.3 and PR-03 Charter G1, R1, & R2:
   `latest_audit:<PR-ID>`, `last_vcs_sync_at`) and reconciling `PROJECT.md` `work_orders`
   summary rows from local git trailers and committed Split-Authority artifacts.
 - `create_or_checkout_branch`, `restack_branches` (`git rebase --update-refs`), `VcsBus`,
-  `LocalGitBus`, and `get_vcs_bus`.
+  `LocalGitBus`, `GitHubBus` (`gh pr create/edit/view/diff`, `gh pr review --comment`,
+  `gh issue create --label pa:deferred`), and `get_vcs_bus`.
 """
 
 from __future__ import annotations
@@ -58,6 +59,14 @@ _VERDICT_LINE_RE = re.compile(
     r"\*\*Audit Verdict:\*\*\s*(APPROVED|CHANGES_REQUESTED)\b",
     re.IGNORECASE,
 )
+
+_PR_URL_NUMBER_RE = re.compile(r"/pull/(\d+)(?:\b|/|$)")
+_ISSUE_URL_RE = re.compile(r"(https?://\S+/issues/\d+)")
+
+
+def _gh_bin() -> str:
+    """Return the `gh` executable path, respecting `PA_GH_BIN` environment override."""
+    return os.environ.get("PA_GH_BIN", "").strip() or "gh"
 
 
 def _git_commit_with_fallback(
@@ -400,6 +409,11 @@ def _find_pr_dir_and_project(
             proj_doc.spec.charter.pr_id.upper() == pr_norm
             or proj_doc.spec.charter.slug.lower() == slug_norm
             or pr_dir.name.lower() == slug_norm
+            or proj_doc.spec.charter.branch == pr_id.strip()
+            or (
+                proj_doc.spec.github_pr is not None
+                and str(proj_doc.spec.github_pr) == pr_id.strip()
+            )
         ):
             return pr_dir, proj_doc
 
@@ -670,7 +684,7 @@ def _infer_pr_id_from_wo_id(wo_id: str) -> str:
     return "PR-00"
 
 
-def sync_state(
+def _local_sync_state(
     repo_root: str | Path,
     *,
     runner: common.Runner = common.run,
@@ -1084,7 +1098,7 @@ def _collect_restack_targets(
     return []
 
 
-def restack_branches(
+def _local_restack_branches(
     repo_root: str | Path,
     *,
     pr_id: str | None = None,
@@ -1126,6 +1140,120 @@ def restack_branches(
         "details": details,
         "commands": commands,
     }
+
+
+def _resolve_pr_target(
+    ws_dir: Path,
+    pr_id_or_number: str | int,
+) -> tuple[str, Path | None, schemas.Document[schemas.ProjectSpec] | None]:
+    """Resolve `(target_arg, pr_dir, proj_doc)` from a PR ID, slug, branch, or GitHub PR number."""
+    if isinstance(pr_id_or_number, int) or str(pr_id_or_number).strip().isdigit():
+        num_int = int(str(pr_id_or_number).strip())
+        if ws_dir.is_dir():
+            for proj_md in sorted(ws_dir.glob("pr-*/PROJECT.md")):
+                if not proj_md.is_file():
+                    continue
+                try:
+                    pdoc = schemas.load_project(proj_md)
+                except Exception:  # noqa: BLE001, S112
+                    continue
+                if pdoc.spec.github_pr == num_int:
+                    return str(num_int), proj_md.parent, pdoc
+        return str(num_int), None, None
+
+    raw_str = str(pr_id_or_number).strip()
+    pr_dir, proj_doc = _find_pr_dir_and_project(ws_dir, raw_str)
+    if proj_doc is not None:
+        if proj_doc.spec.github_pr is not None:
+            return str(proj_doc.spec.github_pr), pr_dir, proj_doc
+        return proj_doc.spec.charter.branch, pr_dir, proj_doc
+    if pr_dir.is_dir():
+        return raw_str, pr_dir, None
+    return raw_str, None, None
+
+
+def _render_pr_body(proj_doc: schemas.Document[schemas.ProjectSpec]) -> str:
+    """Render a deterministic GitHub PR body from `PROJECT.md` Charter and Work Orders."""
+    ch = proj_doc.spec.charter
+    lines: list[str] = [
+        f"## {ch.pr_id} — {ch.title}",
+        "",
+        f"- **Programme:** `{ch.programme_id}`",
+        f"- **Stack:** `{ch.base_branch}` -> `{ch.branch}`",
+        f"- **Status:** `{proj_doc.spec.status.value}`",
+        "",
+        "### Work Orders",
+        "",
+        "| WO-ID | Slug | Title | Complexity | Status | Attempts | Commit |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    if proj_doc.spec.work_orders:
+        for row in proj_doc.spec.work_orders:
+            sha_short = f"`{row.commit_sha[:7]}`" if row.commit_sha else "—"
+            lines.append(
+                f"| `{row.id}` | `{row.slug}` | {row.title} | `{row.complexity.value}` | "
+                f"`{row.status.value}` | {row.attempts} | {sha_short} |"
+            )
+    else:
+        lines.append("| — | — | _No Work Orders decomposed yet_ | — | — | 0 | — |")
+    return "\n".join(lines) + "\n"
+
+
+def _extract_pr_number_and_url(text: str) -> tuple[int | None, str | None]:
+    """Extract `(pr_number, pr_url)` from `gh pr create` or `gh pr view --json` output."""
+    cleaned = text.strip()
+    if not cleaned:
+        return None, None
+
+    if cleaned.startswith("{"):
+        try:
+            data = json.loads(cleaned)
+            if isinstance(data, Mapping):
+                num_val = data.get("number")
+                url_val = data.get("url")
+                pr_num = int(num_val) if num_val is not None else None
+                pr_url = str(url_val).strip() if url_val else None
+                return pr_num, pr_url
+        except (ValueError, TypeError):
+            pass
+
+    for line in reversed(cleaned.splitlines()):
+        line_s = line.strip()
+        m = _PR_URL_NUMBER_RE.search(line_s)
+        if m:
+            pr_num = int(m.group(1))
+            url_cand = line_s if line_s.startswith("http") else None
+            return pr_num, url_cand
+
+    if cleaned.isdigit():
+        return int(cleaned), None
+
+    return None, None
+
+
+def _extract_issue_url(text: str) -> str | None:
+    """Extract an issue URL from `gh issue create` stdout."""
+    cleaned = text.strip()
+    if not cleaned:
+        return None
+
+    if cleaned.startswith("{"):
+        try:
+            data = json.loads(cleaned)
+            if isinstance(data, Mapping) and data.get("url"):
+                return str(data["url"]).strip()
+        except (ValueError, TypeError):
+            pass
+
+    m = _ISSUE_URL_RE.search(cleaned)
+    if m:
+        return m.group(1)
+
+    for line in reversed(cleaned.splitlines()):
+        line_s = line.strip()
+        if line_s.startswith(("http://", "https://")):
+            return line_s
+    return None
 
 
 @runtime_checkable
@@ -1189,6 +1317,10 @@ class VcsBus(Protocol):
     ) -> dict[str, Any]: ...
 
     def open_or_sync_pr(self, pr_id: str, *, draft: bool = False) -> dict[str, Any]: ...
+
+    def view_pr(self, pr_id_or_number: str | int) -> dict[str, Any]: ...
+
+    def diff_pr(self, pr_id_or_number: str | int) -> str: ...
 
     def post_audit(
         self,
@@ -1388,6 +1520,57 @@ class LocalGitBus:
             "head_sha": head_sha,
         }
 
+    def view_pr(self, pr_id_or_number: str | int) -> dict[str, Any]:
+        """Return PR metadata from local `PROJECT.md` and `AUDIT-round-*.md` files."""
+        ws_dir = common.workspace_dir(self.repo_root)
+        target, pr_dir, proj_doc = _resolve_pr_target(ws_dir, pr_id_or_number)
+        if proj_doc is None or pr_dir is None:
+            raise ValueError(f"PR '{pr_id_or_number}' not found in {ws_dir}")
+
+        head_res = self.runner(["git", "rev-parse", "HEAD"], cwd=self.repo_root)
+        head_sha = head_res.stdout.strip() if head_res.returncode == 0 else ""
+        reviews: list[dict[str, Any]] = []
+        for audit_md in sorted(pr_dir.glob("AUDIT-round-*.md")):
+            if audit_md.is_file():
+                reviews.append({"body": audit_md.read_text(encoding="utf-8")})
+
+        return {
+            "number": proj_doc.spec.github_pr,
+            "url": None,
+            "state": proj_doc.spec.status.value,
+            "title": f"{proj_doc.spec.charter.pr_id}: {proj_doc.spec.charter.title}",
+            "body": _render_pr_body(proj_doc),
+            "baseRefName": proj_doc.spec.charter.base_branch,
+            "headRefName": proj_doc.spec.charter.branch,
+            "headRefOid": head_sha,
+            "reviews": reviews,
+            "comments": [],
+            "target": target,
+        }
+
+    def diff_pr(self, pr_id_or_number: str | int) -> str:
+        """Return local `git diff <base_branch>...<branch>` for `pr_id_or_number`."""
+        ws_dir = common.workspace_dir(self.repo_root)
+        _, _, proj_doc = _resolve_pr_target(ws_dir, pr_id_or_number)
+        if proj_doc is not None:
+            base_branch = proj_doc.spec.charter.base_branch
+            branch = proj_doc.spec.charter.branch
+        else:
+            base_branch = "main"
+            branch = "HEAD"
+
+        res = self.runner(
+            ["git", "diff", f"{base_branch}...{branch}"],
+            cwd=self.repo_root,
+        )
+        if res.returncode == 0:
+            return res.stdout
+        res_fallback = self.runner(
+            ["git", "diff", base_branch, branch],
+            cwd=self.repo_root,
+        )
+        return res_fallback.stdout
+
     def post_audit(
         self,
         pr_id: str,
@@ -1457,6 +1640,7 @@ class LocalGitBus:
                 )
 
         audit_meta: dict[str, Any] = {
+            "mode": self.mode,
             "pr_id": pr_id_upper,
             "github_pr": report.github_pr,
             "audit_round": report.audit_round,
@@ -1477,7 +1661,7 @@ class LocalGitBus:
 
     def sync_state(self) -> dict[str, Any]:
         """Rebuild `.state/state.db` and reconcile `PROJECT.md` summary rows from local Git."""
-        return sync_state(self.repo_root, runner=self.runner)
+        return _local_sync_state(self.repo_root, runner=self.runner)
 
     def restack_branches(
         self,
@@ -1486,12 +1670,486 @@ class LocalGitBus:
         onto_branch: str | None = None,
     ) -> dict[str, Any]:
         """Rebase stacked branches via `git rebase --update-refs`."""
-        return restack_branches(
+        return _local_restack_branches(
             self.repo_root,
             pr_id=pr_id,
             onto_branch=onto_branch,
             runner=self.runner,
         )
+
+
+class GitHubBus(LocalGitBus):
+    """GitHub multi-machine synchronization bus (`vcs_mode == 'github'`)."""
+
+    mode: Literal["local_git", "github"] = "github"
+
+    def open_or_sync_pr(self, pr_id: str, *, draft: bool = False) -> dict[str, Any]:
+        """Stage `<PR-ID>`, push branch to `origin`, and create or update the GitHub PR."""
+        local_info = super().open_or_sync_pr(pr_id, draft=draft)
+        ws_dir = common.workspace_dir(self.repo_root)
+        pr_dir, proj_doc = _find_pr_dir_and_project(ws_dir, pr_id)
+        if proj_doc is None:
+            raise ValueError(f"PROJECT.md for '{pr_id}' not found in {ws_dir}")
+
+        proj_md = pr_dir / "PROJECT.md"
+        branch = proj_doc.spec.charter.branch
+        base_branch = proj_doc.spec.charter.base_branch
+        canonical_pr_id = proj_doc.spec.charter.pr_id
+
+        # 1. Push branch to origin
+        self.runner(["git", "push", "-u", "origin", branch], cwd=self.repo_root)
+
+        # 2. Build deterministic PR title and body
+        title = f"{canonical_pr_id}: {proj_doc.spec.charter.title}"
+        body = _render_pr_body(proj_doc)
+
+        gh = _gh_bin()
+        pr_number: int | None = proj_doc.spec.github_pr
+        pr_url: str | None = None
+        pr_existed = pr_number is not None
+
+        if not pr_existed:
+            view_res = self.runner(
+                [
+                    gh,
+                    "pr",
+                    "view",
+                    branch,
+                    "--json",
+                    "number,url,state,baseRefName,headRefName",
+                ],
+                cwd=self.repo_root,
+            )
+            if view_res.returncode == 0 and view_res.stdout.strip():
+                num_v, url_v = _extract_pr_number_and_url(view_res.stdout)
+                if num_v is not None:
+                    pr_number = num_v
+                    pr_url = url_v
+                    pr_existed = True
+
+        if not pr_existed:
+            create_cmd: list[str] = [
+                gh,
+                "pr",
+                "create",
+                "--base",
+                base_branch,
+                "--head",
+                branch,
+                "--title",
+                title,
+                "--body",
+                body,
+            ]
+            if draft:
+                create_cmd.append("--draft")
+            create_res = self.runner(create_cmd, cwd=self.repo_root)
+            if create_res.returncode != 0:
+                raise RuntimeError(
+                    f"gh pr create failed: "
+                    f"{create_res.stderr.strip() or create_res.stdout.strip()}"
+                )
+            pr_number, pr_url = _extract_pr_number_and_url(create_res.stdout)
+            if pr_number is None:
+                view_after = self.runner(
+                    [gh, "pr", "view", branch, "--json", "number,url"],
+                    cwd=self.repo_root,
+                )
+                if view_after.returncode == 0 and view_after.stdout.strip():
+                    num_after, url_after = _extract_pr_number_and_url(view_after.stdout)
+                    pr_number = num_after
+                    pr_url = pr_url or url_after
+        else:
+            edit_target = str(pr_number) if pr_number is not None else branch
+            edit_cmd = [
+                gh,
+                "pr",
+                "edit",
+                edit_target,
+                "--base",
+                base_branch,
+                "--title",
+                title,
+                "--body",
+                body,
+            ]
+            edit_res = self.runner(edit_cmd, cwd=self.repo_root)
+            if edit_res.returncode != 0:
+                raise RuntimeError(
+                    f"gh pr edit failed: {edit_res.stderr.strip() or edit_res.stdout.strip()}"
+                )
+            if pr_url is None and edit_res.stdout.strip():
+                _, parsed_url = _extract_pr_number_and_url(edit_res.stdout)
+                pr_url = parsed_url
+
+        if pr_number is not None and proj_doc.spec.github_pr != pr_number:
+            proj_doc.spec.github_pr = pr_number
+            proj_md.write_text(
+                schemas.dump_document(proj_doc.spec, proj_doc.sections),
+                encoding="utf-8",
+            )
+            if (
+                proj_doc.spec.charter.charter_locked
+                and proj_doc.spec.charter.charter_hash
+                and not schemas.verify_charter_hash(proj_md)
+            ):
+                raise RuntimeError(
+                    f"PROJECT.md charter_hash check failed after setting github_pr: {proj_md}"
+                )
+            rel_proj = proj_md.resolve().relative_to(self.repo_root).as_posix()
+            add_res = self.runner(["git", "add", "--", rel_proj], cwd=self.repo_root)
+            if add_res.returncode == 0:
+                commit_res = _git_commit_with_fallback(
+                    self.repo_root,
+                    f"chore({canonical_pr_id.lower()}): record github_pr #{pr_number}",
+                    runner=self.runner,
+                )
+                if commit_res.returncode == 0:
+                    self.runner(["git", "push", "-u", "origin", branch], cwd=self.repo_root)
+
+        head_res = self.runner(["git", "rev-parse", "HEAD"], cwd=self.repo_root)
+        head_sha = (
+            head_res.stdout.strip()
+            if head_res.returncode == 0 and head_res.stdout.strip()
+            else local_info["head_sha"]
+        )
+
+        return {
+            "mode": "github",
+            "pr_id": canonical_pr_id,
+            "branch": branch,
+            "base_branch": base_branch,
+            "status": schemas.PRState.STAGED_FOR_AUDIT.value,
+            "github_pr": pr_number,
+            "pr_url": pr_url,
+            "head_sha": head_sha,
+        }
+
+    def view_pr(self, pr_id_or_number: str | int) -> dict[str, Any]:
+        """Inspect a GitHub PR via `gh pr view <target> --json ...`."""
+        ws_dir = common.workspace_dir(self.repo_root)
+        target, _, _ = _resolve_pr_target(ws_dir, pr_id_or_number)
+        gh = _gh_bin()
+        cmd = [
+            gh,
+            "pr",
+            "view",
+            str(target),
+            "--json",
+            "number,url,state,title,body,baseRefName,headRefName,headRefOid,reviews,comments",
+        ]
+        res = self.runner(cmd, cwd=self.repo_root)
+        if res.returncode != 0:
+            raise RuntimeError(
+                f"gh pr view failed for '{target}': {res.stderr.strip() or res.stdout.strip()}"
+            )
+        try:
+            data = json.loads(res.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Failed to parse gh pr view JSON for '{target}': {exc}") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Unexpected gh pr view payload for '{target}'")  # noqa: TRY004
+        return data
+
+    def diff_pr(self, pr_id_or_number: str | int) -> str:
+        """Fetch PR diff via `gh pr diff <target>`, falling back to local `git diff`."""
+        ws_dir = common.workspace_dir(self.repo_root)
+        target, _, _ = _resolve_pr_target(ws_dir, pr_id_or_number)
+        gh = _gh_bin()
+        res = self.runner([gh, "pr", "diff", str(target)], cwd=self.repo_root)
+        if res.returncode == 0:
+            return res.stdout
+        return super().diff_pr(pr_id_or_number)
+
+    def post_audit(
+        self,
+        pr_id: str,
+        audit_source: (
+            str
+            | Path
+            | schemas.AuditReport
+            | schemas.Document[schemas.AuditReport]
+            | Mapping[str, Any]
+        ),
+        *,
+        commit: bool = True,
+    ) -> dict[str, Any]:
+        """Write and commit `AUDIT-round-<K>.md` locally and post via `gh pr review --comment`."""
+        local_res = super().post_audit(pr_id, audit_source, commit=commit)
+        audit_doc = schemas.load_audit(local_res["audit_path"])
+        report = audit_doc.spec
+
+        existing_body = "\n".join(s.full_text() for s in audit_doc.sections).strip()
+        comment_body = format_pa_audit_comment(
+            report, existing_body if existing_body else None
+        )
+
+        ws_dir = common.workspace_dir(self.repo_root)
+        state_dir = ws_dir / ".state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        body_file = state_dir / f"audit_comment_{report.pr_id.lower()}_r{report.audit_round}.md"
+        body_file.write_text(comment_body, encoding="utf-8")
+
+        if report.github_pr is not None:
+            target = str(report.github_pr)
+        else:
+            target, _, proj_doc = _resolve_pr_target(ws_dir, pr_id)
+            if proj_doc is not None and proj_doc.spec.github_pr is not None:
+                target = str(proj_doc.spec.github_pr)
+
+        gh = _gh_bin()
+        # CRITICAL (Charter R2 & SPEC §11.3): Always use `--comment`, never `--approve` or
+        # `--request-changes`, for same-account GitHub review compatibility.
+        cmd = [
+            gh,
+            "pr",
+            "review",
+            str(target),
+            "--comment",
+            "--body-file",
+            str(body_file),
+        ]
+        review_res = self.runner(cmd, cwd=self.repo_root)
+
+        return {
+            **local_res,
+            "mode": "github",
+            "github_pr": int(target) if str(target).isdigit() else local_res.get("github_pr"),
+            "body_file": str(body_file),
+            "review_posted": review_res.returncode == 0,
+            "review_command": cmd,
+        }
+
+    def sync_audit(self, pr_id: str) -> dict[str, Any] | None:
+        """Ingest remote `<!-- pa:audit ... -->` PR comments into `AUDIT-round-<K>.md` & `state.db`."""
+        ws_dir = common.workspace_dir(self.repo_root)
+        target, pr_dir, proj_doc = _resolve_pr_target(ws_dir, pr_id)
+        canonical_pr_id = (
+            proj_doc.spec.charter.pr_id if proj_doc is not None else pr_id.strip().upper()
+        )
+        if pr_dir is None:
+            pr_dir, _ = _find_pr_dir_and_project(ws_dir, canonical_pr_id)
+
+        gh = _gh_bin()
+        cmd = [
+            gh,
+            "pr",
+            "view",
+            str(target),
+            "--json",
+            "number,url,headRefOid,reviews,comments",
+        ]
+        res = self.runner(cmd, cwd=self.repo_root)
+        if res.returncode == 0 and res.stdout.strip():
+            try:
+                payload = json.loads(res.stdout)
+            except json.JSONDecodeError:
+                payload = None
+
+            if isinstance(payload, Mapping):
+                remote_num = (
+                    int(payload["number"])
+                    if isinstance(payload.get("number"), int)
+                    else (proj_doc.spec.github_pr if proj_doc is not None else None)
+                )
+                items: list[ Any] = []
+                if isinstance(payload.get("reviews"), list):
+                    items.extend(payload["reviews"])
+                if isinstance(payload.get("comments"), list):
+                    items.extend(payload["comments"])
+
+                for item in items:
+                    if not isinstance(item, Mapping):
+                        continue
+                    body_text = str(item.get("body") or "")
+                    parsed = parse_pa_audit_comment(body_text)
+                    if parsed is None:
+                        continue
+                    if parsed["pr_id"].upper() != canonical_pr_id.upper():
+                        continue
+
+                    round_num = int(parsed["audit_round"])
+                    existing_audit_md = pr_dir / f"AUDIT-round-{round_num}.md"
+                    needs_write = not existing_audit_md.is_file()
+                    if not needs_write:
+                        try:
+                            existing_doc = schemas.load_audit(existing_audit_md)
+                            if (
+                                existing_doc.spec.verdict != parsed["verdict"]
+                                or existing_doc.spec.head_sha != parsed["head_sha"]
+                            ):
+                                needs_write = True
+                        except Exception:  # noqa: BLE001
+                            needs_write = True
+
+                    if needs_write:
+                        raw_findings = parsed.get("findings") or []
+                        findings_objs: list[schemas.AuditFinding] = []
+                        for f_item in raw_findings:
+                            if isinstance(f_item, schemas.AuditFinding):
+                                findings_objs.append(f_item)
+                            elif isinstance(f_item, Mapping):
+                                findings_objs.append(schemas.AuditFinding.model_validate(f_item))
+
+                        if not findings_objs:
+                            for b_idx in range(1, int(parsed.get("blocking", 0)) + 1):
+                                findings_objs.append(
+                                    schemas.AuditFinding(
+                                        id=f"BLOCKING-{b_idx}",
+                                        axis="spec_alignment",
+                                        file_path="PROJECT.md",
+                                        summary="Synced blocking finding from GitHub PR review",
+                                        remediation="See GitHub PR review comment details",
+                                    )
+                                )
+                            for m_idx in range(1, int(parsed.get("major", 0)) + 1):
+                                findings_objs.append(
+                                    schemas.AuditFinding(
+                                        id=f"NON-BLOCKING-{m_idx}",
+                                        axis="test_quality",
+                                        file_path="PROJECT.md",
+                                        summary="Synced non-blocking finding from GitHub PR review",
+                                        remediation="See GitHub PR review comment details",
+                                    )
+                                )
+
+                        report = schemas.AuditReport(
+                            pr_id=canonical_pr_id.upper(),
+                            github_pr=remote_num or parsed.get("github_pr"),
+                            audit_round=round_num,
+                            head_sha=parsed["head_sha"],
+                            auditor_harness=parsed.get("auditor_harness", "antigravity"),
+                            verdict=parsed["verdict"],
+                            findings=findings_objs,
+                        )
+                        write_audit_round(
+                            self.repo_root,
+                            canonical_pr_id,
+                            report,
+                            commit=False,
+                            runner=self.runner,
+                        )
+
+        synced = super().sync_audit(pr_id)
+        if synced is not None:
+            synced["mode"] = "github"
+        return synced
+
+    def create_deferred_issue(
+        self,
+        *,
+        title: str,
+        summary: str = "",
+        pr_id: str | None = None,
+        wo_id: str | None = None,
+        labels: Sequence[str] = ("pa:deferred",),
+        file_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a GitHub issue with `--label pa:deferred` and record in `DEFERRED_BACKLOG.md`."""
+        normalized_labels: list[str] = ["pa:deferred"]
+        for lbl in labels:
+            lbl_s = str(lbl).strip()
+            if lbl_s and lbl_s not in normalized_labels:
+                normalized_labels.append(lbl_s)
+
+        body_lines: list[str] = []
+        if pr_id:
+            body_lines.append(f"- **PR:** `{pr_id.strip()}`")
+        if wo_id:
+            body_lines.append(f"- **Work Order:** `{wo_id.strip()}`")
+        if file_path:
+            body_lines.append(f"- **File:** `{file_path.strip()}`")
+        if summary.strip():
+            if body_lines:
+                body_lines.append("")
+            body_lines.append(summary.strip())
+        body = "\n".join(body_lines) if body_lines else title.strip()
+
+        gh = _gh_bin()
+        cmd: list[str] = [
+            gh,
+            "issue",
+            "create",
+            "--title",
+            title.strip(),
+            "--body",
+            body,
+        ]
+        for lbl in normalized_labels:
+            cmd.extend(["--label", lbl])
+
+        issue_url: str | None = None
+        try:
+            res = self.runner(cmd, cwd=self.repo_root)
+            if res.returncode == 0 and res.stdout.strip():
+                issue_url = _extract_issue_url(res.stdout)
+        except (OSError, subprocess.SubprocessError):
+            issue_url = None
+
+        backlog_path = self.append_deferred_backlog(
+            title=title,
+            summary=summary,
+            pr_id=pr_id,
+            wo_id=wo_id,
+            labels=normalized_labels,
+            file_path=file_path,
+        )
+        return {
+            "mode": "github",
+            "issue_url": issue_url,
+            "backlog_path": str(backlog_path),
+            "command": cmd,
+        }
+
+    def sync_state(self) -> dict[str, Any]:
+        """Fetch `origin`, sync remote GitHub PR audits, and rebuild `.state/state.db`."""
+        self.runner(["git", "fetch", "origin"], cwd=self.repo_root)
+
+        ws_dir = common.workspace_dir(self.repo_root)
+        if ws_dir.is_dir():
+            for proj_md in sorted(ws_dir.glob("pr-*/PROJECT.md")):
+                if not proj_md.is_file():
+                    continue
+                try:
+                    proj_doc = schemas.load_project(proj_md)
+                except Exception:  # noqa: BLE001, S112
+                    continue
+                self.sync_audit(proj_doc.spec.charter.pr_id)
+
+        res = super().sync_state()
+        res["vcs_mode"] = "github"
+        db_file = ws_dir / ".state" / "state.db"
+        if db_file.is_file():
+            with state_db.StateDB(db_file) as db:
+                db.set_config("vcs_mode", "github")
+        return res
+
+    def restack_branches(
+        self,
+        *,
+        pr_id: str | None = None,
+        onto_branch: str | None = None,
+    ) -> dict[str, Any]:
+        """Rebase stacked PR branches, force-push with lease, and retarget GitHub PR bases."""
+        res = super().restack_branches(pr_id=pr_id, onto_branch=onto_branch)
+        ws_dir = common.workspace_dir(self.repo_root)
+        gh = _gh_bin()
+
+        for entry in res.get("details", []):
+            branch = str(entry["branch"])
+            onto = str(entry["onto_branch"])
+            pid = str(entry["pr_id"])
+
+            push_cmd = ["git", "push", "--force-with-lease", "origin", branch]
+            res["commands"].append(push_cmd)
+            self.runner(push_cmd, cwd=self.repo_root)
+
+            target, _, _ = _resolve_pr_target(ws_dir, pid)
+            edit_cmd = [gh, "pr", "edit", str(target), "--base", onto]
+            res["commands"].append(edit_cmd)
+            self.runner(edit_cmd, cwd=self.repo_root)
+
+        return res
 
 
 def get_vcs_bus(
@@ -1500,7 +2158,7 @@ def get_vcs_bus(
     vcs_mode: str | None = None,
     runner: common.Runner = common.run,
 ) -> VcsBus:
-    """Return the configured `VcsBus` instance (`LocalGitBus` in WO-03.1; `GitHubBus` in WO-03.2)."""
+    """Return the configured `VcsBus` instance (`GitHubBus` or `LocalGitBus`)."""
     real_root = Path(os.path.realpath(repo_root))
     resolved_mode = vcs_mode
     if not resolved_mode:
@@ -1512,5 +2170,29 @@ def get_vcs_bus(
         else:
             resolved_mode = "local_git"
 
-    _ = resolved_mode
+    if str(resolved_mode).strip().lower() == "github":
+        return GitHubBus(real_root, runner=runner)
     return LocalGitBus(real_root, runner=runner)
+
+
+def sync_state(
+    repo_root: str | Path,
+    *,
+    runner: common.Runner = common.run,
+) -> dict[str, Any]:
+    """Rebuild `.state/state.db` and reconcile `PROJECT.md` rows via the active `VcsBus`."""
+    return get_vcs_bus(repo_root, runner=runner).sync_state()
+
+
+def restack_branches(
+    repo_root: str | Path,
+    *,
+    pr_id: str | None = None,
+    onto_branch: str | None = None,
+    runner: common.Runner = common.run,
+) -> dict[str, Any]:
+    """Rebase stacked PR branches onto their base branches via the active `VcsBus`."""
+    return get_vcs_bus(repo_root, runner=runner).restack_branches(
+        pr_id=pr_id,
+        onto_branch=onto_branch,
+    )

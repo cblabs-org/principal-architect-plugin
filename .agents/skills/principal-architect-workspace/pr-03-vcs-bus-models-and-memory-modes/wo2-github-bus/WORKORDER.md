@@ -5,7 +5,7 @@ pr_id: PR-03
 title: GitHub multi-machine bus (GitHubBus, get_vcs_bus, PR create/edit/view/diff,
   gh pr review --comment, pa:deferred issues)
 complexity: standard
-status: PENDING
+status: COMPLETED
 allowed_files:
 - daemon/workspace-plugin/principal-architect/scripts/vcs_sync.py
 - tests/test_github_and_local_git_bus.py
@@ -21,7 +21,21 @@ verification_command: ./.venv/bin/pytest tests/test_schemas.py tests/test_state_
 max_attempts: 5
 max_structural_failures: 2
 spec_hash: aafcdd3910b17edbca64723a644147da3e101d3b8f0e41a464762c15afb08107
-completion: null
+completion:
+  status: COMPLETED
+  attempt_num: 1
+  receipt_id: rcpt_0fa061d433fd
+  commit_sha: null
+  files_modified:
+  - daemon/workspace-plugin/principal-architect/scripts/vcs_sync.py
+  - tests/test_github_and_local_git_bus.py
+  verification_summary: "102 passed (pytest) and ruff check daemon tests clean"
+  out_of_scope_findings: []
+  escalation_request: null
+  decisions_made:
+  - "Persisted GitHub review comment payloads to .state/audit_comment_<pr>_r<K>.md before invoking gh pr review --comment --body-file so both gh and callers/tests can inspect the exact payload without mutating tracked repository files."
+  - "Extended GitHubBus.sync_audit to materialize missing or updated AUDIT-round-<K>.md files from remote <!-- pa:audit ... --> review comments (preserving PROJECT.md charter_hash) before delegating to LocalGitBus.sync_audit."
+  dead_ends: []
 ---
 
 # WO-03.2 — GitHub Multi-Machine Bus (`vcs_sync.py`: `GitHubBus` & `get_vcs_bus`)
@@ -118,3 +132,15 @@ completion: null
 
 ## Completion Report
 <!-- Written by the Tier 3 Worker at task completion -->
+
+- **Status:** `COMPLETED` (Attempt 1/5)
+- **Receipt:** `rcpt_0fa061d433fd` (`tree_hash`: `0fa061d433fdd41495758377486d9242b84d9791e3dfb99ca651be26addbca90`)
+- **Files Modified:**
+  - `daemon/workspace-plugin/principal-architect/scripts/vcs_sync.py`
+  - `tests/test_github_and_local_git_bus.py`
+- **Verification Summary:** `102 passed` across `test_schemas.py`, `test_state_db_and_sync.py`, `test_hooks_monitored_vs_autonomous.py`, `test_github_and_local_git_bus.py` (16 tests including 7 mocked-`gh` `GitHubBus` suites), and `test_memory_modes.py`; `ruff check daemon tests` clean.
+- **Key Decisions:**
+  - `_gh_bin()` honors `PA_GH_BIN` environment variable overrides while defaulting to `"gh"`, and all `GitHubBus` operations execute through the injectable `self.runner`.
+  - `GitHubBus.post_audit` writes the machine-parseable `<!-- pa:audit ... -->` review body to `<ws_dir>/.state/audit_comment_<pr_id>_r<K>.md` and invokes `gh pr review <target> --comment --body-file <path>`, strictly avoiding `--approve` and `--request-changes` per Charter R2 and SPEC §11.3.
+  - `GitHubBus.sync_audit` and `GitHubBus.sync_state` ingest remote `<!-- pa:audit ... -->` review/comment blocks, materialize `<pr_dir>/AUDIT-round-<K>.md` on disk while preserving `PROJECT.md` `charter_hash`, and synchronize `latest_audit:<PR-ID>` in `.state/state.db`.
+  - `GitHubBus.create_deferred_issue` guarantees `--label pa:deferred` is passed to `gh issue create` and always records the entry in local `DEFERRED_BACKLOG.md` as an offline-safe fallback.
