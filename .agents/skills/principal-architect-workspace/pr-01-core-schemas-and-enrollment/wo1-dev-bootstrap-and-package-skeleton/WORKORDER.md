@@ -4,7 +4,7 @@ wo_id: WO-01.1
 pr_id: PR-01
 title: "Developer toolchain bootstrap, pyproject.toml, plugin manifests, and test floor skeleton"
 complexity: standard
-status: IN_PROGRESS
+status: COMPLETED
 allowed_files:
   - pyproject.toml
   - .gitignore
@@ -26,7 +26,29 @@ verification_command: "./.venv/bin/pytest tests/test_schemas.py tests/test_state
 max_attempts: 5
 max_structural_failures: 2
 spec_hash: "c1eb7cb302d055459f145ec8e2e2f5434d14fae92152c07e2920432b77b00f0b"
-completion: null
+completion:
+  status: COMPLETED
+  attempt_num: 1
+  receipt_id: "7df365334d86628689c60c7402043c297a9469360aa166cc5a943239fc6add91"
+  commit_sha: "HEAD"
+  files_modified:
+    - pyproject.toml
+    - .gitignore
+    - scripts/dev-bootstrap.sh
+    - daemon/plugin.json
+    - daemon/.gitignore
+    - daemon/workspace-plugin/principal-architect/plugin.json
+    - daemon/workspace-plugin/principal-architect/scripts/__init__.py
+    - tests/conftest.py
+    - tests/test_schemas.py
+    - tests/test_state_db_and_sync.py
+  verification_summary: "3 tests passed in 0.24s (pytest); ruff check passed with 0 errors across daemon/ and tests/."
+  out_of_scope_findings: []
+  escalation_request: null
+  decisions_made:
+    - "Configured editable install via setuptools.packages.find targeting daemon/workspace-plugin/principal-architect."
+    - "Implemented 3-tier fallback in dev-bootstrap.sh (uv -> ensurepip -> python3 -m venv --without-pip + get-pip.py)."
+  dead_ends: []
 ---
 
 # WO-01.1 — Developer Toolchain Bootstrap & Package Skeleton
@@ -104,6 +126,22 @@ completion: null
 4. **Issue Surfacing:** If you discover any concern outside your boundary box, surface it in `out_of_scope_findings` in your Completion Report — never file issues or edit out-of-scope files directly.
 
 ## Completion Report
-<!-- Written by the Tier 3 Worker at task completion -->
 
-_Pending execution by Tier 3 Worker (`WO-01.1`)._
+### Execution Summary
+All checklist line items for `WO-01.1` have been implemented within the strict `allowed_files` boundary box:
+- `pyproject.toml`: Configured build system (`setuptools>=68`), dependencies (`pydantic>=2,<3`, `pyyaml>=6`, dev `pytest>=8.0`, `ruff>=0.4`), package discovery under `daemon/workspace-plugin/principal-architect`, pytest paths, and ruff settings.
+- `.gitignore` (root & daemon): Properly configured to ignore virtual environments, bytecode caches, pytest/ruff caches, SQLite databases, and daemon state directories.
+- Plugin manifests: `daemon/plugin.json` (`pa-daemon`) and `daemon/workspace-plugin/principal-architect/plugin.json` (`principal-architect`).
+- Package skeleton: `daemon/workspace-plugin/principal-architect/scripts/__init__.py`.
+- Bootstrap script: `scripts/dev-bootstrap.sh` (`chmod +x`), featuring 3 fallback strategies (`uv` -> `python3 -m venv` + `ensurepip` -> `python3 -m venv --without-pip` + `get-pip.py`), verified on reference host with Python 3.13 and no system `ensurepip`. Idempotent re-run executes in sub-second time.
+- Verification floor skeleton: `tests/conftest.py`, `tests/test_schemas.py`, and `tests/test_state_db_and_sync.py`.
+
+### Verification Output
+- `./scripts/dev-bootstrap.sh` run 1 (initial provisioning): Succeeded.
+- `./scripts/dev-bootstrap.sh` run 2 (idempotency check): Succeeded ("Developer environment already provisioned.").
+- Verification floor command:
+  ```
+  ./.venv/bin/pytest tests/test_schemas.py tests/test_state_db_and_sync.py && ./.venv/bin/ruff check daemon tests
+  ```
+  Result: 3 passed in 0.24s; ruff check: All checks passed!
+- Tree Hash: `115d940b95cfe608a5f320ffcd12c29e5dbeb817503aae85df37adcbd9e84b02`
