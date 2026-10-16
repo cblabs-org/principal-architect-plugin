@@ -167,8 +167,8 @@ Chief (Tier 1)
 
 | PR | Charter | PA conversation | Plan approved | WOs | Step 6A PR / head_sha | Audit | Graduated |
 |---|---|---|---|---|---|---|---|
-| PR-01 | 🔒 locked 2026-10-16 (`9005d513…`) | `IN_PROGRESS` (Tier 2 PA spawned 2026-10-16) | authorized (2026-10-16) | in progress | — | — | — |
-| PR-02 | stub (frontmatter only) | — | — | — | — | — | — |
+| PR-01 | 🔒 locked 2026-10-16 (`9005d513…`) | `18498c8a` (`GRADUATED`) | 2026-10-16 | 6/6 `COMPLETED` (`51 passed`) | PR `#1` (`be21bcc8`) | Round 1 `APPROVED` (`06c008f6`, `ce4950c2`) | ✅ 2026-10-16 (`b3a9e773`) |
+| PR-02 | 🔒 locked 2026-10-16 (`c4101d40…`) | `IN_PROGRESS` (Tier 2 PA spawned 2026-10-16) | authorized (2026-10-16) | in progress | — | — | — |
 | PR-03 | stub (frontmatter only) | — | — | — | — | — | — |
 | PR-04 | stub (frontmatter only) | — | — | — | — | — | — |
 | PR-05 | stub (frontmatter only) | — | — | — | — | — | — |
