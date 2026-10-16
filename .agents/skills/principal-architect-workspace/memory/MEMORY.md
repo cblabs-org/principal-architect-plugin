@@ -10,6 +10,7 @@
 ## Active Projects
 | Project | Status | Modules | Context |
 |---|---|---|---|
+| pr-04-cockpit-auxpane-ui | IN_PROGRESS — Tier 2 PA spawned (Part I Charter locked; autonomous execution to Step 6A) | cockpit-backend, cockpit-ui, sidecar.json, install/uninstall, README, tests | [PROJECT.md](../pr-04-cockpit-auxpane-ui/PROJECT.md) |
 
 ## Recently Completed (last 5)
 | Project | Completed | Modules | Key Outcome |
