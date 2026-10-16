@@ -28,6 +28,7 @@
 |---|---|---|
 | [pr-01-core-schemas-and-enrollment](../pr-01-core-schemas-and-enrollment/PROJECT.md) | Delivered `COMMAND_MODULES`, `build_parser`, `main`, `detect_vcs_mode`, `detect_memory_mode`, normative 9-step `pa enroll` (including legacy workspace migration), `pa unenroll`, `pa status [--json]`, `pa mode`, and `scripts/enroll.sh` / `scripts/unenroll.sh`. | [PROJECT.md](../pr-01-core-schemas-and-enrollment/PROJECT.md) |
 | [pr-02-agents-and-dual-mode-hooks](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) | Added `pa pr approve-plan <PR-ID>` (validates `PROJECT.md` Part II & `WORKORDER.md` specs, checks `allowed_files ⊆ charter.allowed_modules`, stamps `spec_hash`, marks `APPROVED`), `pa wo verify <WO-ID>` (checks scope hygiene & `spec_hash`, runs `verification_command`, stamps cryptographic receipt, commits with `PA-WorkOrder`/`PA-Verified-Hash` trailers), and `pa escalate` (`--to-pa`/`--to-chief`/`--to-human`). | [PROJECT.md](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) |
+| [pr-03-vcs-bus-models-and-memory-modes](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) | Added `pa sync`, `pa programme init/charter`, `pa pr start/claim/open-or-sync/post-audit/sync-audit/graduate/restack` (enforcing Rule R6 Graduation Audit Gate), `pa wo debug/resolve`, and `pa issue create` while preserving top-level stdlib-only lazy imports. | [PROJECT.md](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) |
 
 ## hooks (`hooks.json`, `pre_invocation.py`, `pre_tool_gate.py`, `post_tool_receipt.py`, `stop_gate.py`, `escalation.py`)
 | Project | Scope | Context |
@@ -42,14 +43,17 @@
 ## vcs-bus (`scripts/vcs_sync.py` — local_git floor, GitHub PR/Review/Issue sync)
 | Project | Scope | Context |
 |---|---|---|
+| [pr-03-vcs-bus-models-and-memory-modes](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) | Delivered `VcsBus`, `LocalGitBus` (stacked branches, `PA-*` commit trailers, `write_audit_round`, `append_deferred_backlog`, `sync_state`, `restack_branches`), `GitHubBus(LocalGitBus)` (branch push, `gh pr create/edit/view/diff`, `gh pr review --comment`, remote `<!-- pa:audit -->` ingestion, `pa:deferred` issues), and `get_vcs_bus`. | [PROJECT.md](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) |
 
 ## model-routing (`scripts/models.py`)
 | Project | Scope | Context |
 |---|---|---|
+| [pr-03-vcs-bus-models-and-memory-modes](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) | Delivered `ARCHITECT_MODEL_PREFERENCE = ("gemini-4-argon-high", "gemini-3.1-pro-high", "claude-opus-5-5-high")`, `route`, `step_up` (`flash_lite -> flash -> inherit`, never downgrading to `"pro"`), `select_architect_model`, and `LanguageServerClient` (`start_conversation`, `set_pinned`, `send_message`, headless fallback). | [PROJECT.md](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) |
 
 ## memory-modes (`scripts/memory_grad.py`, `memory/` templates)
 | Project | Scope | Context |
 |---|---|---|
+| [pr-03-vcs-bus-models-and-memory-modes](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) | Delivered `graduate(repo_root, pr_id, *, memory_mode=None, completed_date=None)` enforcing zero-touch on `memory/` in `external` mode (`repo-memory`) and 5-PR window roll-off into `PROJECT_INDEX.md` + byte-stable `MODULE_INDEX.md` updates in `builtin` mode. | [PROJECT.md](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) |
 
 ## cockpit (`daemon/sidecars/pa_cockpit/`, `scripts/cockpit.py`)
 | Project | Scope | Context |
@@ -65,3 +69,4 @@
 |---|---|---|
 | [pr-01-core-schemas-and-enrollment](../pr-01-core-schemas-and-enrollment/PROJECT.md) | Delivered `tests/conftest.py` (`tmp_repo`, `daemon_home`, `fake_runner`), `tests/test_schemas.py` (17 tests), and `tests/test_state_db_and_sync.py` (34 tests). | [PROJECT.md](../pr-01-core-schemas-and-enrollment/PROJECT.md) |
 | [pr-02-agents-and-dual-mode-hooks](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) | Delivered `tests/test_hooks_monitored_vs_autonomous.py` (34 unit, subprocess, CLI, and dogfood tests; total floor 85 passed). | [PROJECT.md](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) |
+| [pr-03-vcs-bus-models-and-memory-modes](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) | Delivered `tests/test_github_and_local_git_bus.py` (23 tests covering `LocalGitBus`, `GitHubBus`, `models.py`, and end-to-end `pa` CLI lifecycles + R6 graduation gate) and `tests/test_memory_modes.py` (7 tests covering `external` vs. `builtin` graduation and byte-stability; total floor 115 passed). | [PROJECT.md](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) |

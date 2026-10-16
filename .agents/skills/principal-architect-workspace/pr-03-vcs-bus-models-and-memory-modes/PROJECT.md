@@ -26,7 +26,7 @@ charter:
     - "pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py tests/test_github_and_local_git_bus.py tests/test_memory_modes.py"
   charter_locked: true
   charter_hash: "ad7e71f954cd3d2b3db2eed6c4e55ef17b855bd01bfeefa2c59246c44c5d4e21"
-status: STAGED_FOR_AUDIT
+status: GRADUATED
 approved_at: "2026-10-16T21:37:00Z"
 github_pr: 3
 work_orders:
@@ -178,3 +178,24 @@ To build PR-03 cleanly with zero circular dependencies and keep the full verific
 - **2026-10-16 (`WO-03.3 COMPLETED`, `bfe09c3`):** Delivered `daemon/workspace-plugin/principal-architect/scripts/memory_grad.py` (`graduate` enforcing zero-touch on `memory/` in `external` mode and 5-PR window roll-off to `PROJECT_INDEX.md` + idempotent `MODULE_INDEX.md` updates in `builtin` mode) and 7 tests in `tests/test_memory_modes.py` (`108 passed`, `ruff check` clean).
 - **2026-10-16 (`WO-03.4 COMPLETED`, `df83f72`):** Delivered `daemon/workspace-plugin/principal-architect/scripts/models.py` (`ARCHITECT_MODEL_PREFERENCE`, `route`, `step_up`, `select_architect_model`, `LanguageServerClient` with headless fallback), `pa wo debug` and `pa wo resolve` in `scripts/pa_cli.py` (preserving stdlib-only top-level lazy imports), and 4 test suites in `tests/test_github_and_local_git_bus.py` (`112 passed`, `ruff check` clean).
 - **2026-10-16 (`WO-03.5 COMPLETED`, `bff9b0b`):** Delivered all remaining `pa` CLI lifecycle commands in `scripts/pa_cli.py` (`pa sync`, `pa programme init/charter`, `pa pr start/claim/open-or-sync/post-audit/sync-audit/graduate/restack` enforcing Rule R6, and `pa issue create`) and end-to-end `local_git` + `github` CLI lifecycle tests in `tests/test_github_and_local_git_bus.py` (`115 passed`, `ruff check` clean). Transitioned `PR-03` to `status: STAGED_FOR_AUDIT`.
+- **2026-10-16 (`AUDIT_APPROVED` -> `GRADUATED`, `b10571a`):** Cold-Firewall Audit Round 1 (`AUDIT-round-1.md`, audited SHA `cb90e3e7013a89b7d2c61268671db26044da690d`) returned **`APPROVED (0 blocking, 0 major, 0 minor)`**. Graduated `PR-03` (`status: GRADUATED`) with `builtin` memory distillation across `MEMORY.md`, `MODULE_INDEX.md`, and `PROJECT_INDEX.md`.
+
+### 4.1 Architectural Distillation (`memory_mode: builtin`)
+
+1. **Delivered Modules & Cross-PR Contracts (`PR-03`):**
+   - `daemon/workspace-plugin/principal-architect/scripts/vcs_sync.py`:
+     - Exports `VcsBus(Protocol)`, `LocalGitBus`, `GitHubBus(LocalGitBus)`, `get_vcs_bus(repo_root, *, vcs_mode=None, runner=common.run)`, `format_commit_with_trailers`, `read_commit_trailers` (`read_trailers`), `format_pa_audit_comment`, `parse_pa_audit_comment`, `write_audit_round`, `append_deferred_backlog`, `sync_state`, `create_or_checkout_branch`, and `restack_branches`.
+     - `LocalGitBus` provides a 100% offline local-Git floor (stacked branch checkout, `PA-*` commit trailers, `AUDIT-round-<K>.md` persistence up to `max_audit_rounds: 5`, `DEFERRED_BACKLOG.md`, `state.db` rebuild from git trailers + committed Markdown files, and `git rebase --update-refs` restacking).
+     - `GitHubBus` extends `LocalGitBus` with branch push, `gh pr create --base ... --head ...` / `gh pr edit`, `view_pr` / `diff_pr`, `gh pr review <N> --comment --body-file <path>` (strictly avoiding `--approve` and `--request-changes` for same-account review compatibility per `SPEC.md` §11.3), remote `<!-- pa:audit ... -->` review ingestion in `sync_audit` and `sync_state`, `gh issue create --label pa:deferred` with local `DEFERRED_BACKLOG.md` fallback, and `--force-with-lease` + `gh pr edit --base` in `restack_branches`.
+   - `daemon/workspace-plugin/principal-architect/scripts/memory_grad.py`:
+     - Exports `graduate(repo_root, pr_id, *, memory_mode=None, completed_date=None) -> dict[str, Any]`.
+     - Enforces the strict mutual-exclusion boundary (Invariant I6 & `SPEC.md` §9): in `external` mode (`repo-memory`), never creates or touches `<ws_dir>/memory/`; in `builtin` mode, transitions the PR from `## Active Projects` to `## Recently Completed (last 5)` in `MEMORY.md`, rolls entries `> 5` into `PROJECT_INDEX.md`, and idempotently records module rows in `MODULE_INDEX.md` with byte-for-byte stability on repeated runs.
+   - `daemon/workspace-plugin/principal-architect/scripts/models.py`:
+     - Exports `ARCHITECT_MODEL_PREFERENCE = ("gemini-4-argon-high", "gemini-3.1-pro-high", "claude-opus-5-5-high")`, `route(complexity, attempt=1, parent_model="inherit") -> str`, `step_up(tier) -> str`, `select_architect_model`, and `LanguageServerClient` (`start_conversation`, `set_pinned`, `send_message`, `is_connected` with graceful headless bridge-prompt fallback when `ANTIGRAVITY_LS_ADDRESS` / `ANTIGRAVITY_CSRF_TOKEN` are unset or unreachable).
+     - `route` and `step_up` map `mechanical -> flash_lite`, `standard -> flash`, `architect -> inherit`, `interactive -> inherit`, step up one tier on `attempt >= 3` (`flash_lite -> flash -> inherit`), and never return `"pro"` when the top tier is `"inherit"`.
+   - `daemon/workspace-plugin/principal-architect/scripts/pa_cli.py`:
+     - Preserves stdlib-only top-level imports (`common` + `state_db`) while adding `pa sync`, `pa programme init`, `pa programme charter`, `pa pr start`, `pa pr claim`, `pa pr open-or-sync`, `pa pr post-audit`, `pa pr sync-audit`, `pa pr graduate` (enforcing Rule R6: requiring an `APPROVED` `AuditReport` matching current `HEAD` or `HEAD~1` for the audit commit itself and running `charter.verification_floor`), `pa pr restack`, `pa wo debug`, `pa wo resolve`, and `pa issue create`.
+2. **Verification & Audit Summary:**
+   - `pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py tests/test_github_and_local_git_bus.py tests/test_memory_modes.py`: `115 passed` (17 schemas, 34 state_db_and_sync, 34 hooks, 23 github_and_local_git_bus, 7 memory_modes).
+   - `ruff check daemon tests`: `All checks passed!`.
+   - Cold-Firewall Audit Round 1 (`AUDIT-round-1.md`, commit `b10571aa290325613ef753f8145b2954408d9f1b`): `APPROVED (0 blocking, 0 major, 0 minor)`.
