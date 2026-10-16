@@ -5,7 +5,7 @@ pr_id: PR-02
 title: Dual-mode escalation engine (decide R1-R6), structural blocker signatures,
   hook I/O helpers, and hooks.json
 complexity: architect
-status: PENDING
+status: COMPLETED
 allowed_files:
 - daemon/workspace-plugin/principal-architect/scripts/escalation.py
 - daemon/workspace-plugin/principal-architect/hooks.json
@@ -21,7 +21,22 @@ verification_command: ./.venv/bin/pytest tests/test_schemas.py tests/test_state_
 max_attempts: 5
 max_structural_failures: 2
 spec_hash: aa1072b4b8176cd14e4bbec5a2bfde3a44a4e276f767aa146e90b26e5b1dc20c
-completion: null
+completion:
+  status: COMPLETED
+  attempt_num: 1
+  receipt_id: rcpt_wo_02_1_50b80f6f9ffa
+  commit_sha: null
+  files_modified:
+  - daemon/workspace-plugin/principal-architect/scripts/escalation.py
+  - daemon/workspace-plugin/principal-architect/hooks.json
+  - tests/test_hooks_monitored_vs_autonomous.py
+  verification_summary: "62 passed in 5.16s (test_schemas, test_state_db_and_sync, test_hooks_monitored_vs_autonomous); ruff check daemon tests clean."
+  out_of_scope_findings: []
+  escalation_request: null
+  decisions_made:
+  - "Kept escalation.py strictly stdlib + state_db at module top-level so hook fast-paths remain sub-millisecond with zero pydantic/yaml/schemas imports."
+  - "Included both 'permissionDecision' and 'decision' keys in decide() output for direct compatibility with PreToolUse and internal callers."
+  dead_ends: []
 ---
 
 # WO-02.1 — Dual-Mode Escalation Engine, Structural Signatures, Hook I/O & `hooks.json`
@@ -187,4 +202,14 @@ completion: null
 ## Completion Report
 <!-- Written by the Tier 3 Worker at task completion -->
 
-_Pending execution._
+- **Status:** `COMPLETED` (Attempt 1)
+- **Tree Hash (`allowed_files`):** `50b80f6f9ffaddc706d0fb0af99864349dd0248342f98b683fb5f8ce540584d5`
+- **Files Modified:**
+  - `daemon/workspace-plugin/principal-architect/scripts/escalation.py`
+  - `daemon/workspace-plugin/principal-architect/hooks.json`
+  - `tests/test_hooks_monitored_vs_autonomous.py`
+- **Verification Summary:** `./.venv/bin/pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py && ./.venv/bin/ruff check daemon tests` — 62 passed, `ruff check` clean.
+- **Decisions Made:**
+  - Kept `escalation.py` strictly stdlib + `state_db` at module top-level so hook fast-paths remain sub-millisecond with zero `pydantic`/`yaml`/`schemas` imports.
+  - Returned both `permissionDecision` and `decision` keys from `decide()` together with structured `escalation` metadata for persistence via `record_escalation` / `enqueue_attention`.
+- **Out-of-Scope Findings:** None.
