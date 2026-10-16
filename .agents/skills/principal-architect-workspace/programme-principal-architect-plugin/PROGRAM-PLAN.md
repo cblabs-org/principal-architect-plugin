@@ -170,8 +170,8 @@ Chief (Tier 1)
 | PR-01 | 🔒 locked 2026-10-16 (`9005d513…`) | `18498c8a` (`GRADUATED`) | 2026-10-16 | 6/6 `COMPLETED` (`51 passed`) | PR `#1` (`be21bcc8`) | Round 1 `APPROVED` (`06c008f6`, `ce4950c2`) | ✅ 2026-10-16 (`a0216da`) |
 | PR-02 | 🔒 locked 2026-10-16 (`c4101d40…`) | `3f93d1e5` (`GRADUATED`) | 2026-10-16 | 6/6 `COMPLETED` (`85 passed`) | PR `#2` (`53697f5b`) | Round 1 `APPROVED` (`716160dd`, `0d35a8e6`) | ✅ 2026-10-16 (`bfda2d4`) |
 | PR-03 | 🔒 locked 2026-10-16 (`ad7e71f9…`) | `ff54a7db` (`GRADUATED`) | 2026-10-16 | 5/5 `COMPLETED` (`115 passed`) | PR `#3` (`cb90e3e7`) | Round 1 `APPROVED` (`c568f439`, `b10571aa`) | ✅ 2026-10-16 (`6be3982e`) |
-| PR-04 | 🔒 locked 2026-10-16 (`2ac0917b…`) | `IN_PROGRESS` (Tier 2 PA spawned 2026-10-16) | authorized (2026-10-16) | in progress | — | — | — |
-| PR-05 | stub (frontmatter only) | — | — | — | — | — | — |
+| PR-04 | 🔒 locked 2026-10-16 (`2ac0917b…`) | `41c3f16b` (`GRADUATED`) | 2026-10-16 | 3/3 `COMPLETED` (`121 passed`) | PR `#4` (`88125eb3`) | Round 1 `APPROVED` (`631bc95c`, `cb762c41`) | ✅ 2026-10-16 (`fd35e69e`) |
+| PR-05 | 🔒 locked 2026-10-16 (`814b217d…`) | `IN_PROGRESS` (Tier 2 PA spawned 2026-10-16) | authorized (2026-10-16) | in progress | — | — | — |
 
 ## 9. Risk Register
 

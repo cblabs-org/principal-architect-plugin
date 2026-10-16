@@ -94,8 +94,8 @@ prs:
       - tests/conftest.py
       - tests/test_cockpit_api.py
     required_skills: []
-    status: IN_PROGRESS
-    github_pr: null
+    status: GRADUATED
+    github_pr: 4
   - id: PR-05
     slug: pr-05-dogfood-self-enrollment-and-release
     title: "Dogfood self-enrollment, workspace migration, state reconciliation, and v0.1.0 release"
@@ -105,12 +105,15 @@ prs:
     allowed_modules:
       - CHANGELOG.md
       - README.md
+      - .gitignore
       - pyproject.toml
       - daemon/plugin.json
       - daemon/workspace-plugin/principal-architect/plugin.json
       - .agents/plugins/principal-architect-workspace/
+      - .agents/skills/principal-architect-workspace/
+      - tests/test_state_db_and_sync.py
     required_skills: []
-    status: PLANNED
+    status: IN_PROGRESS
     github_pr: null
 ---
 
@@ -118,7 +121,7 @@ prs:
 
 > **Programme:** Build `principal-architect-plugin` — a self-contained Python 3.11+ / Pydantic v2 split-daemon Antigravity plugin that turns the prompt-driven `principal-architect` skill into a mechanically enforced, token-efficient, multi-tier orchestration system.
 > **Specification:** [SPEC.md](../../../../SPEC.md) v1.1 (2026-10-16) + [Positioning Paper](../../../../docs/positioning-paper.md) Rev 3
-> **Status:** Approved — autonomous execution authorized (2026-10-16). **3/5 PRs graduated (PR-01, PR-02, PR-03).** **Active:** PR-04 (`pr-04-cockpit-auxpane-ui`).
+> **Status:** Approved — autonomous execution authorized (2026-10-16). **4/5 PRs graduated (PR-01, PR-02, PR-03, PR-04).** **Active:** PR-05 (`pr-05-dogfood-self-enrollment-and-release`).
 > **Base branch:** `main` (`a16d659`; `origin` = `github.com/matthewmcneill/principal-architect-plugin`, `vcs_mode: github`, `memory_mode: builtin`)
 > **Execution plan:** [PROGRAM-PLAN.md](PROGRAM-PLAN.md) — dependency graph, branching, per-PR protocol, indicative Work Orders, human tasks, decisions, risks, status tracker.
 
@@ -332,3 +335,7 @@ Downstream PRs may make **additive-only** changes to upstream modules (new funct
 ### 2026-10-16 — PR-03 graduated; PR-04 Chartered & PA spawned (session 1)
 - **Summary (`PR-03`, GitHub PR `#3`, `6be3982e`):** Tier 2 PA (`ff54a7db`) decomposed `PR-03` into 5 sequential Work Orders (`WO-03.1`..`WO-03.5`), spawned 5 dedicated Tier 3 Execution Workers, and delivered `vcs_sync.py` (`VcsBus`, `LocalGitBus`, `GitHubBus`, `write_audit_round`, `parse_pa_audit_comment`, `append_deferred_backlog`, `sync_state`, `restack_branches`), `memory_grad.py` (`graduate` enforcing `external` vs. `builtin` memory modes with 5-PR window roll-off to `PROJECT_INDEX.md` and byte-stable `MODULE_INDEX.md` rows), `models.py` (`ARCHITECT_MODEL_PREFERENCE`, `route`, `step_up`, `select_architect_model`, `LanguageServerClient`), full lifecycle CLI subcommands in `pa_cli.py`, and 30 new tests across `test_github_and_local_git_bus.py` (23) and `test_memory_modes.py` (7) (`115 passed` total, `ruff` clean). Cold-Firewall Auditor (`c568f439`) audited `cb90e3e7` on Round 1 and returned `APPROVED (0 blocking, 0 major, 0 minor)` (`b10571aa`).
 - **Next:** Authored and locked Part I Charter of [`pr-04-cockpit-auxpane-ui/PROJECT.md`](../pr-04-cockpit-auxpane-ui/PROJECT.md) (`charter_hash: 2ac0917b9e8a4a0d1a85bded6036c555aebb2de04441ffd74c5d84038fc80559`) and spawned the Tier 2 Principal Architect for `PR-04`.
+
+### 2026-10-16 — PR-04 graduated; PR-05 Chartered & PA spawned (session 1)
+- **Summary (`PR-04`, GitHub PR `#4`, `fd35e69e`):** Tier 2 PA (`41c3f16b`) decomposed `PR-04` into 3 sequential Work Orders (`WO-04.1`..`WO-04.3`), spawned 3 dedicated Tier 3 Execution Workers (`7c9f5ef4`, `17b7c68f`, `7f613224`), and delivered `daemon/sidecars/pa_cockpit/sidecar.json` (`SIDECAR_UI_ENTRYPOINT_AUX_PANE`, zero `agent_permissions`), stdlib-only `cockpit.py` (HTTP + SSE server with all 10 SPEC §10.2 routes), 3-zone Cockpit UI (`ui/index.html`, `ui/styles.css` using host CSS variables, `ui/app.js` with `/preload.js`, `onWorkspaceChange`, `toggleConversation`), environment-isolatable `scripts/install.sh` & `scripts/uninstall.sh`, full `README.md`, and `tests/test_cockpit_api.py` (`121 passed` total across all 6 suites, `ruff` clean). Cold-Firewall Auditor (`631bc95c`) audited `88125eb3` on Round 1 and returned `APPROVED (0 blocking, 0 major, 0 minor)` (`cb762c41`).
+- **Next:** Authored and locked Part I Charter of [`pr-05-dogfood-self-enrollment-and-release/PROJECT.md`](../pr-05-dogfood-self-enrollment-and-release/PROJECT.md) and spawned the Tier 2 Principal Architect for `PR-05`.
