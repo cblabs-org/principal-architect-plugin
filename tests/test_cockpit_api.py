@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
+import shutil
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -782,4 +785,145 @@ def test_cockpit_frontend_assets_and_ui_contract(
         "Peek Worker",
     ):
         assert required_label in disk_js or required_label in disk_html
+
+
+def test_install_and_uninstall_scripts_isolated_tmp_path(
+    tmp_path: Path,
+    tmp_repo: Path,
+    daemon_home: Path,
+) -> None:
+    """Verify `scripts/install.sh` and `scripts/uninstall.sh` in isolated `tmp_path` (SPEC.md §4.1, Charter G3 & R6)."""
+    install_sh = REPO_ROOT / "scripts" / "install.sh"
+    uninstall_sh = REPO_ROOT / "scripts" / "uninstall.sh"
+    assert install_sh.is_file()
+    assert uninstall_sh.is_file()
+    assert os.access(install_sh, os.X_OK)
+    assert os.access(uninstall_sh, os.X_OK)
+
+    bin_dir = tmp_path / "bin"
+    pa_bin = bin_dir / "pa"
+
+    # Remove pre-created daemon_home so install.sh exercises fresh installation from scratch
+    shutil.rmtree(daemon_home, ignore_errors=True)
+
+    env = dict(os.environ)
+    env["PA_DAEMON_HOME"] = str(daemon_home)
+    env["PA_BIN_DIR"] = str(bin_dir)
+    env["PATH"] = f"{Path(sys.executable).parent}:{env.get('PATH', '')}"
+
+    # 1. Run install.sh into isolated PA_DAEMON_HOME and PA_BIN_DIR
+    res_install = subprocess.run(
+        ["bash", str(install_sh)],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert str(daemon_home) in res_install.stdout
+    assert str(pa_bin) in res_install.stdout
+
+    # 2. Verify installed package layout, registry.json, and executable symlink
+    assert (daemon_home / "plugin.json").is_file()
+    assert (daemon_home / "sidecars" / "pa_cockpit" / "sidecar.json").is_file()
+    assert (daemon_home / "sidecars" / "pa_cockpit" / "ui" / "index.html").is_file()
+    assert (
+        daemon_home / "workspace-plugin" / "principal-architect" / "scripts" / "pa_cli.py"
+    ).is_file()
+    registry_file = daemon_home / "state" / "registry.json"
+    assert registry_file.is_file()
+    initial_reg = json.loads(registry_file.read_text(encoding="utf-8"))
+    assert initial_reg["schema_version"] == 1
+
+    assert pa_bin.is_symlink()
+    assert pa_bin.is_file()
+    assert os.access(pa_bin, os.X_OK)
+
+    # 3. Invoke installed `bin/pa --help`, `bin/pa enroll`, and `bin/pa status <repo> --json`
+    res_help = subprocess.run(
+        [str(pa_bin), "--help"],
+        cwd=tmp_repo,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert res_help.returncode == 0
+    assert "enroll" in res_help.stdout
+
+    res_enroll = subprocess.run(
+        [
+            str(pa_bin),
+            "enroll",
+            str(tmp_repo),
+            "--memory-mode",
+            "builtin",
+            "--vcs-mode",
+            "local_git",
+        ],
+        cwd=tmp_repo,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert res_enroll.returncode == 0
+
+    res_status = subprocess.run(
+        [str(pa_bin), "status", str(tmp_repo), "--json"],
+        cwd=tmp_repo,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert res_status.returncode == 0
+    status_payload = json.loads(res_status.stdout)
+    assert status_payload["env"]["vcs_mode"] == "local_git"
+    assert status_payload["env"]["memory_mode"] == "builtin"
+
+    # 4. Verify registry.json preserves enrolled repository across re-install / upgrade
+    reg_before = json.loads(registry_file.read_text(encoding="utf-8"))
+    assert str(tmp_repo.resolve()) in reg_before["repos"]
+
+    subprocess.run(
+        ["bash", str(install_sh)],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert registry_file.is_file()
+    reg_after = json.loads(registry_file.read_text(encoding="utf-8"))
+    assert str(tmp_repo.resolve()) in reg_after["repos"]
+    assert (
+        reg_after["repos"][str(tmp_repo.resolve())]["workspace_dir"]
+        == reg_before["repos"][str(tmp_repo.resolve())]["workspace_dir"]
+    )
+
+    # 5. Run uninstall.sh twice (verify clean removal and idempotency)
+    res_un1 = subprocess.run(
+        ["bash", str(uninstall_sh)],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert res_un1.returncode == 0
+    assert not pa_bin.exists()
+    assert not pa_bin.is_symlink()
+    assert not daemon_home.exists()
+
+    res_un2 = subprocess.run(
+        ["bash", str(uninstall_sh)],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert res_un2.returncode == 0
+
 

@@ -5,7 +5,7 @@ pr_id: PR-04
 title: Host install.sh and uninstall.sh scripts, user-facing README.md, and isolated
   tmp_path installer tests
 complexity: mechanical
-status: IN_PROGRESS
+status: COMPLETED
 allowed_files:
 - scripts/install.sh
 - scripts/uninstall.sh
@@ -33,7 +33,25 @@ verification_command: ./.venv/bin/pytest tests/test_schemas.py tests/test_state_
 max_attempts: 5
 max_structural_failures: 2
 spec_hash: 47f83e2d9715c4507a0bb83e8a5a59796acd3b19345ef93de35913f7bd919626
-completion: null
+completion:
+  status: COMPLETED
+  attempt_num: 1
+  receipt_id: rcpt_871745929da7
+  commit_sha: fa32b5d2a5035c268dadc296a413c2c1b6a740ef
+  files_modified:
+  - scripts/install.sh
+  - scripts/uninstall.sh
+  - README.md
+  - tests/test_cockpit_api.py
+  verification_summary: "121 passed in 81.82s; ruff check daemon tests: All checks passed!"
+  out_of_scope_findings:
+  - "pa_cli.py status takes a positional path argument (pa status [path] [--json]) rather than --repo; test_install_and_uninstall_scripts_isolated_tmp_path exercises the positional path contract."
+  escalation_request: null
+  decisions_made:
+  - "Implemented scripts/install.sh and scripts/uninstall.sh honouring PA_DAEMON_HOME and PA_BIN_DIR, backing up and restoring <PA_DAEMON_HOME>/state/ across upgrades, initializing registry.json with both repos and repositories keys, setting executable permissions, and symlinking pa_cli.py to <PA_BIN_DIR>/pa."
+  - "Authored comprehensive user-facing README.md covering the 3-tier operating model, Split-Authority Markdown contracts (charter_hash & spec_hash), two-tier installation, dual-mode hooks (R1-R6), local_git vs github VCS bus, external vs builtin memory modes, Cockpit AuxPane UI zones, and CLI reference."
+  - "Extended tests/test_cockpit_api.py with test_install_and_uninstall_scripts_isolated_tmp_path verifying isolated tmp_path installation, pa --help, pa enroll, pa status --json, state/registry.json preservation across re-installs, and idempotent uninstallation."
+  dead_ends: []
 ---
 
 # WO-04.3 — Host Installer (`scripts/install.sh`, `scripts/uninstall.sh`), `README.md` & Installer Tests
@@ -118,4 +136,21 @@ completion: null
 ## Completion Report
 <!-- Written by the Tier 3 Worker at task completion -->
 
-_Pending execution by Tier 3 Worker._
+- **Status:** `COMPLETED` (attempt 1)
+- **Receipt ID:** `rcpt_871745929da7`
+- **Tree Hash (`allowed_files`):** `871745929da78c115d13bc8b0ae37af5ef6fdba4f486554179119011d63dd7d1`
+- **Files Modified:**
+  - `scripts/install.sh`
+  - `scripts/uninstall.sh`
+  - `README.md`
+  - `tests/test_cockpit_api.py`
+- **Verification Summary:**
+  - `./.venv/bin/pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py tests/test_github_and_local_git_bus.py tests/test_memory_modes.py tests/test_cockpit_api.py` -> `121 passed in 81.82s`
+  - `./.venv/bin/ruff check daemon tests` -> `All checks passed!`
+- **Decisions Made:**
+  - Authored `scripts/install.sh` and `scripts/uninstall.sh` (`chmod +x`) honouring `PA_DAEMON_HOME` and `PA_BIN_DIR`, backing up and restoring `<PA_DAEMON_HOME>/state/` across upgrades, initializing `registry.json` with both `repos` and `repositories` keys when absent, setting executable permissions on `scripts/*.py` and `scripts/{enroll,unenroll}.sh`, and symlinking `pa_cli.py` to `<PA_BIN_DIR>/pa`.
+  - Authored the complete user-facing `README.md` covering the 3-tier operating model, Split-Authority Markdown contracts (`charter_hash` & `spec_hash`), two-tier installation, dual-mode hooks (`R1`–`R6`), `local_git` vs. `github` VCS bus, `external` vs. `builtin` memory modes, Cockpit AuxPane UI zones, and CLI reference.
+  - Extended `tests/test_cockpit_api.py` with `test_install_and_uninstall_scripts_isolated_tmp_path` verifying isolated `tmp_path` installation, `pa --help`, `pa enroll`, `pa status --json`, `state/registry.json` preservation across re-installs, and idempotent uninstallation.
+- **Out-of-Scope Findings:**
+  - `pa_cli.py status` takes a positional `path` argument (`pa status [path] [--json]`) rather than `--repo`; `test_install_and_uninstall_scripts_isolated_tmp_path` exercises the positional `path` contract.
+- **Dead Ends:** None.
