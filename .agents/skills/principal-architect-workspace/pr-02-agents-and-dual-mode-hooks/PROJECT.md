@@ -30,10 +30,52 @@ charter:
     - "pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py"
   charter_locked: true
   charter_hash: "c4101d401d3bfce795e277df30e49ffc534e9e1d2c835788a433f342d95ddbde"
-status: PLANNED
-approved_at: null
+status: APPROVED
+approved_at: "2026-10-16T20:05:00Z"
 github_pr: null
-work_orders: []
+work_orders:
+  - id: WO-02.1
+    slug: wo1-escalation-engine-and-hook-io
+    title: "Dual-mode escalation engine (decide R1-R6), structural blocker signatures, hook I/O helpers, and hooks.json"
+    complexity: architect
+    status: PENDING
+    attempts: 0
+    commit_sha: null
+  - id: WO-02.2
+    slug: wo2-pre-tool-gate-r1-r6
+    title: "PreToolUse gate enforcing R1, R1b, R2, R3, R4, R5, R6 with realpath traversal defense and <1ms fast-exit"
+    complexity: architect
+    status: PENDING
+    attempts: 0
+    commit_sha: null
+  - id: WO-02.3
+    slug: wo3-post-tool-receipt-and-wo-verify
+    title: "PostToolUse receipt invalidation/stamping, deterministic compute_tree_hash, and pa wo verify CLI"
+    complexity: standard
+    status: PENDING
+    attempts: 0
+    commit_sha: null
+  - id: WO-02.4
+    slug: wo4-stop-gate-two-tier-retry
+    title: "Stop gate implementing two-tier retry ceiling (max_attempts=5 vs max_structural_failures=2) and Case A/B + auditor checks"
+    complexity: architect
+    status: PENDING
+    attempts: 0
+    commit_sha: null
+  - id: WO-02.5
+    slug: wo5-pre-invocation-role-binding-and-injection
+    title: "PreInvocation session role binding, CHECKPOINT/rewind detection, and memory-mode-aware userMessage injection"
+    complexity: standard
+    status: PENDING
+    attempts: 0
+    commit_sha: null
+  - id: WO-02.6
+    slug: wo6-agents-rules-skill-and-approve-plan
+    title: "Five custom agent definitions (agents/pa-*.md), operating-model rule, in-plugin SKILL.md, pa pr approve-plan, and pa escalate"
+    complexity: standard
+    status: PENDING
+    attempts: 0
+    commit_sha: null
 ---
 
 # PR-02 — Agents, Capability Scoping & Dual-Mode Hook Engine
@@ -125,7 +167,25 @@ PR-02 turns the prompt-only `principal-architect` methodology into **determinist
 
 ## 3. Implementation Plan & Work Order Breakdown
 
-_To be authored by the Tier 2 Principal Architect for PR-02 after file-level discovery. Ledger rows must link to each `woM-<topic>/WORKORDER.md`._
+### 3.1 File-Level Discovery & Sequencing Strategy
+
+Inspection of `feat/pr-01-core-schemas-and-enrollment` (`a0216da`) confirms that `common.py` (stdlib-only `<1ms` `is_repo_enrolled`, `find_repo_root`, `workspace_dir`, `read_transcript`, `latest_checkpoint_step`, `run`), `schemas.py` (`ProjectSpec`, `WorkOrderSpec`, `AuditReport`, `EscalationRequest`, `verify_charter_hash`, `verify_spec_hash`, `compute_spec_hash`), `state_db.py` (`StateDB` with `repo_config`, `sessions`, `verification_receipts`, `escalations`, `attention_queue`), and `pa_cli.py` (`COMMAND_MODULES`, `build_parser`, `main`) are in place with 51 passing tests. To build PR-02 cleanly with zero circular dependencies and keep all verification floors green at every Work Order tip:
+
+1. **Escalation & Hook I/O foundation first (`WO-02.1`):** Implement `scripts/escalation.py` (`decide(rule, mode, ctx)` covering `R1`, `R1b`, `R2`, `R3`, `R4`, `R5`, `R6` symmetrically across `monitored` and `autonomous` modes, `STRUCTURAL_SIGNATURES`, `is_structural_blocker`, `record_escalation`, `enqueue_attention`, `extract_workspace_paths`, `read_hook_input`, `write_hook_output`), `daemon/workspace-plugin/principal-architect/hooks.json`, and the initial `tests/test_hooks_monitored_vs_autonomous.py` suite so the PR-02 verification floor (`pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py`) collects and passes from `WO-02.1` onward.
+2. **`PreToolUse` gate second (`WO-02.2`):** Implement `scripts/pre_tool_gate.py` with `<1ms` unenrolled fast-exit before heavy imports, `os.path.realpath` canonical path resolution and traversal defense, and `evaluate_pre_tool` / `main()` enforcing rules `R1`, `R1b`, `R2` (with `auto_approve_pr_plans` support), `R3`, `R4`, `R5`, and `R6`, plus the full `rule × mode` matrix, symlink/`../` traversal escape tests, and unenrolled import-purity tests.
+3. **`PostToolUse` receipt engine & `pa wo verify` third (`WO-02.3`):** Implement `scripts/post_tool_receipt.py` (`<1ms` unenrolled fast-exit, deterministic `compute_tree_hash(repo_root, allowed_files)`, receipt invalidation on edit/mutating shell commands, valid receipt stamping on `verification_command` exit `0`, and `attempt_num`/`structural_failures` tracking on non-zero exit) and add `pa wo verify <WO-ID>` to `scripts/pa_cli.py`.
+4. **`Stop` gate & two-tier retry ceiling fourth (`WO-02.4`):** Implement `scripts/stop_gate.py` (`<1ms` unenrolled fast-exit, fast-fail structural escalation at `structural_failures >= max_structural_failures` [2] or `>= 3` consecutive `ERROR_MESSAGE` steps in `transcript.jsonl`, productive ceiling at `attempt_num >= max_attempts` [5] transitioning to `BLOCKED` and enqueuing `pa-debugger`, Case A blocker completion, Case B normal completion checking receipt `tree_hash` + clean git status with `<WO-ID>:` commit + valid `CompletionReport` + intact `spec_hash`, bounded continuation counter incrementing `attempt_num` on each `"decision": "continue"`, and Auditor stop check requiring an `AuditReport` for current `HEAD`).
+5. **`PreInvocation` role binding & context injection fifth (`WO-02.5`):** Implement `scripts/pre_invocation.py` (`<1ms` unenrolled fast-exit, `parse_spawn_header`, unbound subagent session binding on Turn 1, `CHECKPOINT` compaction and step-rewind detection, and persistent `userMessage` injection tailored to role and `memory_mode` [`builtin` vs. `external`]).
+6. **Custom agents, operating rule, in-plugin skill, and `pa pr approve-plan` / `pa escalate` sixth (`WO-02.6`):** Author `agents/{pa-chief-architect,pa-principal-architect,pa-engineer,pa-auditor,pa-debugger}.md` per SPEC §5.2, `rules/00-pa-operating-model.md`, `skills/principal-architect/SKILL.md`, and CLI subcommands `pa pr approve-plan <PR-ID>` and `pa escalate` in `scripts/pa_cli.py`, plus frontmatter/CLI/dogfood verification tests.
+
+### 3.2 Work Order Ledger
+
+- **[ ] [wo1-escalation-engine-and-hook-io](wo1-escalation-engine-and-hook-io/WORKORDER.md)** (`WO-02.1`, `complexity: architect`, base: `feat/pr-01-core-schemas-and-enrollment`): Implement `scripts/escalation.py` (`decide`, `STRUCTURAL_SIGNATURES`, `is_structural_blocker`, `record_escalation`, `enqueue_attention`, `extract_workspace_paths`, `read_hook_input`, `write_hook_output`), `hooks.json`, and initial unit tests in `tests/test_hooks_monitored_vs_autonomous.py`.
+- **[ ] [wo2-pre-tool-gate-r1-r6](wo2-pre-tool-gate-r1-r6/WORKORDER.md)** (`WO-02.2`, `complexity: architect`, base: `pr-02-agents-and-dual-mode-hooks/wo1-escalation-engine-and-hook-io`): Implement `scripts/pre_tool_gate.py` (`<1ms` unenrolled fast-exit, `os.path.realpath` canonical path resolution & traversal defense, `evaluate_pre_tool` and `main()` enforcing R1, R1b, R2, R3, R4, R5, R6) and comprehensive `rule × mode` + traversal + fast-exit tests in `tests/test_hooks_monitored_vs_autonomous.py`.
+- **[ ] [wo3-post-tool-receipt-and-wo-verify](wo3-post-tool-receipt-and-wo-verify/WORKORDER.md)** (`WO-02.3`, `complexity: standard`, base: `pr-02-agents-and-dual-mode-hooks/wo2-pre-tool-gate-r1-r6`): Implement `scripts/post_tool_receipt.py` (`compute_tree_hash`, receipt invalidation, receipt stamping, attempt/structural failure counters) and `pa wo verify <WO-ID>` in `scripts/pa_cli.py`, plus tests in `tests/test_hooks_monitored_vs_autonomous.py`.
+- **[ ] [wo4-stop-gate-two-tier-retry](wo4-stop-gate-two-tier-retry/WORKORDER.md)** (`WO-02.4`, `complexity: architect`, base: `pr-02-agents-and-dual-mode-hooks/wo3-post-tool-receipt-and-wo-verify`): Implement `scripts/stop_gate.py` (two-tier retry ceiling, structural fast-fail, 5-attempt debugger escalation, Case A/B completion gates, bounded continuation cap, and auditor stop gate) and tests in `tests/test_hooks_monitored_vs_autonomous.py`.
+- **[ ] [wo5-pre-invocation-role-binding-and-injection](wo5-pre-invocation-role-binding-and-injection/WORKORDER.md)** (`WO-02.5`, `complexity: standard`, base: `pr-02-agents-and-dual-mode-hooks/wo4-stop-gate-two-tier-retry`): Implement `scripts/pre_invocation.py` (`parse_spawn_header`, Turn 1 role binding, `CHECKPOINT`/rewind detection, and `builtin` vs. `external` memory-mode-aware `userMessage` injection) and tests in `tests/test_hooks_monitored_vs_autonomous.py`.
+- **[ ] [wo6-agents-rules-skill-and-approve-plan](wo6-agents-rules-skill-and-approve-plan/WORKORDER.md)** (`WO-02.6`, `complexity: standard`, base: `pr-02-agents-and-dual-mode-hooks/wo5-pre-invocation-role-binding-and-injection`): Author the five `agents/pa-*.md` files, `rules/00-pa-operating-model.md`, `skills/principal-architect/SKILL.md`, `pa pr approve-plan <PR-ID>` and `pa escalate` in `scripts/pa_cli.py`, and frontmatter/CLI/dogfood tests in `tests/test_hooks_monitored_vs_autonomous.py`.
 
 <!-- ======================================================================
      PART III — OUTCOME & GRADUATION SUMMARY (authored by the Tier 2 Principal Architect)
@@ -133,4 +193,4 @@ _To be authored by the Tier 2 Principal Architect for PR-02 after file-level dis
 
 ## 4. Outcome & Session Log
 
-_To be authored by the Tier 2 Principal Architect. memory_mode is `builtin`: record full architectural distillation (decisions, dead ends, surfaced findings, audit rounds, final head_sha)._
+- **2026-10-16 (`status: APPROVED`):** User approved the full Programme Plan (`PROGRAM.md` `status: APPROVED`) and explicitly authorized autonomous execution and sub-agent spawning across the programme (Decision D11, 2026-10-16). Part II Work Order decomposition (`WO-02.1` through `WO-02.6`) authored and approved under standing user programme authorization (`approved_at: 2026-10-16T20:05:00Z`).
