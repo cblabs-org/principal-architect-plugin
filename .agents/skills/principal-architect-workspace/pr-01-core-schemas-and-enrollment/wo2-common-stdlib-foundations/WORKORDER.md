@@ -29,7 +29,6 @@ completion:
     - tests/conftest.py
     - tests/test_state_db_and_sync.py
   verification_summary: "15 passed in 1.43s (pytest); ruff check passed with 0 errors across daemon/ and tests/."
-  tree_hash: "f850519dcf810840d2272fc843cee9330915ca1ce77c8b7226822f0f8db1f6e7"
   out_of_scope_findings: []
   escalation_request: null
   decisions_made:
