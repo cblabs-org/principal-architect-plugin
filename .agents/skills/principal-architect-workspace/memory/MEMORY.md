@@ -1,11 +1,11 @@
 # Principal Architect Memory
-<!-- Last updated: 2026-10-16T17:20:00Z -->
+<!-- Last updated: 2026-10-16T18:12:00Z -->
 <!-- memory_mode: builtin (no external memory plugin enrolled on this repository) -->
 
 ## Active Programs
 | Program | Plan | Status |
 |---|---|---|
-| [principal-architect-plugin](../programme-principal-architect-plugin/PROGRAM.md) | [PROGRAM-PLAN.md](../programme-principal-architect-plugin/PROGRAM-PLAN.md) | PR-01 Charter locked; PR-01 PA spawn pending user review (0/4 PRs graduated) |
+| [principal-architect-plugin](../programme-principal-architect-plugin/PROGRAM.md) | [PROGRAM-PLAN.md](../programme-principal-architect-plugin/PROGRAM-PLAN.md) | Full Programme Plan authored; awaiting user approval before PR-01 PA spawn (0/4 PRs graduated; Phase 5 proposed) |
 
 ## Active Projects
 | Project | Status | Modules | Context |
