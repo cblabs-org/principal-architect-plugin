@@ -4,7 +4,7 @@ wo_id: WO-01.3
 pr_id: PR-01
 title: "Pydantic v2 Split-Authority models, Markdown frontmatter/section parser, and normative hashes"
 complexity: architect
-status: IN_PROGRESS
+status: COMPLETED
 allowed_files:
   - daemon/workspace-plugin/principal-architect/scripts/schemas.py
   - tests/test_schemas.py
@@ -18,7 +18,21 @@ verification_command: "./.venv/bin/pytest tests/test_schemas.py tests/test_state
 max_attempts: 5
 max_structural_failures: 2
 spec_hash: "7c29f211923befd92174483b711dbf39ad1867617e8a8e3d447d176e64c08e8d"
-completion: null
+completion:
+  status: COMPLETED
+  attempt_num: 1
+  receipt_id: "4b3b6d967b22b3c3013d2d34cac5e7ddc768cb2324ac07c5e69396d135e2c0bc"
+  commit_sha: "HEAD"
+  files_modified:
+    - daemon/workspace-plugin/principal-architect/scripts/schemas.py
+    - tests/test_schemas.py
+  verification_summary: "29 passed in pytest (tests/test_schemas.py + tests/test_state_db_and_sync.py); ruff check passed with 0 errors."
+  out_of_scope_findings: []
+  escalation_request: null
+  decisions_made:
+    - "Preserved pre-H2 preamble (H1 titles, metadata tables, HTML comments) as Section(heading='', body=...) so parse_document/dump_document round-trips losslessly."
+    - "Supported Document[T], Spec models, file paths, and raw Markdown strings in compute_charter_hash/verify_charter_hash and compute_spec_hash/verify_spec_hash."
+  dead_ends: []
 ---
 
 # WO-01.3 — Split-Authority Schemas, Document Parser/Renderer & Normative Hashing
@@ -213,4 +227,11 @@ completion: null
 ## Completion Report
 <!-- Written by the Tier 3 Worker at task completion -->
 
-_Pending execution by Tier 3 Worker (`WO-01.3`)._
+### 1. Summary of Changes
+- Implemented `daemon/workspace-plugin/principal-architect/scripts/schemas.py` with all SPEC §6.1–6.4 Pydantic v2 models (`PRNodeSpec`, `ProgramSpec`, `PRCharterSpec`, `WOSummaryRow`, `ProjectSpec`, `EscalationRequest`, `CompletionReport`, `WorkOrderSpec`, `AuditFinding`, `AuditReport` with `extra="forbid"`), string enums (`PRState`, `WorkOrderStatus`, `ComplexityTier`), the H2 section parser/renderer (`Section`, `Document[T]`, `parse_document`, `dump_document`, `load_program`, `load_project`, `load_workorder`, `load_audit`), and the normative hash functions (`canonical_json`, `norm_section`, `compute_charter_hash`, `verify_charter_hash`, `compute_spec_hash`, `verify_spec_hash`).
+- Implemented `tests/test_schemas.py` covering accept/reject validation for every model and constraint, lossless `parse_document`/`dump_document` round-trips, hash tamper detection and Part II invariance, and dogfood verification on this repository's committed `PROGRAM.md`, `PROJECT.md`, and `WO-01.1`–`WO-01.3` `WORKORDER.md` files.
+
+### 2. Verification Floor Results
+- Executed `./.venv/bin/pytest tests/test_schemas.py tests/test_state_db_and_sync.py && ./.venv/bin/ruff check daemon tests`: 29 passed, `ruff check` passed with 0 errors.
+- Tree Hash (`PA-Verified-Hash`): `4b3b6d967b22b3c3013d2d34cac5e7ddc768cb2324ac07c5e69396d135e2c0bc`
+
