@@ -1,0 +1,2 @@
+# Local checkout runtime state (SQLite, manifests, conversation bindings)
+.state/
