@@ -4,7 +4,7 @@ wo_id: WO-02.5
 pr_id: PR-02
 title: "PreInvocation session role binding, CHECKPOINT/rewind detection, and memory-mode-aware userMessage injection"
 complexity: standard
-status: PENDING
+status: COMPLETED
 allowed_files:
   - daemon/workspace-plugin/principal-architect/scripts/pre_invocation.py
   - tests/test_hooks_monitored_vs_autonomous.py
@@ -18,7 +18,21 @@ verification_command: "./.venv/bin/pytest tests/test_schemas.py tests/test_state
 max_attempts: 5
 max_structural_failures: 2
 spec_hash: 6748b6571c16ecd05fcc47f68ec04ab1cad6c6105f0e8c16acbce451d5245060
-completion: null
+completion:
+  status: COMPLETED
+  attempt_num: 1
+  receipt_id: rcpt_72a39d4c72d7
+  commit_sha: 2374a4747e1923b9deb21c15286a402e90385f0a
+  files_modified:
+    - daemon/workspace-plugin/principal-architect/scripts/pre_invocation.py
+    - tests/test_hooks_monitored_vs_autonomous.py
+  verification_summary: "81 passed in 13.95s across test_schemas, test_state_db_and_sync, and test_hooks_monitored_vs_autonomous; ruff check clean."
+  out_of_scope_findings: []
+  escalation_request: null
+  decisions_made:
+    - "Combined compaction (CHECKPOINT step_index > prev_cp) and step-count rewind (step_watermark < prev_cp) into a single watermark tracker on sessions.last_checkpoint_step."
+    - "Enforced strict memory_mode boundary so external mode completely omits memory/MEMORY.md and memory/MODULE_INDEX.md while instructing Succinct Write-Back Mode."
+  dead_ends: []
 ---
 
 # WO-02.5 — `PreInvocation` Role Binding, Compaction/Rewind Detection, and Context Injection
@@ -171,3 +185,18 @@ completion: null
 
 ## Completion Report
 <!-- Written by the Tier 3 Worker at task completion -->
+
+- **Status:** `COMPLETED` (`attempt_num: 1`)
+- **Receipt ID:** `rcpt_72a39d4c72d7` (`tree_hash`: `72a39d4c72d7a1206279d6f0bd3d6842ed8df32c5533573d884acf2f79a49ae7`)
+- **Files Modified:**
+  - `daemon/workspace-plugin/principal-architect/scripts/pre_invocation.py`
+  - `tests/test_hooks_monitored_vs_autonomous.py`
+- **Verification Summary:** `81 passed in 13.95s` (`./.venv/bin/pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py && ./.venv/bin/ruff check daemon tests`)
+- **Key Implementation Details:**
+  - Implemented `pre_invocation.py` with `< 1 ms` unenrolled fast-exit (`common.is_repo_enrolled`) and zero top-level `pydantic`, `yaml`, or `schemas` imports.
+  - Implemented `parse_spawn_header(text)` to extract `PA_ROLE:`, `PR_ID:`, `WO_ID:`, and `PROGRAMME_ID:` from spawn prompts and transcript steps, normalizing `PA_ROLE` via `pre_tool_gate._normalize_role` and automatically binding unbound subagent sessions on Turn 1 in `.state/state.db`.
+  - Implemented `CHECKPOINT` compaction and step-count rewind detection against `sessions.last_checkpoint_step` so context injection re-arms automatically whenever a bound conversation compacts or rewinds, while avoiding duplicate injections on normal turns.
+  - Implemented role-specific `{"injectSteps": [{"userMessage": "..."}]}` payload construction honoring the strict `memory_mode` boundary (`builtin` injects `memory/MEMORY.md` + matching `memory/MODULE_INDEX.md` sections and Full Distillation Mode; `external` completely omits `memory/` and instructs Succinct Write-Back Mode; `engineer` injects bound `WORKORDER.md` contract + resolved `SKILL.md` paths for `required_skills`).
+  - Added 4 unit and subprocess tests in `tests/test_hooks_monitored_vs_autonomous.py` covering unenrolled fast-exit/import purity, Turn 1 spawn-header session binding, `CHECKPOINT`/rewind re-injection, and `builtin` vs. `external` memory payload separation.
+- **Out-of-Scope Findings:** None.
+

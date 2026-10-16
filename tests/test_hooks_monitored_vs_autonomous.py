@@ -15,6 +15,7 @@ import common
 import escalation
 import pa_cli
 import post_tool_receipt
+import pre_invocation
 import pre_tool_gate
 import pytest
 import schemas
@@ -2008,4 +2009,325 @@ def test_stop_gate_auditor_requires_audit_report_for_current_head(
         )
         == {}
     )
+
+
+# ---------------------------------------------------------------------------
+# WO-02.5: pre_invocation.py tests (Fast-exit, Spawn Header Binding,
+#          CHECKPOINT/Rewind Re-injection, and Memory Mode Separation)
+# ---------------------------------------------------------------------------
+
+
+def test_pre_invocation_unenrolled_fast_exit_and_import_purity(
+    tmp_path: Path, daemon_home: Path
+) -> None:
+    """Verify pre_invocation.py unenrolled fast-exit (<1ms) and zero pydantic/yaml/schemas imports."""
+    _ = daemon_home
+    unenrolled = tmp_path / "unenrolled-preinv-repo"
+    unenrolled.mkdir(parents=True, exist_ok=True)
+
+    payload: dict[str, Any] = {
+        "workspacePaths": [str(unenrolled)],
+        "conversationId": "conv-unbound",
+        "prompt": "PA_ROLE: engineer\nWO_ID: WO-02.1\nPR_ID: PR-02\n",
+    }
+
+    # Warm-up call
+    assert pre_invocation.evaluate_pre_invocation(payload) == {}
+
+    iterations = 25
+    start = time.perf_counter()
+    for _ in range(iterations):
+        res = pre_invocation.evaluate_pre_invocation(payload)
+        assert res == {}
+    elapsed_ms = ((time.perf_counter() - start) * 1000.0) / iterations
+    assert elapsed_ms < 1.0, f"Unenrolled fast-exit took {elapsed_ms:.3f} ms (limit < 1.0 ms)"
+
+    # Verify import purity on the unenrolled path in a fresh subprocess
+    script_path = Path(pre_invocation.__file__).resolve()
+    scripts_dir = str(script_path.parent)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = scripts_dir
+    code = (
+        "import sys, pre_invocation\n"
+        f"res = pre_invocation.evaluate_pre_invocation({{'workspacePaths': [{str(unenrolled)!r}]}})\n"
+        "assert res == {}\n"
+        "assert 'pydantic' not in sys.modules\n"
+        "assert 'yaml' not in sys.modules\n"
+        "assert 'schemas' not in sys.modules\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert proc.returncode == 0, f"Import purity failed:\n{proc.stdout}\n{proc.stderr}"
+
+    # Verify CLI subprocess execution on unenrolled repo outputs {} and exits 0
+    cli_proc = subprocess.run(
+        [sys.executable, str(script_path)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert cli_proc.returncode == 0
+    assert json.loads(cli_proc.stdout.strip()) == {}
+
+
+def test_parse_spawn_header_and_turn1_session_binding(
+    tmp_repo: Path, daemon_home: Path
+) -> None:
+    """Verify parse_spawn_header and Turn 1 unbound subagent session binding & injection."""
+    header_sample = (
+        "> **PA_ROLE**: `pa-engineer`\n"
+        "- WO_ID: WO-02.1\n"
+        "PR_ID: PR-02\n"
+        "PROGRAMME_ID: prog-sample\n"
+    )
+    parsed = pre_invocation.parse_spawn_header(header_sample)
+    assert parsed == {
+        "role": "engineer",
+        "wo_id": "WO-02.1",
+        "pr_id": "PR-02",
+        "programme_id": "prog-sample",
+    }
+    assert pre_invocation.parse_spawn_header("Just a normal prompt without headers") == {}
+
+    ws_dir, _, wo_path = _setup_enrolled_workspace(tmp_repo, daemon_home, mode="autonomous")
+    db_file = ws_dir / ".state" / "state.db"
+
+    # Configure required_skills on WO-02.1 and create a repo skill file on disk
+    skill_md = tmp_repo / ".agents" / "skills" / "framework-expert" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True, exist_ok=True)
+    skill_md.write_text("# Framework Expert Skill\n", encoding="utf-8")
+
+    wo_doc = schemas.load_workorder(wo_path)
+    wo_doc.spec.required_skills = ["framework-expert"]
+    wo_doc.spec.spec_hash = schemas.compute_spec_hash(wo_doc.spec, wo_doc.sections)
+    wo_path.write_text(schemas.dump_document(wo_doc.spec, wo_doc.sections), encoding="utf-8")
+
+    transcript_file = tmp_repo / "subagent_turn1.jsonl"
+    turn1_steps = [
+        {
+            "step_index": 0,
+            "type": "USER_INPUT",
+            "content": (
+                "PA_ROLE: engineer\n"
+                "WO_ID: WO-02.1\n"
+                "PR_ID: PR-02\n"
+                "PROGRAMME_ID: prog-sample\n\n"
+                "Execute WO-02.1 now."
+            ),
+        },
+        {"step_index": 1, "type": "PLANNER_RESPONSE", "content": "Starting work."},
+    ]
+    transcript_file.write_text(
+        "\n".join(json.dumps(s) for s in turn1_steps) + "\n",
+        encoding="utf-8",
+    )
+
+    # Turn 1: Unbound conversationId binds in state.db and receives injectSteps
+    res_t1 = pre_invocation.evaluate_pre_invocation(
+        {
+            "conversationId": "conv-new-worker",
+            "transcriptPath": f"file://{transcript_file}",
+        },
+        repo_root=tmp_repo,
+    )
+    assert "injectSteps" in res_t1
+    assert len(res_t1["injectSteps"]) == 1
+    injected_msg = res_t1["injectSteps"][0]["userMessage"]
+    assert "WO-02.1" in injected_msg
+    assert "PR-02" in injected_msg
+    assert "src/allowed.py" in injected_msg
+    assert "pytest" in injected_msg
+    assert str(skill_md) in injected_msg
+
+    with StateDB(db_file) as db:
+        sess = db.get_session("conv-new-worker")
+        assert sess is not None
+        assert sess["role"] == "engineer"
+        assert sess["wo_id"] == "WO-02.1"
+        assert sess["pr_id"] == "PR-02"
+        assert sess["programme_id"] == "prog-sample"
+        assert sess["last_checkpoint_step"] == 2
+
+    # Turn 2: Append normal steps without CHECKPOINT or rewind -> returns {} (no duplicate injection)
+    turn2_steps = [
+        *turn1_steps,
+        {"step_index": 2, "type": "TOOL_CALL", "content": "read_file"},
+        {"step_index": 3, "type": "PLANNER_RESPONSE", "content": "Continuing work."},
+    ]
+    transcript_file.write_text(
+        "\n".join(json.dumps(s) for s in turn2_steps) + "\n",
+        encoding="utf-8",
+    )
+    res_t2 = pre_invocation.evaluate_pre_invocation(
+        {
+            "conversationId": "conv-new-worker",
+            "transcriptPath": str(transcript_file),
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_t2 == {}
+    with StateDB(db_file) as db:
+        sess2 = db.get_session("conv-new-worker")
+        assert sess2 is not None
+        assert sess2["last_checkpoint_step"] == 4
+
+
+def test_pre_invocation_checkpoint_compaction_and_rewind_reinjection(
+    tmp_repo: Path, daemon_home: Path
+) -> None:
+    """Verify CHECKPOINT compaction and step-count rewind trigger context re-injection."""
+    ws_dir, _, _ = _setup_enrolled_workspace(tmp_repo, daemon_home, mode="monitored")
+    db_file = ws_dir / ".state" / "state.db"
+
+    transcript_file = tmp_repo / "compaction_transcript.jsonl"
+    initial_steps = [
+        {"step_index": idx, "type": "USER_INPUT", "content": f"Step {idx}"}
+        for idx in range(5)
+    ]
+    transcript_file.write_text(
+        "\n".join(json.dumps(s) for s in initial_steps) + "\n",
+        encoding="utf-8",
+    )
+
+    # First call on pre-bound conv-eng (where last_checkpoint_step is initially None) -> injects and sets watermark=5
+    res_init = pre_invocation.evaluate_pre_invocation(
+        {"conversationId": "conv-eng", "transcriptPath": str(transcript_file)},
+        repo_root=tmp_repo,
+    )
+    assert "injectSteps" in res_init
+    with StateDB(db_file) as db:
+        assert db.get_session("conv-eng")["last_checkpoint_step"] == 5
+
+    # Normal progression (6 steps, no CHECKPOINT) -> no injection, watermark updates to 6
+    initial_steps.append({"step_index": 5, "type": "PLANNER_RESPONSE", "content": "Step 5"})
+    transcript_file.write_text(
+        "\n".join(json.dumps(s) for s in initial_steps) + "\n",
+        encoding="utf-8",
+    )
+    assert (
+        pre_invocation.evaluate_pre_invocation(
+            {"conversationId": "conv-eng", "transcriptPath": str(transcript_file)},
+            repo_root=tmp_repo,
+        )
+        == {}
+    )
+    with StateDB(db_file) as db:
+        assert db.get_session("conv-eng")["last_checkpoint_step"] == 6
+
+    # 1. Append a CHECKPOINT step at step_index=10 -> triggers re-injection and updates watermark to 10
+    checkpoint_steps = [
+        *initial_steps,
+        {"step_index": 10, "type": "CHECKPOINT", "content": "Compacted context"},
+    ]
+    transcript_file.write_text(
+        "\n".join(json.dumps(s) for s in checkpoint_steps) + "\n",
+        encoding="utf-8",
+    )
+    res_cp = pre_invocation.evaluate_pre_invocation(
+        {"conversationId": "conv-eng", "transcriptPath": str(transcript_file)},
+        repo_root=tmp_repo,
+    )
+    assert "injectSteps" in res_cp
+    with StateDB(db_file) as db:
+        assert db.get_session("conv-eng")["last_checkpoint_step"] == 10
+
+    # Calling again with the same CHECKPOINT step does NOT re-inject
+    assert (
+        pre_invocation.evaluate_pre_invocation(
+            {"conversationId": "conv-eng", "transcriptPath": str(transcript_file)},
+            repo_root=tmp_repo,
+        )
+        == {}
+    )
+
+    # 2. Rewind transcript back to 3 steps (no CHECKPOINT) -> triggers re-injection and updates watermark to 3
+    rewound_steps = initial_steps[:3]
+    transcript_file.write_text(
+        "\n".join(json.dumps(s) for s in rewound_steps) + "\n",
+        encoding="utf-8",
+    )
+    res_rewind = pre_invocation.evaluate_pre_invocation(
+        {"conversationId": "conv-eng", "transcriptPath": str(transcript_file)},
+        repo_root=tmp_repo,
+    )
+    assert "injectSteps" in res_rewind
+    with StateDB(db_file) as db:
+        assert db.get_session("conv-eng")["last_checkpoint_step"] == 3
+
+
+def test_pre_invocation_memory_mode_builtin_vs_external_separation(
+    tmp_repo: Path, daemon_home: Path
+) -> None:
+    """Verify strict memory_mode payload separation between builtin and external modes."""
+    ws_dir, _, _ = _setup_enrolled_workspace(tmp_repo, daemon_home, mode="autonomous")
+    db_file = ws_dir / ".state" / "state.db"
+
+    mem_dir = ws_dir / "memory"
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    (mem_dir / "MEMORY.md").write_text(
+        "# Repository Memory\n- Secret builtin invariant: ALPHA_BETA_GAMMA\n",
+        encoding="utf-8",
+    )
+    (mem_dir / "MODULE_INDEX.md").write_text(
+        "# Module Index\n\n"
+        "## src/ Subsystem\n- Invariant for src/ module: SRC_INDEX_MARKER\n\n"
+        "## unrelated/ Subsystem\n- Unrelated note: UNRELATED_MARKER\n",
+        encoding="utf-8",
+    )
+
+    # 1. memory_mode = "builtin": includes MEMORY.md, matching MODULE_INDEX.md section, and Full Distillation Mode
+    with StateDB(db_file) as db:
+        db.set_config("memory_mode", "builtin")
+        db.update_session("conv-pa", last_checkpoint_step=None)
+        db.update_session("conv-eng", last_checkpoint_step=None)
+
+    res_pa_builtin = pre_invocation.evaluate_pre_invocation(
+        {"conversationId": "conv-pa", "invocationNum": 1},
+        repo_root=tmp_repo,
+    )
+    pa_builtin_msg = res_pa_builtin["injectSteps"][0]["userMessage"]
+    assert "Full Distillation Mode" in pa_builtin_msg
+    assert "ALPHA_BETA_GAMMA" in pa_builtin_msg
+    assert "SRC_INDEX_MARKER" in pa_builtin_msg
+    assert "UNRELATED_MARKER" not in pa_builtin_msg
+
+    res_eng_builtin = pre_invocation.evaluate_pre_invocation(
+        {"conversationId": "conv-eng", "invocationNum": 1},
+        repo_root=tmp_repo,
+    )
+    eng_builtin_msg = res_eng_builtin["injectSteps"][0]["userMessage"]
+    assert "Full Distillation Mode (memory_mode=builtin)" in eng_builtin_msg
+
+    # 2. memory_mode = "external": completely omits MEMORY.md & MODULE_INDEX.md and instructs Succinct Mode
+    with StateDB(db_file) as db:
+        db.set_config("memory_mode", "external")
+        db.update_session("conv-pa", last_checkpoint_step=None)
+        db.update_session("conv-eng", last_checkpoint_step=None)
+
+    res_pa_external = pre_invocation.evaluate_pre_invocation(
+        {"conversationId": "conv-pa", "invocationNum": 1},
+        repo_root=tmp_repo,
+    )
+    pa_ext_msg = res_pa_external["injectSteps"][0]["userMessage"]
+    assert "Succinct Write-Back Mode" in pa_ext_msg
+    assert "ALPHA_BETA_GAMMA" not in pa_ext_msg
+    assert "SRC_INDEX_MARKER" not in pa_ext_msg
+    assert "MEMORY.md" not in pa_ext_msg
+    assert "MODULE_INDEX.md" not in pa_ext_msg
+
+    res_eng_external = pre_invocation.evaluate_pre_invocation(
+        {"conversationId": "conv-eng", "invocationNum": 1},
+        repo_root=tmp_repo,
+    )
+    eng_ext_msg = res_eng_external["injectSteps"][0]["userMessage"]
+    assert "Succinct Mode (memory_mode=external)" in eng_ext_msg
+    assert "ALPHA_BETA_GAMMA" not in eng_ext_msg
+
 
