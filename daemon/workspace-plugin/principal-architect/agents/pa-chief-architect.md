@@ -4,7 +4,7 @@ description: "Tier 1 Chief Architect for multi-PR programmes. Authors PROGRAM.md
 model: inherit
 mainAgent: true
 subagent: true
-inheritCustomizations: false
+inheritCustomizations: true
 tools:
   - view_file
   - read_file

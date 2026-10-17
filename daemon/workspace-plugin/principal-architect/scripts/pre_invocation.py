@@ -145,20 +145,37 @@ def _extract_matching_module_index_sections(
 
 
 def _resolve_skill_paths(repo_root: Path, required_skills: Sequence[str]) -> list[str]:
-    """Resolve explicit `SKILL.md` paths on disk for each skill slug in `required_skills`."""
+    """Resolve explicit `SKILL.md` paths on disk for each skill slug in `required_skills`.
+
+    Searches in precedence order:
+    1. Repo-local `<repo>/.agents/skills/<slug>/SKILL.md`
+    2. Bundled PA workspace plugin skills
+    3. User global `~/.gemini/config/skills/<slug>/SKILL.md`
+    4. Installed global plugin skills `~/.gemini/config/plugins/*/skills/<slug>/SKILL.md`
+    5. Built-in skills `~/.gemini/jetski/builtin/skills/<slug>/SKILL.md`
+    """
     real_root = Path(os.path.realpath(repo_root))
     d_home = common.daemon_home()
     user_home = Path(os.path.realpath(Path.home()))
+    plugins_root = user_home / ".gemini" / "config" / "plugins"
 
     resolved: list[str] = []
     for raw_skill in required_skills:
         slug = str(raw_skill).strip()
         if not slug:
             continue
+        plugin_skill_candidates = (
+            sorted(plugins_root.glob(f"*/skills/{slug}/SKILL.md"))
+            if plugins_root.is_dir()
+            else []
+        )
         candidates = (
             real_root / ".agents" / "skills" / slug / "SKILL.md",
             d_home / "workspace-plugin" / "principal-architect" / "skills" / slug / "SKILL.md",
             user_home / ".gemini" / "config" / "skills" / slug / "SKILL.md",
+            *plugin_skill_candidates,
+            user_home / ".gemini" / "jetski" / "builtin" / "skills" / slug / "SKILL.md",
+            user_home / ".gemini" / "jetski" / "builtin" / "contrib" / "skills" / slug / "SKILL.md",
         )
         chosen: Path | None = None
         for cand in candidates:

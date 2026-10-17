@@ -13,9 +13,9 @@ This skill defines the workflow and CLI control plane for **Principal Architect 
 
 | Tier & Agent | Owned Artifacts & Write Scope | Key Responsibilities |
 |---|---|---|
-| **Tier 1: `pa-chief-architect`** | `programme-<slug>/PROGRAM.md` + **Part I (`PR Charter`)** of `pr-<slug>/PROJECT.md` (`charter_hash`) | Defines programme vision, invariants, stacked PR DAG, and each PR's `allowed_modules` & `verification_floor`. |
-| **Tier 2: `pa-principal-architect`** | **Part II (`WO Plan`)** & **Part III (`Outcome`)** of `PROJECT.md` + **Part I (`Spec`)** of `wo<M>-<slug>/WORKORDER.md` (`spec_hash`) | Decomposes the locked Charter into single-writer Work Orders, dispatches 1 `pa-engineer` per WO, and orchestrates Step 6A/6B audit & graduation. |
-| **Tier 3: `pa-engineer`** | Assigned `allowed_files` + **Part II (`Completion Report`)** of bound `WORKORDER.md` | Implements the Work Order checklist, runs `pa wo verify <WO-ID>`, stamps `tree_hash` receipt, and commits `<WO-ID>: <title>`. |
+| **Tier 1: `pa-chief-architect`** | `programme-<slug>/PROGRAM.md` + **Part I (`PR Charter`)** of `pr-<slug>/PROJECT.md` (`charter_hash`) | Defines programme vision, invariants, stacked PR DAG, and each PR's `allowed_modules`, `required_skills`, & `verification_floor` (`inheritCustomizations: true` for full skill discovery). |
+| **Tier 2: `pa-principal-architect`** | **Part II (`WO Plan`)** & **Part III (`Outcome`)** of `PROJECT.md` + **Part I (`Spec`)** of `wo<M>-<slug>/WORKORDER.md` (`spec_hash`) | Decomposes the locked Charter into single-writer Work Orders, selects `required_skills` per `WORKORDER.md`, dispatches 1 `pa-engineer` per WO, and orchestrates Step 6A/6B audit & graduation (`inheritCustomizations: true`). |
+| **Tier 3: `pa-engineer`** | Assigned `allowed_files` + **Part II (`Completion Report`)** of bound `WORKORDER.md` | Isolated (`inheritCustomizations: false`); receives only the exact `required_skills` `SKILL.md` paths injected by `pre_invocation.py`, implements the Work Order checklist, runs `pa wo verify <WO-ID>`, stamps `tree_hash` receipt, and commits `<WO-ID>: <title>`. |
 | **Tier 2b: `pa-auditor`** | Read-only + `AUDIT-round-<K>.md` via `pa pr post-audit` | Evaluates the cumulative PR diff cold across `spec_alignment`, `invariants`, `edge_cases`, `test_quality`, and `scope_hygiene`. |
 | **Tier 3b: `pa-debugger`** | Active PR scope + `WORKORDER.md` Part II resolution | Interactive root-cause diagnosis after `max_attempts: 5` verification failures, `max_structural_failures: 2` blockers, or `complexity: interactive`. |
 

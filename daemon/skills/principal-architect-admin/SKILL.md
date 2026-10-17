@@ -82,9 +82,8 @@ Use `ask_question` to confirm the user's preferred configuration before executin
    - `(Recommended) Auto-detected (<github | local_git>)`
    - `GitHub PR-mediated (github) — use gh pr for Cold-Firewall audits and PR graduation`
    - `Local Git only (local_git) — use local stacked branches, git trailers, and committed AUDIT-round-*.md files`
-4. **Legacy Migration & Extra Global Skills (`--migrate`, `--extra-skill`)** *(include when a legacy workspace or global skills are relevant)*:
-   - If `.agents/skills/principal-architect-workspace/` exists: confirm running with `--migrate` (to move/merge legacy PA memory, clean up `.agents/skills/principal-architect`, rewrite stale paths, and seed `repo-memory` if `external`).
-   - Ask if any global skills from `~/.gemini/config/skills/` (`--extra-skill <name>`) or custom worker rule exclusions (`--exclude-rule <pattern>`) should be mounted into isolated Worker subagents.
+
+*(Note: Do **not** ask the user to curate `--extra-skill` or `--exclude-rule` lists at enrollment time. `pa-chief-architect` and `pa-principal-architect` inherit full skill visibility (`inheritCustomizations: true`), and it is the Principal Architect's responsibility when scoping each `WORKORDER.md` to populate `required_skills: [...]`, which `pre_invocation.py` automatically resolves and injects into the isolated `pa-engineer` Worker on Turn 1. Only ask a 4th question if a legacy `.agents/skills/principal-architect-workspace/` directory is detected and you want to confirm running with `--migrate`.)*
 
 ### Step 3 — Execute enrollment & initial sync
 
@@ -96,9 +95,7 @@ Run `pa enroll` with the selected flags, followed by `pa sync` and `pa status`:
   [--auto-approve-pr-plans | --no-auto-approve-pr-plans] \
   --memory-mode <auto|external|builtin> \
   --vcs-mode <auto|github|local_git> \
-  [--migrate] \
-  [--extra-skill <skill-name>] \
-  [--exclude-rule <pattern>]
+  [--migrate]
 ~/.local/bin/pa sync <repo-root>
 ~/.local/bin/pa status <repo-root>
 ```

@@ -2418,6 +2418,7 @@ def test_agent_frontmatter_rule_and_skill_compliance() -> None:
         afm = parsed_agents[arch_name]
         assert afm.get("mainAgent") is True
         assert afm.get("subagent") is True
+        assert afm.get("inheritCustomizations") is True
         assert afm.get("inheritMcp") is True
         assert afm.get("skills") == [
             ".agents/plugins/principal-architect-workspace/.state/pa-skills.json"
