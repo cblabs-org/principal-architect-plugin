@@ -7,10 +7,10 @@
 #
 # Responsibility:
 #   Convenience CLI wrapper around `pa_cli.py unenroll`. Resolves the repository
-#   virtual environment Python interpreter (`.venv/bin/python3` when present,
-#   falling back to `python3` on `PATH`) and forwards all positional arguments
-#   to unenroll a target repository from the global Principal Architect registry
-#   while preserving committed workspace artifacts.
+#   or daemon virtual environment Python interpreter (`.venv/bin/python3` when
+#   present, falling back to `python3` on `PATH`) and forwards all positional
+#   arguments to unenroll a target repository from the global Principal Architect
+#   registry while preserving committed workspace artifacts.
 #
 # CLI / Environment Interface:
 #   Usage: ./scripts/unenroll.sh [PATH]
@@ -21,9 +21,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Absolute path to the repository root directory.
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Prefer the repository `.venv` Python interpreter when provisioned.
+# Installed `pa-daemon` directory path for fallback `.venv` lookup.
+DAEMON_HOME="${PA_DAEMON_HOME:-$HOME/.gemini/config/plugins/pa-daemon}"
+
+# Prefer the repository `.venv` Python interpreter, then the daemon `.venv` interpreter.
 if [[ -x "${REPO_ROOT}/.venv/bin/python3" ]]; then
   PYTHON_BIN="${REPO_ROOT}/.venv/bin/python3"
+elif [[ -x "${DAEMON_HOME}/.venv/bin/python3" ]]; then
+  PYTHON_BIN="${DAEMON_HOME}/.venv/bin/python3"
 else
   PYTHON_BIN="python3"
 fi

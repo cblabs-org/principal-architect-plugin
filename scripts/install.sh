@@ -11,7 +11,8 @@
 #   in-place (never deleting the top-level directory inode while Antigravity is
 #   running), preserves any existing `<PA_DAEMON_HOME>/state/registry.json` and
 #   state files across upgrades, stamps the Git version into both `plugin.json`
-#   manifests, strips `__pycache__` artifacts, links `pa_cli.py` into
+#   manifests, strips `__pycache__` artifacts, provisions `<PA_DAEMON_HOME>/.venv`
+#   when system `python3` lacks `pydantic` or `pyyaml`, links `bin/pa` into
 #   `<PA_BIN_DIR>/pa`, and enables the plugin and `pa_cockpit` sidecar in the
 #   Antigravity Language Server when reachable.
 #
@@ -105,7 +106,24 @@ if [[ ! -f "${PA_DAEMON_HOME}/state/registry.json" ]]; then
 EOF
 fi
 
-# --- Step 6: Set executable permissions, strip macOS quarantine, and link `pa` CLI ---
+# --- Step 6: Ensure Python dependencies (`pydantic`, `pyyaml`) in daemon `.venv` if needed ---
+if [[ -z "${PA_SKIP_VENV:-}" ]]; then
+  if [[ -x "${PA_DAEMON_HOME}/.venv/bin/python3" ]] && "${PA_DAEMON_HOME}/.venv/bin/python3" -c "import pydantic, yaml" >/dev/null 2>&1; then
+    :
+  elif python3 -c "import pydantic, yaml" >/dev/null 2>&1; then
+    :
+  elif command -v uv >/dev/null 2>&1; then
+    echo "Provisioning daemon virtual environment at ${PA_DAEMON_HOME}/.venv (via uv)..."
+    uv venv "${PA_DAEMON_HOME}/.venv" >/dev/null 2>&1 && \
+      uv pip install --python "${PA_DAEMON_HOME}/.venv/bin/python3" "pydantic>=2,<3" "pyyaml>=6" >/dev/null 2>&1 || true
+  elif python3 -c "import ensurepip" >/dev/null 2>&1; then
+    echo "Provisioning daemon virtual environment at ${PA_DAEMON_HOME}/.venv (via python3 -m venv)..."
+    python3 -m venv "${PA_DAEMON_HOME}/.venv" >/dev/null 2>&1 && \
+      "${PA_DAEMON_HOME}/.venv/bin/pip" install --quiet "pydantic>=2,<3" "pyyaml>=6" >/dev/null 2>&1 || true
+  fi
+fi
+
+# --- Step 7: Set executable permissions, strip macOS quarantine, and link `pa` CLI wrapper ---
 chmod +x "${PA_DAEMON_HOME}/workspace-plugin/principal-architect/scripts/"*.py
 if [[ -d "${PA_DAEMON_HOME}/bin" ]]; then
   chmod +x "${PA_DAEMON_HOME}/bin/"* 2>/dev/null || true
@@ -117,9 +135,9 @@ if [[ "$(uname -s)" == "Darwin" ]] && command -v xattr >/dev/null 2>&1; then
 fi
 
 mkdir -p "${PA_BIN_DIR}"
-ln -sf "${PA_DAEMON_HOME}/workspace-plugin/principal-architect/scripts/pa_cli.py" "${PA_BIN_DIR}/pa"
+ln -sf "${PA_DAEMON_HOME}/bin/pa" "${PA_BIN_DIR}/pa"
 
-# --- Step 7: Enable `pa-daemon` and `pa_cockpit` in Antigravity Language Server if reachable ---
+# --- Step 8: Enable `pa-daemon` and `pa_cockpit` in Antigravity Language Server if reachable ---
 # Address of the local Antigravity Language Server HTTP endpoint.
 LS_ADDR="${ANTIGRAVITY_LS_ADDRESS:-localhost:5387}"
 if [[ -n "${ANTIGRAVITY_CSRF_TOKEN:-}" ]] && curl -fsS "http://${LS_ADDR}/healthz" >/dev/null 2>&1; then

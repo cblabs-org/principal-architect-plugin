@@ -21,6 +21,7 @@ Exported API Summary:
 - find_repo_root: Locate the enclosing git repository root directory for a filesystem path.
 - workspace_dir: Resolve the active `principal-architect-workspace` path for a repository root.
 - daemon_home: Resolve the base directory for `pa-daemon` global state and configuration.
+- activate_daemon_venv: Register `site-packages` from the daemon or repo `.venv` on `sys.path`.
 - is_repo_enrolled: Fast-exit check (< 1 ms) determining if any path belongs to an enrolled repo.
 - read_transcript: Parse a JSONL conversation transcript file into a list of step dictionaries.
 - latest_checkpoint_step: Find the highest checkpoint step index in a sequence of transcript steps.
@@ -34,7 +35,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import site
 import subprocess
+import sys
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -175,6 +178,50 @@ def daemon_home() -> Path:
     if env_val and env_val.strip():
         return Path(os.path.realpath(os.path.expanduser(env_val.strip())))
     return Path(os.path.realpath(Path.home())) / ".gemini" / "config" / "plugins" / "pa-daemon"
+
+
+def activate_daemon_venv(daemon_dir: str | Path | None = None) -> bool:
+    """Register `site-packages` from the daemon or co-located `.venv` onto `sys.path`.
+
+    Ensures that when `cockpit.py` (spawned by `sidecar.json` via system `python3`) or
+    `pa_cli.py` is executed directly under a PEP 668 externally-managed Python interpreter,
+    third-party schema packages (`pydantic` and `pyyaml`) installed in
+    `<PA_DAEMON_HOME>/.venv` or the repository `.venv` remain importable.
+
+    Args:
+        daemon_dir: Optional explicit `pa-daemon` directory override (defaults to `daemon_home()`).
+
+    Returns:
+        `True` if at least one `.venv` `site-packages` directory was found and registered;
+        `False` otherwise.
+    """
+    # --- Step 1: Collect candidate .venv directories from daemon_home and bundle root ---
+    primary_daemon = Path(os.path.realpath(daemon_dir)) if daemon_dir is not None else daemon_home()
+    bundle_root = Path(__file__).resolve().parents[3]
+    candidates: list[Path] = [primary_daemon / ".venv"]
+    if (bundle_root / ".venv") not in candidates:
+        candidates.append(bundle_root / ".venv")
+
+    # --- Step 2: Locate matching site-packages directories and register via site.addsitedir ---
+    py_tag = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    activated = False
+    for venv_dir in candidates:
+        if not venv_dir.is_dir():
+            continue
+        sp_candidates: list[Path] = [
+            venv_dir / "lib" / py_tag / "site-packages",
+            venv_dir / "Lib" / "site-packages",
+        ]
+        lib_dir = venv_dir / "lib"
+        if lib_dir.is_dir():
+            for child in sorted(lib_dir.glob("python*/site-packages")):
+                if child not in sp_candidates:
+                    sp_candidates.append(child)
+        for sp in sp_candidates:
+            if sp.is_dir():
+                site.addsitedir(str(sp))
+                activated = True
+    return activated
 
 
 def is_repo_enrolled(workspace_paths: Sequence[str | Path]) -> bool:

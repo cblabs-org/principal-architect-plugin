@@ -879,6 +879,51 @@ def test_install_and_uninstall_scripts_isolated_tmp_path(
     assert pa_bin.is_symlink()
     assert pa_bin.is_file()
     assert os.access(pa_bin, os.X_OK)
+    assert Path(os.readlink(pa_bin)) == daemon_home / "bin" / "pa"
+    assert pa_bin.resolve() == (daemon_home / "bin" / "pa").resolve()
+
+    # Verify daemon `.venv` interpreter selection via `bin/pa` wrapper (Issue #7 regression):
+    # Create a daemon `.venv/bin/python3` wrapper delegating to the active test interpreter while
+    # placing a broken `python3` stub first on PATH (simulating PEP 668 system Python without pydantic).
+    daemon_venv_bin = daemon_home / ".venv" / "bin"
+    daemon_venv_bin.mkdir(parents=True, exist_ok=True)
+    daemon_venv_py = daemon_venv_bin / "python3"
+    daemon_venv_py.write_text(
+        f'#!/usr/bin/env bash\nexec "{sys.executable}" "$@"\n',
+        encoding="utf-8",
+    )
+    daemon_venv_py.chmod(0o755)
+
+    broken_py_dir = tmp_path / "broken_system_python"
+    broken_py_dir.mkdir(parents=True, exist_ok=True)
+    broken_py = broken_py_dir / "python3"
+    broken_py.write_text("#!/usr/bin/env bash\nexit 99\n", encoding="utf-8")
+    broken_py.chmod(0o755)
+
+    venv_test_env = dict(env)
+    venv_test_env["PATH"] = f"{broken_py_dir}:{env.get('PATH', '')}"
+    res_venv_doc = subprocess.run(
+        [str(pa_bin), "doctor", str(tmp_repo), "--json"],
+        cwd=tmp_repo,
+        env=venv_test_env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert res_venv_doc.returncode == 0
+    assert json.loads(res_venv_doc.stdout)["ok"] is True
+
+    # Verify `common.activate_daemon_venv` registers `.venv` site-packages on `sys.path`
+    fake_sp = (
+        daemon_home
+        / ".venv"
+        / "lib"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages"
+    )
+    fake_sp.mkdir(parents=True, exist_ok=True)
+    assert common.activate_daemon_venv(daemon_home) is True
+    assert str(fake_sp) in sys.path
 
     # 3. Invoke installed `bin/pa --help`, `bin/pa --version`, `bin/pa doctor --json`, `bin/pa enroll`, and `bin/pa status <repo> --json`
     res_help = subprocess.run(
