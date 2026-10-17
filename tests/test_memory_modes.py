@@ -1,7 +1,34 @@
-"""Comprehensive unit and byte-stability tests for `memory_grad.py` (`WO-03.3`).
+"""Principal Architect Plugin (c) 2026 Matt McNeill
+https://github.com/matthewmcneill/principal-architect-plugin
+SPDX-License-Identifier: Apache-2.0
 
-Verifies the strict mutual-exclusion boundary between `external` (`repo-memory`) and
-`builtin` (3-file index) graduation modes (Charter G3 & R5, Invariant I6, SPEC §9.1–9.2).
+Module: tests/test_memory_modes.py
+
+Responsibility:
+    Comprehensive unit and byte-stability tests for PR graduation (`memory_grad.py`,
+    `WO-03.3`). Verifies the strict mutual-exclusion boundary between `external`
+    (`repo-memory`) and `builtin` (3-file index: `MEMORY.md`, `MODULE_INDEX.md`,
+    `PROJECT_INDEX.md`) graduation modes (`SPEC.md` §§9.1–9.2, Invariant I6).
+
+Test Suite Coverage Summary:
+    1. External (`repo-memory`) Graduation Mode:
+       - `test_external_mode_zero_touch_when_memory_dir_absent`: Verify `external` mode
+         updates `PROJECT.md` Part III and `PROGRAM.md` without creating `memory/`.
+       - `test_external_mode_zero_mutation_when_memory_files_exist`: Verify existing
+         `memory/{MEMORY,MODULE_INDEX,PROJECT_INDEX}.md` files remain byte-untouched.
+       - `test_external_mode_idempotency`: Verify repeated `graduate()` calls in
+         `external` mode produce byte-identical `PROJECT.md` output.
+    2. Built-in 3-File Memory Index Graduation Mode:
+       - `test_builtin_mode_active_to_completed_and_module_index`: Verify PR transition
+         from `## Active Projects` to `## Recently Completed (last 5)` in `MEMORY.md`
+         and per-module table updates in `MODULE_INDEX.md`.
+       - `test_builtin_mode_five_pr_window_roll_off`: Verify the 5-PR sliding window in
+         `MEMORY.md` and chronological roll-off of older PRs into `PROJECT_INDEX.md`.
+       - `test_builtin_mode_byte_stability_on_repeated_runs`: Verify repeated
+         `graduate()` calls in `builtin` mode produce byte-for-byte identical files.
+    3. Configuration Lookup & Error Handling:
+       - `test_state_db_memory_mode_config_lookup_and_validation`: Verify `memory_mode`
+         resolution from `.state/state.db` and `ValueError`/`FileNotFoundError` guards.
 """
 
 from __future__ import annotations

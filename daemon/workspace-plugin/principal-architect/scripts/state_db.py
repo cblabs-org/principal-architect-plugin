@@ -1,7 +1,62 @@
-"""Repo-local SQLite StateDB and global atomic Registry.
+"""Principal Architect Plugin (c) 2026 Matt McNeill
+https://github.com/matthewmcneill/principal-architect-plugin
+SPDX-License-Identifier: Apache-2.0
+Module: daemon/workspace-plugin/principal-architect/scripts/state_db.py
 
-Implements SPEC §6.5 (5 tables in WAL mode with busy_timeout=5000 and PRAGMA user_version=1)
-and Charter R5 global repository registry with atomic file replacements.
+Repo-local SQLite `StateDB` and global atomic repository enrollment `Registry`
+for the Principal Architect Split-Authority workflow engine.
+
+Implements SPEC §6.5 (5 tables in WAL mode with `busy_timeout=5000` and
+`PRAGMA user_version=1`) and Charter R5 global repository registry with atomic
+temporary-file replacements (`tempfile.NamedTemporaryFile` + `os.fsync` +
+`os.replace`).
+
+Exported API Summary:
+- TABLES: Ordered tuple of the 5 canonical SQLite table names in `state.db`.
+- SCHEMA_VERSION: Integer schema version (`PRAGMA user_version`) for `state.db`.
+- utc_now_iso: Return the current UTC timestamp formatted as ISO 8601 with trailing `'Z'`.
+- StateDB: Repo-local SQLite state database in WAL mode for persistent workflow coordination.
+  - Lifecycle / Constructors:
+    - StateDB.__init__: Open or create `state.db`, enable WAL and busy_timeout, and initialize schema.
+    - StateDB.close: Close the underlying SQLite connection.
+  - Context Manager Protocol:
+    - StateDB.__enter__: Enter the context manager and return `self`.
+    - StateDB.__exit__: Exit the context manager and close the SQLite connection.
+  - Schema & Mode Management:
+    - StateDB.init: Create the 5 SPEC §6.5 tables idempotently and set `PRAGMA user_version=1`.
+    - StateDB.get_config: Retrieve a configuration string by key from `repo_config`.
+    - StateDB.set_config: Insert or update a configuration key-value pair in `repo_config`.
+    - StateDB.get_all_config: Return all key-value pairs from `repo_config` as a dictionary.
+  - Session Binding API:
+    - StateDB._SESSION_COLUMNS: Frozenset of valid column names in the `sessions` table.
+    - StateDB.bind_session: Upsert a conversation role binding in `sessions`.
+    - StateDB.get_session: Fetch a session row dictionary by `conversation_id`.
+    - StateDB.update_session: Update mutable columns on an existing `sessions` row.
+  - Verification Receipts API:
+    - StateDB.insert_receipt: Insert a cryptographic verification receipt row.
+    - StateDB.invalidate_receipts: Mark all currently valid receipts for a `wo_id` as invalid.
+    - StateDB.latest_valid_receipt: Return the most recent valid receipt for a `wo_id`.
+  - Escalations API:
+    - StateDB.insert_escalation: Insert an upward escalation record into `escalations`.
+    - StateDB.resolve_escalation: Mark an escalation record resolved with a UTC timestamp.
+    - StateDB.open_escalations: List open escalations matching optional PR/WO/role filters.
+  - Write Queue API:
+    - StateDB.enqueue: Insert a prioritized item into `attention_queue`.
+    - StateDB.dequeue: Update an `attention_queue` item's status (default `"RESOLVED"`).
+    - StateDB.list_open: List open `attention_queue` items ordered by priority and creation time.
+  - PR Projection & Checkpoints API:
+    - Tracked via `sessions.last_checkpoint_step` and `sessions.pr_id`/`wo_id` via `bind_session`,
+      `get_session`, and `update_session`.
+- Registry: Global enrollment registry manager maintaining `<daemon_home>/state/registry.json`.
+  - Lifecycle / Constructors:
+    - Registry.__init__: Initialize the registry manager bound to `registry.json`.
+  - Own Public API:
+    - Registry._load_data: Read and validate the registry JSON structure from disk.
+    - Registry._write_data: Atomically write updated registry data via temp file + `os.replace`.
+    - Registry.register: Idempotently enroll a git repository root in `registry.json`.
+    - Registry.unregister: Remove a repository root from `registry.json`.
+    - Registry.lookup: Retrieve registration metadata for a repository root, or `None`.
+    - Registry.list: Return a dictionary copy of all enrolled repositories.
 """
 
 from __future__ import annotations
@@ -19,6 +74,7 @@ from typing import Any, Self
 
 import common
 
+# Canonical table names required in every repo-local `state.db` (SPEC §6.5).
 TABLES: tuple[str, ...] = (
     "repo_config",
     "sessions",
@@ -27,20 +83,37 @@ TABLES: tuple[str, ...] = (
     "attention_queue",
 )
 
+# SQLite PRAGMA user_version integer identifying the current `state.db` schema revision.
 SCHEMA_VERSION: int = 1
 
 
 def utc_now_iso() -> str:
-    """Return the current UTC timestamp formatted as ISO 8601 with trailing 'Z'."""
+    """Return the current UTC timestamp formatted as ISO 8601 with a trailing `'Z'`.
+
+    Returns:
+        UTC timestamp string in `YYYY-MM-DDTHH:MM:SS.ffffffZ` format.
+    """
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 class StateDB:
-    """Repo-local SQLite state database in WAL mode for persistent workflow coordination."""
+    """Repo-local SQLite state database in WAL mode for persistent workflow coordination.
+
+    Manages `repo_config`, `sessions`, `verification_receipts`, `escalations`, and
+    `attention_queue` inside `<workspace_dir>/state.db` with `journal_mode=WAL` and
+    `busy_timeout=5000` for concurrent hook and CLI access.
+    """
 
     def __init__(self, path: str | Path) -> None:
+        """Open or create the SQLite state database at `path` and initialize all tables.
+
+        Args:
+            path: Filesystem path to the SQLite database file (`state.db`).
+        """
+        # Resolved filesystem path to the SQLite database file.
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Active SQLite3 database connection configured with Row factory and WAL mode.
         self.conn = sqlite3.connect(str(self.path))
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL;")
@@ -48,6 +121,11 @@ class StateDB:
         self.init()
 
     def __enter__(self) -> Self:
+        """Enter the context manager and return this `StateDB` instance.
+
+        Returns:
+            Self (`StateDB`).
+        """
         return self
 
     def __exit__(
@@ -56,14 +134,22 @@ class StateDB:
         exc_val: BaseException | None,
         exc_tb: types.TracebackType | None,
     ) -> None:
+        """Exit the context manager and close the underlying SQLite connection.
+
+        Args:
+            exc_type: Exception class if an exception was raised inside the `with` block.
+            exc_val: Exception instance if raised.
+            exc_tb: Traceback object if an exception was raised.
+        """
         self.close()
 
     def close(self) -> None:
-        """Close database connection."""
+        """Close the underlying SQLite database connection."""
         self.conn.close()
 
     def init(self) -> None:
-        """Create the 5 SPEC §6.5 tables idempotently and set PRAGMA user_version=1."""
+        """Create the 5 SPEC §6.5 tables idempotently and set `PRAGMA user_version = 1`."""
+        # --- Step 1: Create repo_config and sessions tables idempotently ---
         with self.conn:
             self.conn.execute(
                 """
@@ -90,6 +176,7 @@ class StateDB:
                 )
                 """
             )
+            # --- Step 2: Create verification_receipts, escalations, and attention_queue tables ---
             self.conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS verification_receipts (
@@ -140,6 +227,7 @@ class StateDB:
                 )
                 """
             )
+            # --- Step 3: Stamp PRAGMA user_version = 1 for schema version verification ---
             self.conn.execute("PRAGMA user_version = 1;")
 
     # -------------------------------------------------------------------------
@@ -147,7 +235,15 @@ class StateDB:
     # -------------------------------------------------------------------------
 
     def get_config(self, key: str, default: str | None = None) -> str | None:
-        """Retrieve a configuration string by key, returning default if not found."""
+        """Retrieve a configuration string by key, returning `default` if not found.
+
+        Args:
+            key: Configuration key name in `repo_config`.
+            default: Fallback value returned when `key` is not present.
+
+        Returns:
+            Stored string value for `key`, or `default` if absent.
+        """
         cur = self.conn.execute("SELECT value FROM repo_config WHERE key = ?", (key,))
         row = cur.fetchone()
         if row is None:
@@ -155,7 +251,12 @@ class StateDB:
         return str(row["value"])
 
     def set_config(self, key: str, value: str) -> None:
-        """Insert or update a configuration key-value pair."""
+        """Insert or update a configuration key-value pair in `repo_config`.
+
+        Args:
+            key: Configuration key name.
+            value: Configuration value to store as text.
+        """
         with self.conn:
             self.conn.execute(
                 """
@@ -167,7 +268,11 @@ class StateDB:
             )
 
     def get_all_config(self) -> dict[str, str]:
-        """Return all configuration pairs as a dictionary."""
+        """Return all configuration key-value pairs from `repo_config` ordered by key.
+
+        Returns:
+            Dictionary mapping each configuration key to its string value.
+        """
         cur = self.conn.execute("SELECT key, value FROM repo_config ORDER BY key ASC")
         return {str(row["key"]): str(row["value"]) for row in cur.fetchall()}
 
@@ -175,6 +280,7 @@ class StateDB:
     # sessions accessors
     # -------------------------------------------------------------------------
 
+    # Allowed column names in the `sessions` table used to validate dynamic UPDATE queries.
     _SESSION_COLUMNS: frozenset[str] = frozenset(
         {
             "conversation_id",
@@ -204,9 +310,28 @@ class StateDB:
         pinned: bool | int = 0,
         last_checkpoint_step: int | None = None,
     ) -> dict[str, Any]:
-        """Upsert a session binding, setting created_at on insert and updated_at always."""
+        """Upsert a session binding, setting `created_at` on insert and `updated_at` always.
+
+        Args:
+            conversation_id: Unique conversation UUID for the agent session.
+            role: Assigned Split-Authority role (`"chief"`, `"pa"`, `"engineer"`, `"auditor"`,
+                or `"debugger"`).
+            programme_id: Optional programme identifier (`prog-*`).
+            pr_id: Optional Pull Request identifier (`PR-*`).
+            wo_id: Optional Work Order identifier (`WO-*`).
+            attempt_num: 1-based execution attempt counter.
+            structural_failures: Count of consecutive structural/hook failures.
+            pinned: Whether the conversation is pinned in the UI (`bool` or `0`/`1`).
+            last_checkpoint_step: Highest observed transcript checkpoint step index.
+
+        Returns:
+            Dictionary of the persisted `sessions` row.
+        """
+        # --- Step 1: Normalize timestamps and boolean flags ---
         now = utc_now_iso()
         pinned_int = 1 if pinned else 0
+
+        # --- Step 2: Upsert the session record preserving original created_at on conflict ---
         with self.conn:
             self.conn.execute(
                 """
@@ -241,12 +366,21 @@ class StateDB:
                     now,
                 ),
             )
+
+        # --- Step 3: Fetch and return the stored session row ---
         res = self.get_session(conversation_id)
         assert res is not None
         return res
 
     def get_session(self, conversation_id: str) -> dict[str, Any] | None:
-        """Fetch a session row as a dict, or None if not found."""
+        """Fetch a session row as a dictionary, or `None` if not found.
+
+        Args:
+            conversation_id: Unique conversation UUID to look up.
+
+        Returns:
+            Dictionary of column values for `conversation_id`, or `None` if unbound.
+        """
         cur = self.conn.execute(
             "SELECT * FROM sessions WHERE conversation_id = ?",
             (conversation_id,),
@@ -257,17 +391,29 @@ class StateDB:
         return dict(row)
 
     def update_session(self, conversation_id: str, **fields: Any) -> dict[str, Any] | None:
-        """Update fields on an existing session, updating updated_at.
+        """Update mutable fields on an existing session and refresh `updated_at`.
 
-        Validates that all field names exist in sessions columns.
-        Returns the updated row as a dict, or None if session does not exist.
+        Validates that all field names exist in `_SESSION_COLUMNS` and are not immutable.
+
+        Args:
+            conversation_id: Target session conversation UUID.
+            **fields: Column-value pairs to update on the session row.
+
+        Returns:
+            Updated session row as a dictionary, or `None` if `conversation_id` does not exist.
+
+        Raises:
+            ValueError: If any key in `fields` is not a valid column or is immutable
+                (`"conversation_id"` or `"created_at"`).
         """
+        # --- Step 1: Validate all requested column names against the allowlist ---
         for k in fields:
             if k not in self._SESSION_COLUMNS:
                 raise ValueError(f"Invalid sessions column: '{k}'")
             if k in ("conversation_id", "created_at"):
                 raise ValueError(f"Cannot update immutable column: '{k}'")
 
+        # --- Step 2: Check whether the target session exists ---
         cur = self.conn.execute(
             "SELECT conversation_id FROM sessions WHERE conversation_id = ?",
             (conversation_id,),
@@ -275,6 +421,7 @@ class StateDB:
         if cur.fetchone() is None:
             return None
 
+        # --- Step 3: Normalize boolean fields, stamp updated_at, and execute UPDATE ---
         update_dict = dict(fields)
         if "pinned" in update_dict:
             update_dict["pinned"] = 1 if update_dict["pinned"] else 0
@@ -306,7 +453,22 @@ class StateDB:
         valid: bool | int = 1,
         receipt_id: str | None = None,
     ) -> dict[str, Any]:
-        """Insert a verification receipt row, returning the stored row."""
+        """Insert a cryptographic verification receipt row and return the stored dictionary.
+
+        Args:
+            wo_id: Work Order identifier (`WO-*`) for which verification ran.
+            pr_id: Parent Pull Request identifier (`PR-*`).
+            cmd: Exact verification shell command executed.
+            exit_code: Process exit status code (`0` for passing verification).
+            tree_hash: Git working-tree content digest stamped at verification time.
+            git_head_sha: Optional current `HEAD` commit SHA.
+            valid: Whether the receipt is currently valid (`True`/`1` vs `False`/`0`).
+            receipt_id: Optional explicit receipt ID; auto-generates `rcpt_<hex>` when `None`.
+
+        Returns:
+            Dictionary containing the newly inserted `verification_receipts` row.
+        """
+        # --- Step 1: Generate receipt ID, normalize flags, and insert row ---
         rid = receipt_id or ("rcpt_" + uuid.uuid4().hex[:12])
         valid_int = 1 if valid else 0
         now = utc_now_iso()
@@ -331,6 +493,8 @@ class StateDB:
                     now,
                 ),
             )
+
+        # --- Step 2: Fetch and return the stored receipt row ---
         cur = self.conn.execute(
             "SELECT * FROM verification_receipts WHERE receipt_id = ?",
             (rid,),
@@ -340,9 +504,15 @@ class StateDB:
         return dict(row)
 
     def invalidate_receipts(self, wo_id: str) -> int:
-        """Mark all currently valid receipts for wo_id as invalid (valid = 0).
+        """Mark all currently valid receipts for `wo_id` as invalid (`valid = 0`).
 
-        Returns the number of affected rows.
+        Called by `PostToolUse` hooks whenever a source file is edited after verification.
+
+        Args:
+            wo_id: Work Order identifier whose receipts should be invalidated.
+
+        Returns:
+            Number of receipt rows transitioned from `valid = 1` to `valid = 0`.
         """
         with self.conn:
             cur = self.conn.execute(
@@ -354,7 +524,16 @@ class StateDB:
     def latest_valid_receipt(
         self, wo_id: str, tree_hash: str | None = None
     ) -> dict[str, Any] | None:
-        """Return the most recent valid receipt for wo_id, optionally matching tree_hash."""
+        """Return the most recent valid receipt for `wo_id`, optionally matching `tree_hash`.
+
+        Args:
+            wo_id: Work Order identifier (`WO-*`) to query.
+            tree_hash: Optional working-tree hash that the receipt must match.
+
+        Returns:
+            Most recent valid receipt row dictionary, or `None` if no matching valid receipt exists.
+        """
+        # --- Step 1: Query the newest valid receipt with or without tree_hash filtering ---
         if tree_hash is not None:
             cur = self.conn.execute(
                 """
@@ -400,7 +579,26 @@ class StateDB:
         github_issue_or_comment_url: str | None = None,
         escalation_id: str | None = None,
     ) -> dict[str, Any]:
-        """Insert an escalation record, returning the stored row."""
+        """Insert an escalation record into `escalations` and return the stored row.
+
+        Args:
+            level: Escalation transition level (e.g. `"WORKER_TO_PA"`, `"PA_TO_CHIEF"`).
+            source_role: Role initiating the escalation (`"engineer"`, `"pa"`).
+            target_role: Role receiving the escalation (`"pa"`, `"chief"`, `"human"`).
+            pr_id: Optional associated Pull Request ID.
+            wo_id: Optional associated Work Order ID.
+            blocker_type: Blocker category (`"structural"`, `"boundary"`, `"charter"`, etc.).
+            reason_code: Symbolic reason code for the escalation.
+            requested_files: Sequence of file path strings or pre-encoded JSON array string.
+            summary: Human-readable explanation of the blocker.
+            status: Initial escalation status (defaults to `"OPEN"`).
+            github_issue_or_comment_url: Optional URL linking to a GitHub PR comment or issue.
+            escalation_id: Optional explicit ID; auto-generates `esc_<hex>` when `None`.
+
+        Returns:
+            Dictionary containing the newly inserted `escalations` row.
+        """
+        # --- Step 1: Normalize escalation ID and serialize requested_files to JSON ---
         eid = escalation_id or ("esc_" + uuid.uuid4().hex[:12])
         if requested_files is None:
             req_json = "[]"
@@ -409,6 +607,7 @@ class StateDB:
         else:
             req_json = json.dumps(list(requested_files))
 
+        # --- Step 2: Insert the escalation row into SQLite ---
         now = utc_now_iso()
         with self.conn:
             self.conn.execute(
@@ -438,6 +637,8 @@ class StateDB:
                     None,
                 ),
             )
+
+        # --- Step 3: Fetch and return the stored escalation row ---
         cur = self.conn.execute(
             "SELECT * FROM escalations WHERE escalation_id = ?",
             (eid,),
@@ -449,7 +650,16 @@ class StateDB:
     def resolve_escalation(
         self, escalation_id: str, status: str = "RESOLVED"
     ) -> dict[str, Any] | None:
-        """Resolve an escalation record, recording resolved_at timestamp."""
+        """Resolve an escalation record and stamp `resolved_at` with the current UTC time.
+
+        Args:
+            escalation_id: Primary key of the escalation row to resolve.
+            status: Terminal status string (defaults to `"RESOLVED"`).
+
+        Returns:
+            Updated escalation row dictionary, or `None` if `escalation_id` was not found.
+        """
+        # --- Step 1: Update status and resolved_at timestamp ---
         now = utc_now_iso()
         with self.conn:
             cur = self.conn.execute(
@@ -462,6 +672,8 @@ class StateDB:
             )
             if cur.rowcount == 0:
                 return None
+
+        # --- Step 2: Return the updated row dictionary ---
         cur = self.conn.execute(
             "SELECT * FROM escalations WHERE escalation_id = ?",
             (escalation_id,),
@@ -478,7 +690,16 @@ class StateDB:
         wo_id: str | None = None,
         target_role: str | None = None,
     ) -> list[dict[str, Any]]:
-        """List open escalations matching optional filters, ordered by created_at, rowid."""
+        """List open escalations matching optional filters, ordered by `created_at, rowid`.
+
+        Args:
+            pr_id: Optional Pull Request ID filter.
+            wo_id: Optional Work Order ID filter.
+            target_role: Optional target authority role filter (`"pa"`, `"chief"`, `"human"`).
+
+        Returns:
+            Ordered list of matching open escalation row dictionaries.
+        """
         clauses = ["status = 'OPEN'"]
         params: list[Any] = []
         if pr_id is not None:
@@ -491,7 +712,10 @@ class StateDB:
             clauses.append("target_role = ?")
             params.append(target_role)
 
-        sql = f"SELECT * FROM escalations WHERE {' AND '.join(clauses)} ORDER BY created_at ASC, rowid ASC"
+        sql = (
+            f"SELECT * FROM escalations WHERE {' AND '.join(clauses)} "
+            "ORDER BY created_at ASC, rowid ASC"
+        )
         cur = self.conn.execute(sql, params)
         return [dict(row) for row in cur.fetchall()]
 
@@ -511,7 +735,22 @@ class StateDB:
         status: str = "OPEN",
         item_id: str | None = None,
     ) -> dict[str, Any]:
-        """Enqueue an item into the attention queue, returning the stored row."""
+        """Enqueue an item into `attention_queue` and return the stored row dictionary.
+
+        Args:
+            kind: Category of attention item (e.g. `"plan_approval"`, `"boundary_escalation"`).
+            title: Human-readable title displayed in the AuxPane / CLI attention queue.
+            priority: Numeric priority (lower integer values sort higher; default `10`).
+            pr_id: Optional associated Pull Request ID.
+            wo_id: Optional associated Work Order ID.
+            action_payload: Optional structured dictionary or JSON string with action context.
+            status: Initial queue item status (defaults to `"OPEN"`).
+            item_id: Optional explicit item ID; auto-generates `attn_<hex>` when `None`.
+
+        Returns:
+            Dictionary containing the newly inserted `attention_queue` row.
+        """
+        # --- Step 1: Generate item ID and serialize action_payload to JSON ---
         iid = item_id or ("attn_" + uuid.uuid4().hex[:12])
         if action_payload is None:
             payload_json = "{}"
@@ -520,6 +759,7 @@ class StateDB:
         else:
             payload_json = json.dumps(dict(action_payload))
 
+        # --- Step 2: Insert the attention queue row into SQLite ---
         now = utc_now_iso()
         with self.conn:
             self.conn.execute(
@@ -542,6 +782,8 @@ class StateDB:
                     now,
                 ),
             )
+
+        # --- Step 3: Fetch and return the stored attention_queue row ---
         cur = self.conn.execute(
             "SELECT * FROM attention_queue WHERE item_id = ?",
             (iid,),
@@ -551,7 +793,15 @@ class StateDB:
         return dict(row)
 
     def dequeue(self, item_id: str, status: str = "RESOLVED") -> dict[str, Any] | None:
-        """Update an attention queue item's status, returning the updated row or None."""
+        """Update an attention queue item's status, returning the updated row or `None`.
+
+        Args:
+            item_id: Primary key of the `attention_queue` item to update.
+            status: New status string (defaults to `"RESOLVED"`).
+
+        Returns:
+            Updated attention item dictionary, or `None` if `item_id` does not exist.
+        """
         with self.conn:
             cur = self.conn.execute(
                 "UPDATE attention_queue SET status = ? WHERE item_id = ?",
@@ -569,14 +819,24 @@ class StateDB:
         return dict(row)
 
     def list_open(self, *, pr_id: str | None = None) -> list[dict[str, Any]]:
-        """List open attention queue items, ordered by priority ASC, created_at ASC, rowid ASC."""
+        """List open attention queue items ordered by `priority ASC, created_at ASC, rowid ASC`.
+
+        Args:
+            pr_id: Optional Pull Request ID filter.
+
+        Returns:
+            Ordered list of open `attention_queue` row dictionaries.
+        """
         clauses = ["status = 'OPEN'"]
         params: list[Any] = []
         if pr_id is not None:
             clauses.append("pr_id = ?")
             params.append(pr_id)
 
-        sql = f"SELECT * FROM attention_queue WHERE {' AND '.join(clauses)} ORDER BY priority ASC, created_at ASC, rowid ASC"
+        sql = (
+            f"SELECT * FROM attention_queue WHERE {' AND '.join(clauses)} "
+            "ORDER BY priority ASC, created_at ASC, rowid ASC"
+        )
         cur = self.conn.execute(sql, params)
         return [dict(row) for row in cur.fetchall()]
 
@@ -584,16 +844,30 @@ class StateDB:
 class Registry:
     """Global enrollment registry manager maintaining `<daemon_home>/state/registry.json`.
 
-    Uses atomic temporary-file + os.replace writes to guarantee consistency.
+    Uses atomic temporary-file + `os.fsync` + `os.replace` writes so concurrent
+    fast-exit hook checks (`common.is_repo_enrolled`) never observe partial JSON.
     """
 
     def __init__(self, path: str | Path | None = None) -> None:
+        """Initialize the `Registry` manager at `path` or the default daemon state path.
+
+        Args:
+            path: Optional explicit path to `registry.json`; defaults to
+                `common.daemon_home() / "state" / "registry.json"`.
+        """
         if path is not None:
+            # Filesystem path to the global JSON enrollment registry file.
             self.path = Path(path)
         else:
             self.path = common.daemon_home() / "state" / "registry.json"
 
     def _load_data(self) -> dict[str, Any]:
+        """Load and validate the registry JSON payload from `self.path`.
+
+        Returns:
+            Dictionary containing `"schema_version"` and `"repos"` mapping; falls back to
+            an empty registry structure if the file is missing or corrupt.
+        """
         if not self.path.is_file():
             return {"schema_version": 1, "repos": {}}
         try:
@@ -606,6 +880,15 @@ class Registry:
         return {"schema_version": 1, "repos": {}}
 
     def _write_data(self, data: Mapping[str, Any]) -> None:
+        """Atomically persist `data` to `self.path` via a sibling temporary file and `os.replace`.
+
+        Args:
+            data: Complete registry dictionary to serialize as pretty-printed JSON.
+
+        Raises:
+            OSError: If writing, flushing, syncing, or replacing the registry file fails.
+        """
+        # --- Step 1: Ensure the parent state directory exists and open a sibling temp file ---
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -617,6 +900,7 @@ class Registry:
         ) as tmp:
             tmp_name = tmp.name
             try:
+                # --- Step 2: Serialize JSON and fsync file descriptor before atomic rename ---
                 json.dump(data, tmp, indent=2)
                 tmp.write("\n")
                 tmp.flush()
@@ -628,6 +912,7 @@ class Registry:
                     pass
                 raise
 
+        # --- Step 3: Atomically replace the target registry file ---
         os.replace(tmp_name, self.path)
 
     def register(
@@ -637,7 +922,21 @@ class Registry:
         workspace_dir: str | Path | None = None,
         slug: str | None = None,
     ) -> dict[str, Any]:
-        """Register a repository root idempotently, returning the repo metadata dict."""
+        """Register a repository root idempotently and return its metadata dictionary.
+
+        Preserves the original `enrolled_at` timestamp if the repository is already enrolled.
+
+        Args:
+            repo_root: Path to the git repository root directory.
+            workspace_dir: Optional explicit workspace directory path; defaults to
+                `common.workspace_dir(repo_root)`.
+            slug: Optional human-readable slug; defaults to the repository directory basename.
+
+        Returns:
+            Enrollment metadata dictionary containing `"slug"`, `"enrolled_at"`, and
+            `"workspace_dir"`.
+        """
+        # --- Step 1: Canonicalize repository root path, workspace path, and slug ---
         real_root = os.path.realpath(str(repo_root))
         ws_dir = (
             str(workspace_dir)
@@ -646,6 +945,7 @@ class Registry:
         )
         repo_slug = slug or Path(real_root).name
 
+        # --- Step 2: Load current registry and preserve existing enrolled_at if present ---
         data = self._load_data()
         repos = data.setdefault("repos", {})
 
@@ -656,6 +956,7 @@ class Registry:
             else utc_now_iso()
         )
 
+        # --- Step 3: Persist updated entry atomically and return it ---
         entry = {
             "slug": repo_slug,
             "enrolled_at": enrolled_at,
@@ -666,9 +967,13 @@ class Registry:
         return entry
 
     def unregister(self, repo_root: str | Path) -> bool:
-        """Unregister a repository root.
+        """Unregister a repository root from `registry.json`.
 
-        Returns True if an entry was removed, else False.
+        Args:
+            repo_root: Path to the git repository root directory to remove.
+
+        Returns:
+            `True` if an existing entry was removed; `False` if the repository was not enrolled.
         """
         real_root = os.path.realpath(str(repo_root))
         data = self._load_data()
@@ -680,7 +985,14 @@ class Registry:
         return False
 
     def lookup(self, repo_root: str | Path) -> dict[str, Any] | None:
-        """Look up registration metadata for a repository root, or None if unenrolled."""
+        """Look up registration metadata for a repository root, or `None` if unenrolled.
+
+        Args:
+            repo_root: Path to the git repository root directory.
+
+        Returns:
+            Copy of the repository's enrollment metadata dictionary, or `None` if not enrolled.
+        """
         real_root = os.path.realpath(str(repo_root))
         data = self._load_data()
         entry = data.get("repos", {}).get(real_root)
@@ -689,7 +1001,11 @@ class Registry:
         return None
 
     def list(self) -> dict[str, dict[str, Any]]:
-        """Return a copy of the enrolled repositories mapping."""
+        """Return a shallow copy of the enrolled repositories mapping.
+
+        Returns:
+            Dictionary mapping canonical repository root paths to their metadata dictionaries.
+        """
         data = self._load_data()
         repos = data.get("repos", {})
         return {str(k): dict(v) for k, v in repos.items() if isinstance(v, dict)}

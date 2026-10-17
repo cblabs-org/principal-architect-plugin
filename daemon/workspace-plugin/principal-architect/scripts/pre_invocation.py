@@ -1,18 +1,51 @@
 #!/usr/bin/env python3
-"""PreInvocation hook for session role binding, compaction/rewind detection, and context injection.
+"""Principal Architect Plugin (c) 2026 Matt McNeill
+https://github.com/matthewmcneill/principal-architect-plugin
+SPDX-License-Identifier: Apache-2.0
+Module: daemon/workspace-plugin/principal-architect/scripts/pre_invocation.py
 
-Implements SPEC §7.1 & §9.1–9.2 and PR-02 Charter G6, R1, and R2:
-- `< 1 ms` fast-exit when the target workspace is not enrolled in Registry.
-- Lazy import rule (Charter G2 & R1): `pydantic`, `yaml`, and `schemas` are NEVER imported
-  at module top-level or on the unenrolled fast path.
-- `parse_spawn_header(text)` parsing `PA_ROLE:`, `PR_ID:`, `WO_ID:`, and `PROGRAMME_ID:`
-  from subagent spawn prompts and transcript steps.
-- Automatic Turn 1 session binding in `.state/state.db` (`sessions` table) for unbound
-  `conversationId` instances.
-- Compaction (`CHECKPOINT` step) and step-rewind detection on `transcript.jsonl` to
-  re-arm context injection after context window compaction or user rewind.
-- Role-specific persistent `{"injectSteps": [{"userMessage": "..."}]}` payload generation
+PreInvocation hook for session role binding, compaction/rewind detection, and context injection.
+Plays the context-hydration and session-binding role in the Split-Authority enforcement pipeline
+(SPEC §7.1 & §9.1–9.2 and PR-02 Charter G6, R1, and R2):
+- Executes a `< 1 ms` fast-exit when the target workspace is not enrolled in the Registry.
+- Enforces the lazy import rule (Charter G2 & R1): `pydantic`, `yaml`, and `schemas` are
+  never imported at module top-level or on the unenrolled fast path.
+- Parses `PA_ROLE:`, `PR_ID:`, `WO_ID:`, and `PROGRAMME_ID:` headers from subagent spawn
+  prompts and transcript steps via `parse_spawn_header(text)`.
+- Performs automatic Turn 1 session binding in `.state/state.db` (`sessions` table) for
+  unbound `conversationId` instances.
+- Detects context window compaction (`CHECKPOINT` step) and user step-rewind on
+  `transcript.jsonl` to re-arm context injection automatically.
+- Generates role-specific persistent `{"injectSteps": [{"userMessage": "..."}]}` payloads
   enforcing the strict `memory_mode` boundary (`builtin` vs `external`).
+
+Exported API Summary:
+  Constants & Compiled Regexes:
+    _SCRIPTS_DIR: Absolute directory path containing the hook script modules.
+    _SPAWN_HEADER_LINE_RE: Regex matching structured `PA_ROLE:`, `PR_ID:`, `WO_ID:`, and
+        `PROGRAMME_ID:` spawn header lines.
+  Public Functions:
+    parse_spawn_header(text) -> dict[str, str]:
+        Parse structured spawn header fields from prompt or transcript text.
+    evaluate_pre_invocation(payload, *, repo_root=None, runner=common.run) -> dict[str, Any]:
+        Evaluate a PreInvocation hook event for role binding, compaction/rewind, and injection.
+    main(argv=None) -> int:
+        CLI entrypoint reading a PreInvocation JSON payload from stdin and writing hook output.
+  Internal Helpers:
+    _extract_spawn_headers_from_payload_and_steps(payload, steps) -> dict[str, str]:
+        Extract and merge spawn header fields across hook payload prompts and transcript steps.
+    _extract_matching_module_index_sections(module_index_text, allowed_modules) -> str:
+        Filter H2 sections of MODULE_INDEX.md matching allowed_modules.
+    _resolve_skill_paths(repo_root, required_skills) -> list[str]:
+        Resolve on-disk SKILL.md paths for each skill slug in required_skills.
+    _find_active_project_doc(ws_dir, pr_id) -> Any | None:
+        Locate the active PROJECT.md matching pr_id or fall back to the first PR project doc.
+    _find_active_program_doc(ws_dir, programme_id) -> Any | None:
+        Locate the active PROGRAM.md matching programme_id or fall back to the first programme doc.
+    _build_architect_injection(*, role, session, ws_dir, db, execution_mode, memory_mode) -> str:
+        Build the persistent userMessage context block for chief or pa roles.
+    _build_engineer_injection(*, session, real_root, ws_dir, execution_mode, memory_mode) -> str:
+        Build the persistent userMessage contract block for the pa-engineer role.
 """
 
 from __future__ import annotations
@@ -24,6 +57,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+# Absolute path to the scripts directory, inserted into sys.path for sibling imports.
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
@@ -33,6 +67,7 @@ import escalation
 import pre_tool_gate
 import state_db
 
+# Matches optional markdown bullet/quote prefixes and bold/code wrappers around spawn header keys.
 _SPAWN_HEADER_LINE_RE = re.compile(
     r"^\s*(?:[>\-*]+\s*)?[\*_`]*\b(PA_ROLE|PR_ID|WO_ID|PROGRAMME_ID)\b[\*_`]*\s*:\s*(.+?)\s*$",
     re.IGNORECASE,
@@ -44,10 +79,19 @@ def parse_spawn_header(text: str) -> dict[str, str]:
 
     Normalizes `PA_ROLE` via `pre_tool_gate._normalize_role` into `"role"` and returns
     a dictionary of non-empty parsed fields (`"role"`, `"pr_id"`, `"wo_id"`, `"programme_id"`).
+
+    Args:
+        text: Multi-line prompt or transcript content string to scan.
+
+    Returns:
+        Dictionary mapping normalized keys (`"role"`, `"pr_id"`, `"wo_id"`, `"programme_id"`)
+        to their first non-empty string values found in `text`.
     """
+    # --- Step 1: Validate input string ---
     if not text or not isinstance(text, str):
         return {}
 
+    # --- Step 2: Scan lines for spawn header key-value pairs and normalize values ---
     parsed: dict[str, str] = {}
     for line in text.splitlines():
         m = _SPAWN_HEADER_LINE_RE.match(line)
@@ -79,7 +123,16 @@ def _extract_spawn_headers_from_payload_and_steps(
     payload: Mapping[str, Any],
     steps: Sequence[Mapping[str, Any]],
 ) -> dict[str, str]:
-    """Collect candidate prompt strings from `payload` and `steps` and merge spawn headers."""
+    """Collect candidate prompt strings from `payload` and `steps` and merge spawn headers.
+
+    Args:
+        payload: Raw `PreInvocation` hook input mapping.
+        steps: Sequence of parsed `transcript.jsonl` step mappings.
+
+    Returns:
+        Merged dictionary of spawn header fields (`role`, `pr_id`, `wo_id`, `programme_id`).
+    """
+    # --- Step 1: Gather candidate text blocks from payload fields and transcript steps ---
     candidates: list[str] = []
     for key in ("prompt", "userMessage", "message", "initialPrompt"):
         val = payload.get(key)
@@ -93,13 +146,19 @@ def _extract_spawn_headers_from_payload_and_steps(
         if isinstance(content, str) and content.strip():
             candidates.append(content)
 
+    # --- Step 2: Parse each candidate block in order until all header keys are populated ---
     merged: dict[str, str] = {}
     for text in candidates:
         hdr = parse_spawn_header(text)
         for k, v in hdr.items():
             if k not in merged and v:
                 merged[k] = v
-        if "role" in merged and "pr_id" in merged and "wo_id" in merged and "programme_id" in merged:
+        if (
+            "role" in merged
+            and "pr_id" in merged
+            and "wo_id" in merged
+            and "programme_id" in merged
+        ):
             break
     return merged
 
@@ -108,7 +167,17 @@ def _extract_matching_module_index_sections(
     module_index_text: str,
     allowed_modules: Sequence[str],
 ) -> str:
-    """Filter H2 sections of `MODULE_INDEX.md` matching `allowed_modules` (or full text fallback)."""
+    """Filter H2 sections of `MODULE_INDEX.md` matching `allowed_modules` (or full text fallback).
+
+    Args:
+        module_index_text: Full markdown contents of `MODULE_INDEX.md`.
+        allowed_modules: Sequence of module path patterns from the active PR Charter.
+
+    Returns:
+        Joined markdown string of matching `## ` sections, or `module_index_text.strip()`
+        when no sections or tokens match.
+    """
+    # --- Step 1: Split MODULE_INDEX.md into level-2 (`## `) markdown sections ---
     stripped_full = module_index_text.strip()
     if not stripped_full or not allowed_modules:
         return stripped_full
@@ -118,6 +187,7 @@ def _extract_matching_module_index_sections(
     if not h2_sections:
         return stripped_full
 
+    # --- Step 2: Derive normalized search tokens from allowed_modules ---
     search_tokens: list[str] = []
     for mod in allowed_modules:
         raw_mod = str(mod).strip()
@@ -133,6 +203,7 @@ def _extract_matching_module_index_sections(
     if not search_tokens:
         return stripped_full
 
+    # --- Step 3: Filter H2 sections matching any search token ---
     matched: list[str] = []
     for sec in h2_sections:
         sec_lower = sec.lower()
@@ -152,13 +223,23 @@ def _resolve_skill_paths(repo_root: Path, required_skills: Sequence[str]) -> lis
     2. Bundled PA workspace plugin skills
     3. User global `~/.gemini/config/skills/<slug>/SKILL.md`
     4. Installed global plugin skills `~/.gemini/config/plugins/*/skills/<slug>/SKILL.md`
-    5. Built-in skills `~/.gemini/jetski/builtin/skills/<slug>/SKILL.md`
+    5. Built-in skills under the user's `.gemini` runtime directory
+
+    Args:
+        repo_root: Canonical path to the repository root.
+        required_skills: Sequence of skill slug names from `WorkOrderSpec.required_skills`.
+
+    Returns:
+        List of resolved `SKILL.md` filesystem path strings (falling back to the repo-local
+        `.agents/skills/<slug>/SKILL.md` path when not found on disk).
     """
+    # --- Step 1: Resolve base search roots ---
     real_root = Path(os.path.realpath(repo_root))
     d_home = common.daemon_home()
     user_home = Path(os.path.realpath(Path.home()))
     plugins_root = user_home / ".gemini" / "config" / "plugins"
 
+    # --- Step 2: Probe candidate SKILL.md locations in priority order for each slug ---
     resolved: list[str] = []
     for raw_skill in required_skills:
         slug = str(raw_skill).strip()
@@ -190,7 +271,15 @@ def _resolve_skill_paths(repo_root: Path, required_skills: Sequence[str]) -> lis
 
 
 def _find_active_project_doc(ws_dir: Path, pr_id: str | None) -> Any | None:
-    """Locate the active `PROJECT.md` matching `pr_id` or fallback to the first `pr-*/PROJECT.md`."""
+    """Locate the active `PROJECT.md` matching `pr_id` or fallback to the first `pr-*/PROJECT.md`.
+
+    Args:
+        ws_dir: Path to the `principal-architect-workspace` workspace directory.
+        pr_id: Optional Pull Request identifier (`PR-01`, etc.) bound to the session.
+
+    Returns:
+        Loaded `ParsedDocument[ProjectSpec]` instance, or `None` if no valid `PROJECT.md` exists.
+    """
     import schemas
 
     doc = pre_tool_gate._find_project_doc(ws_dir, pr_id)
@@ -206,7 +295,15 @@ def _find_active_project_doc(ws_dir: Path, pr_id: str | None) -> Any | None:
 
 
 def _find_active_program_doc(ws_dir: Path, programme_id: str | None) -> Any | None:
-    """Locate the active `PROGRAM.md` matching `programme_id` or first `programme-*/PROGRAM.md`."""
+    """Locate the active `PROGRAM.md` matching `programme_id` or first `programme-*/PROGRAM.md`.
+
+    Args:
+        ws_dir: Path to the `principal-architect-workspace` workspace directory.
+        programme_id: Optional Programme identifier bound to the session.
+
+    Returns:
+        Loaded `ParsedDocument[ProgramSpec]` instance, or `None` if no valid `PROGRAM.md` exists.
+    """
     import schemas
 
     candidates = sorted(ws_dir.glob("programme-*/PROGRAM.md"))
@@ -231,12 +328,28 @@ def _build_architect_injection(
     execution_mode: str,
     memory_mode: str,
 ) -> str:
-    """Build the persistent `userMessage` context block for `chief` or `pa` roles."""
+    """Build the persistent `userMessage` context block for `chief` or `pa` roles.
+
+    Args:
+        role: Normalized architect role (`"chief"` or `"pa"`).
+        session: Active session row mapping from `state.db`.
+        ws_dir: Path to the `principal-architect-workspace` workspace directory.
+        db: Open `StateDB` connection for querying open escalations.
+        execution_mode: Active execution mode (`"monitored"` or `"autonomous"`).
+        memory_mode: Active memory mode (`"builtin"` or `"external"`).
+
+    Returns:
+        Formatted markdown string for the `injectSteps` `userMessage` payload.
+    """
+    # --- Step 1: Initialize context header and load active Programme / PR metadata ---
     pr_id = str(session.get("pr_id") or "").strip() or None
     programme_id = str(session.get("programme_id") or "").strip() or None
 
     lines: list[str] = [
-        f"## Principal Architect Active Context (`role={role}`, `execution_mode={execution_mode}`, `memory_mode={memory_mode}`)"
+        (
+            f"## Principal Architect Active Context (`role={role}`, "
+            f"`execution_mode={execution_mode}`, `memory_mode={memory_mode}`)"
+        )
     ]
 
     prog_doc = _find_active_program_doc(ws_dir, programme_id)
@@ -256,7 +369,8 @@ def _build_architect_injection(
         allowed_modules = list(cspec.allowed_modules)
         lines.append(
             f"- **Active PR:** `{cspec.pr_id}` ({cspec.slug}) — {cspec.title}\n"
-            f"  - Status: `{proj_doc.spec.status.value}` | Branch: `{cspec.branch}` -> `{cspec.base_branch}` "
+            f"  - Status: `{proj_doc.spec.status.value}` | "
+            f"Branch: `{cspec.branch}` -> `{cspec.base_branch}` "
             f"| Charter Locked: `{cspec.charter_locked}`\n"
             f"  - Allowed Modules: `{', '.join(allowed_modules)}`\n"
             f"  - Verification Floor: `{'; '.join(cspec.verification_floor) or 'none'}`"
@@ -268,6 +382,7 @@ def _build_architect_injection(
             ]
             lines.append(f"  - Work Orders: {', '.join(wo_bits)}")
 
+    # --- Step 2: Append open escalations targeting this architect role or PR ---
     open_escs = db.open_escalations(target_role=role)
     if not open_escs and resolved_pr_id:
         open_escs = db.open_escalations(pr_id=resolved_pr_id)
@@ -276,9 +391,11 @@ def _build_architect_injection(
         for esc in open_escs:
             lines.append(
                 f"- `{esc['escalation_id']}` [{esc['level']}] `{esc['reason_code']}` "
-                f"(PR={esc.get('pr_id') or '-'}, WO={esc.get('wo_id') or '-'}): {esc.get('summary') or ''}"
+                f"(PR={esc.get('pr_id') or '-'}, WO={esc.get('wo_id') or '-'}): "
+                f"{esc.get('summary') or ''}"
             )
 
+    # --- Step 3: Append memory_mode instructions and builtin memory excerpts ---
     if memory_mode == "external":
         lines.append(
             "Memory Mode: external — Use Succinct Write-Back Mode (defer codebase memory to "
@@ -314,7 +431,19 @@ def _build_engineer_injection(
     execution_mode: str,
     memory_mode: str,
 ) -> str:
-    """Build the persistent `userMessage` contract block for `pa-engineer`."""
+    """Build the persistent `userMessage` contract block for `pa-engineer`.
+
+    Args:
+        session: Active session row mapping from `state.db`.
+        real_root: Canonical path to the repository root.
+        ws_dir: Path to the `principal-architect-workspace` workspace directory.
+        execution_mode: Active execution mode (`"monitored"` or `"autonomous"`).
+        memory_mode: Active memory mode (`"builtin"` or `"external"`).
+
+    Returns:
+        Formatted markdown string describing the worker's bound Work Order contract.
+    """
+    # --- Step 1: Load bound WorkOrder document or return fallback contract ---
     import schemas
 
     pr_id = str(session.get("pr_id") or "").strip() or None
@@ -325,9 +454,11 @@ def _build_engineer_injection(
     wo_doc = pre_tool_gate._find_bound_workorder(ws_dir, pr_id, wo_id)
     if wo_doc is None:
         write_back_line = (
-            "Write-Back Mode: Succinct Mode (memory_mode=external) — keep Completion Report strictly mechanical."
+            "Write-Back Mode: Succinct Mode (memory_mode=external) — "
+            "keep Completion Report strictly mechanical."
             if memory_mode == "external"
-            else "Write-Back Mode: Full Distillation Mode (memory_mode=builtin) — populate decisions_made and dead_ends in Completion Report while prompt cache is warm."
+            else "Write-Back Mode: Full Distillation Mode (memory_mode=builtin) — "
+            "populate decisions_made and dead_ends in Completion Report while prompt cache is warm."
         )
         return (
             f"## Worker Execution Contract (`role=engineer`, `wo_id={wo_id or 'unbound'}`, "
@@ -336,6 +467,7 @@ def _build_engineer_injection(
             f"- {write_back_line}"
         )
 
+    # --- Step 2: Format Work Order boundary box, verification floor, and skill paths ---
     wspec = wo_doc.spec
     skill_paths = _resolve_skill_paths(real_root, wspec.required_skills)
     part1_sections = schemas._part1_workorder_sections(wo_doc.sections)
@@ -362,6 +494,7 @@ def _build_engineer_injection(
     else:
         lines.append("- **Required Skills (`SKILL.md` paths):** none")
 
+    # --- Step 3: Append memory_mode write-back instructions ---
     if memory_mode == "external":
         lines.append(
             "Write-Back Mode: Succinct Mode (memory_mode=external) — keep Completion Report "
@@ -388,7 +521,17 @@ def evaluate_pre_invocation(
 
     Executes an immediate `< 1 ms` fast-exit returning `{}` when the workspace is not enrolled
     in the global PA Registry (or local `.state/state.db` when `repo_root` is explicitly passed).
+
+    Args:
+        payload: Decoded JSON hook input dictionary for the `PreInvocation` event.
+        repo_root: Optional explicit repository root override for testing or CLI invocation.
+        runner: Subprocess runner callable used to locate the git repository root.
+
+    Returns:
+        Hook response dictionary containing `{"injectSteps": [{"userMessage": "..."}]}`
+        when Turn 1 binding, compaction, or step rewind triggers context injection, or `{}`.
     """
+    # --- Step 1: Fast-exit check for unenrolled workspaces (< 1 ms) ---
     resolved_root: Path | None = None
     if repo_root is None:
         workspace_paths = escalation.extract_workspace_paths(payload)
@@ -414,6 +557,7 @@ def evaluate_pre_invocation(
             return {}
         resolved_root = cand_root
 
+    # --- Step 2: Resolve workspace state database and transcript checkpoint watermark ---
     real_root = Path(os.path.realpath(resolved_root))
     ws_dir = common.workspace_dir(real_root)
     db_file = ws_dir / ".state" / "state.db"
@@ -431,6 +575,7 @@ def evaluate_pre_invocation(
     latest_cp = common.latest_checkpoint_step(steps)
     step_watermark = latest_cp if latest_cp is not None else len(steps)
 
+    # --- Step 3: Bind new session or detect compaction / step rewind on existing session ---
     with state_db.StateDB(db_file) as db:
         session = db.get_session(conv_id)
         should_inject = False
@@ -483,6 +628,7 @@ def evaluate_pre_invocation(
         if not should_inject:
             return {}
 
+        # --- Step 4: Build role-specific persistent context injection payload ---
         memory_mode = (db.get_config("memory_mode") or "builtin").strip().lower()
         if memory_mode not in ("builtin", "external"):
             memory_mode = "builtin"
@@ -521,7 +667,14 @@ def evaluate_pre_invocation(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """CLI entrypoint for `PreInvocation` hook (`pre_invocation.py`)."""
+    """CLI entrypoint for `PreInvocation` hook (`pre_invocation.py`).
+
+    Args:
+        argv: Optional command-line argument sequence (unused; hook reads JSON from stdin).
+
+    Returns:
+        Process exit code (`0` after writing the JSON hook response to stdout).
+    """
     _ = argv
     payload = escalation.read_hook_input()
     try:

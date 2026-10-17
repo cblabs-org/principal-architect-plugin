@@ -1,14 +1,89 @@
 #!/usr/bin/env python3
-"""PreToolUse governance gate enforcing rules R1, R1b, R2, R3, R4, R5, and R6.
+"""Principal Architect Plugin (c) 2026 Matt McNeill
+https://github.com/matthewmcneill/principal-architect-plugin
+SPDX-License-Identifier: Apache-2.0
+Module: daemon/workspace-plugin/principal-architect/scripts/pre_tool_gate.py
 
-Implements SPEC §7.2 and §11.2:
-- `< 1 ms` fast-exit when the target workspace is not enrolled in Registry.
-- Lazy import rule (Charter G2 & R1): `pydantic`, `yaml`, and `schemas` are NEVER imported
-  at module top-level or on the unenrolled fast path.
-- Canonical path resolution (`os.path.realpath`) preventing `../` path traversal and
-  symlink escapes outside `repo_root`, `allowed_files`, or `.agents/`.
-- Symmetric `monitored` (`ask`) vs `autonomous` (`deny` + StateDB escalation) enforcement
-  via `escalation.decide`.
+PreToolUse governance gate enforcing Split-Authority rules R1, R1b, R2, R3, R4, R5, and R6.
+Plays the pre-execution boundary-enforcement role in the Split-Authority enforcement pipeline
+(SPEC §7.2 and §11.2):
+- Executes a `< 1 ms` fast-exit when the target workspace is not enrolled in the Registry.
+- Enforces the lazy import rule (Charter G2 & R1): `pydantic`, `yaml`, and `schemas` are
+  never imported at module top-level or on the unenrolled fast path.
+- Performs canonical path resolution (`os.path.realpath`) preventing `../` path traversal
+  and symlink escapes outside `repo_root`, `allowed_files`, or `.agents/`.
+- Enforces symmetric `monitored` (`ask`) vs `autonomous` (`deny` + StateDB escalation)
+  governance decisions via `escalation.decide` across all agent tiers:
+  * R1 / R1b: Architect (`chief` / `pa`) no-inline-code restriction and PR Charter lock.
+  * R2: Principal Architect (`pa`) plan approval gate prior to spawning `pa-engineer`.
+  * R3 / R4: Worker (`engineer`) `allowed_files` boundary box, Part I `spec_hash` lock,
+    and forbidden git/GitHub CLI command lockdown.
+  * R5: Cold-Firewall Auditor (`auditor`) strict read-only lockdown.
+  * R6: Graduation audit gate requiring an `APPROVED` `AuditReport` for current `HEAD`.
+
+Exported API Summary:
+  Constants & Compiled Regexes:
+    _SCRIPTS_DIR: Absolute directory path containing the hook script modules.
+    FILE_MUTATION_TOOLS: Frozenset of host tool names that create or mutate files on disk.
+    _PATH_ARG_KEYS: Ordered tuple of tool argument keys inspected to extract a target file path.
+    _CMD_ARG_KEYS: Ordered tuple of tool argument keys inspected to extract a shell command string.
+    _R6_GRADUATE_RE: Regex matching `pa pr graduate` or `gh pr merge` graduation commands.
+    _PR_ID_TOKEN_RE: Regex matching canonical Pull Request identifiers (`PR-01`, `PR-02a`, etc.).
+    _R4_FORBIDDEN_GIT_GH_RE: Regex matching git branch/history and gh commands forbidden to workers.
+    _R5_AUDITOR_MUTATING_CMD_RE: Regex matching mutating commands forbidden to auditors.
+    _SAFE_REDIRECT_STRIP_RE: Regex matching benign fd-duplication and `/dev/null` redirections.
+    _FILE_REDIRECT_RE: Regex matching shell output redirection operators (`>` / `>>`) and target.
+    _COMMIT_MSG_QUOTED_RE: Regex matching quoted `-m` / `--message` flags in git commit commands.
+  Public Functions:
+    resolve_repo_rel_path(repo_root, raw_path) -> tuple[bool, str, Path]:
+        Resolve raw_path via os.path.realpath against repo_root and check containment.
+    matches_pattern(rel_posix, pattern) -> bool:
+        Check whether a repo-relative POSIX path matches an exact path, prefix, or glob pattern.
+    matches_any_pattern(rel_posix, patterns) -> bool:
+        Return True if rel_posix matches at least one pattern in patterns.
+    simulate_file_edit(existing_text, tool_name, args) -> str | None:
+        Simulate the resulting file text produced by a file mutation tool call.
+    evaluate_pre_tool(payload, *, repo_root=None, runner=common.run) -> dict[str, Any]:
+        Evaluate a PreToolUse hook event against Split-Authority governance rules R1 through R6.
+    main(argv=None) -> int:
+        CLI entrypoint reading a PreToolUse JSON payload from stdin and writing the hook response.
+  Internal Helpers:
+    _apply_replacement_chunks(existing_text, chunks) -> str | None:
+        Sequentially apply ReplacementChunks target/replacement pairs to existing_text.
+    _extract_tool_name_and_args(payload) -> tuple[str, dict[str, Any]]:
+        Extract the normalized tool name and parsed argument dictionary from a PreToolUse payload.
+    _extract_target_path(args) -> str:
+        Extract the target file path string from a tool call's arguments mapping.
+    _extract_command_str(args) -> str:
+        Extract the shell command string from a run_command tool call's arguments mapping.
+    _normalize_role(raw_role) -> str:
+        Normalize an agent role identifier to its canonical short name.
+    _finalize_decision(db, session, decision_dict) -> dict[str, Any]:
+        Persist structural failure increments and StateDB escalation rows for a governance decision.
+    _is_auditor_mutating_command(cmd_str) -> bool:
+        Determine whether a shell command violates the R5 auditor read-only lockdown.
+    _architect_cmd_mutates_outside_agents(cmd_str) -> str | None:
+        Return the offending path if an architect shell command mutates files outside `.agents/`.
+    _workspace_subpath(rel_posix, real_root, ws_dir) -> str | None:
+        Return the path relative to the PA workspace directory if rel_posix resides inside it.
+    _find_project_doc(ws_dir, pr_id) -> Any | None:
+        Load the PROJECT.md document matching pr_id (or the sole PROJECT.md when pr_id is None).
+    _find_bound_workorder(ws_dir, pr_id, wo_id) -> Any | None:
+        Load the WORKORDER.md document matching wo_id and pr_id.
+    _check_r6_graduation_gate(
+        cmd_str, real_root, ws_dir, pr_id, mode, db, session, runner
+    ) -> dict[str, Any] | None:
+        Enforce Rule R6 requiring an APPROVED AuditReport matching current HEAD before graduation.
+    _check_architect_file_gates(
+        role, tool_name, args, raw_path, real_root, ws_dir, pr_id, mode, db, session
+    ) -> dict[str, Any] | None:
+        Enforce Rules R1 and R1b on file mutations performed by chief or pa roles.
+    _check_r2_plan_approval_gate(args, ws_dir, pr_id, mode, db, session) -> dict[str, Any] | None:
+        Enforce Rule R2 requiring PR plan approval before spawning a pa-engineer subagent.
+    _check_worker_gates(
+        tool_name, args, raw_path, cmd_str, real_root, ws_dir, pr_id, wo_id, mode, db, session
+    ) -> dict[str, Any] | None:
+        Enforce Rules R3 and R4 on file mutations and shell commands executed by pa-engineer.
 """
 
 from __future__ import annotations
@@ -23,6 +98,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+# Absolute path to the scripts directory, inserted into sys.path for sibling imports.
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
@@ -31,6 +107,7 @@ import common
 import escalation
 import state_db
 
+# Host tool names that create, overwrite, or edit files on disk.
 FILE_MUTATION_TOOLS: frozenset[str] = frozenset(
     {
         "write_to_file",
@@ -41,6 +118,7 @@ FILE_MUTATION_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+# Candidate argument dictionary keys used across host tool schemas to specify a target file path.
 _PATH_ARG_KEYS: tuple[str, ...] = (
     "TargetFile",
     "Path",
@@ -50,6 +128,7 @@ _PATH_ARG_KEYS: tuple[str, ...] = (
     "TargetPath",
 )
 
+# Candidate argument dictionary keys used across host tool schemas to specify a shell command line.
 _CMD_ARG_KEYS: tuple[str, ...] = (
     "CommandLine",
     "command",
@@ -57,11 +136,15 @@ _CMD_ARG_KEYS: tuple[str, ...] = (
     "Command",
 )
 
+# Matches PR graduation or merge commands (`pa pr graduate`, `gh pr merge`, etc.).
 _R6_GRADUATE_RE = re.compile(
     r"\b(?:pa(?:\s+|_cli\.py\s+)pr\s+graduate|gh\s+pr\s+merge)\b"
 )
+
+# Matches canonical Pull Request identifiers such as `PR-01` or `PR-02a`.
 _PR_ID_TOKEN_RE = re.compile(r"\b(PR-\d+[a-z]?)\b", re.IGNORECASE)
 
+# Matches git history/branch manipulation and GitHub CLI commands forbidden under Rule R4.
 _R4_FORBIDDEN_GIT_GH_RE = re.compile(
     r"\b(?:"
     r"git\s+(?:push|checkout|switch|branch|rebase|merge)\b"
@@ -70,19 +153,28 @@ _R4_FORBIDDEN_GIT_GH_RE = re.compile(
     r")"
 )
 
+# Matches mutating git, gh, filesystem, or in-place sed commands forbidden under Rule R5.
 _R5_AUDITOR_MUTATING_CMD_RE = re.compile(
     r"\b(?:"
-    r"git\s+(?:commit|push|checkout|switch|branch|rebase|merge|reset|clean|mv|rm|tag|stash|add|apply|cherry-pick|revert)\b"
-    r"|gh\s+(?:pr\s+(?:create|merge|close|edit|ready|reopen)|issue\s+(?:create|close|edit|delete|reopen)|repo\s+(?:create|delete|edit|fork))\b"
+    r"git\s+(?:commit|push|checkout|switch|branch|rebase|merge|reset|clean"
+    r"|mv|rm|tag|stash|add|apply|cherry-pick|revert)\b"
+    r"|gh\s+(?:pr\s+(?:create|merge|close|edit|ready|reopen)"
+    r"|issue\s+(?:create|close|edit|delete|reopen)"
+    r"|repo\s+(?:create|delete|edit|fork))\b"
     r"|(?:rm|mv|cp|touch|mkdir|rmdir|chmod|chown|dd|tee|truncate|install)\b"
     r"|sed\s+(?:-[a-zA-Z]*i|--in-place)\b"
     r")"
 )
 
+# Matches safe fd duplications (`2>&1`) and `/dev/null` redirects prior to file-redirect checks.
 _SAFE_REDIRECT_STRIP_RE = re.compile(
     r"(?:\d*>&\d+|\d*>{1,2}\s*/dev/null\b|&>{1,2}\s*/dev/null\b)"
 )
+
+# Matches shell output redirection operators (`>` or `>>`) and captures the target path token.
 _FILE_REDIRECT_RE = re.compile(r"(?:^|[^0-9<>])>{1,2}\s*(\S+)")
+
+# Matches quoted commit message flags (`-m "..."` or `--message '...'`) before keyword checks.
 _COMMIT_MSG_QUOTED_RE = re.compile(
     r"(?:-m|--message)\s+(?:\"[^\"]*\"|'[^']*')"
 )
@@ -91,12 +183,17 @@ _COMMIT_MSG_QUOTED_RE = re.compile(
 def resolve_repo_rel_path(repo_root: Path | str, raw_path: str) -> tuple[bool, str, Path]:
     """Resolve `raw_path` via `os.path.realpath` against `repo_root`.
 
-    Returns `(inside_repo, rel_posix_or_raw, real_target)`:
-    - `inside_repo` is True iff `real_target` is equal to or inside `real_root`.
-    - When `inside_repo` is True, the second element is the normalized POSIX path
-      relative to `real_root` (or `"."` if equal to `real_root`).
-    - When `inside_repo` is False (e.g. `../` traversal or symlink pointing outside
-      `real_root`), returns `(False, str(raw_path), real_target)`.
+    Args:
+        repo_root: Repository root directory path.
+        raw_path: Raw target file path (absolute, repo-relative, or `file://` URI).
+
+    Returns:
+        A 3-tuple `(inside_repo, rel_posix_or_raw, real_target)`:
+        - `inside_repo` is `True` iff `real_target` is equal to or inside `real_root`.
+        - When `inside_repo` is `True`, the second element is the normalized POSIX path
+          relative to `real_root` (or `"."` if equal to `real_root`).
+        - When `inside_repo` is `False` (e.g. `../` traversal or symlink pointing outside
+          `real_root`), returns `(False, str(raw_path), real_target)`.
     """
     cleaned = common._strip_file_uri(str(raw_path).strip())
     real_root = Path(os.path.realpath(repo_root))
@@ -116,12 +213,21 @@ def matches_pattern(rel_posix: str, pattern: str) -> bool:
     """Check whether repo-relative POSIX path `rel_posix` matches `pattern`.
 
     Supports exact paths, directory prefixes (`dir/` or `dir/**`), and `fnmatch` globs.
+
+    Args:
+        rel_posix: Normalized repo-relative POSIX path to test.
+        pattern: Allowed or forbidden file pattern string.
+
+    Returns:
+        `True` if `rel_posix` matches `pattern`, otherwise `False`.
     """
+    # --- Step 1: Normalize leading `./` and reject empty inputs ---
     norm_rel = rel_posix.strip().lstrip("./")
     pat = pattern.strip().lstrip("./")
     if not pat or not norm_rel:
         return False
 
+    # --- Step 2: Check exact path and recursive directory prefix matches ---
     if norm_rel == pat.rstrip("/"):
         return True
 
@@ -138,11 +244,20 @@ def matches_pattern(rel_posix: str, pattern: str) -> bool:
     if norm_rel.startswith(pat.rstrip("/") + "/"):
         return True
 
+    # --- Step 3: Fallback to fnmatch wildcard matching ---
     return fnmatch.fnmatch(norm_rel, pat)
 
 
 def matches_any_pattern(rel_posix: str, patterns: Sequence[str]) -> bool:
-    """Return True if `rel_posix` matches at least one pattern in `patterns`."""
+    """Return True if `rel_posix` matches at least one pattern in `patterns`.
+
+    Args:
+        rel_posix: Normalized repo-relative POSIX path to test.
+        patterns: Sequence of pattern strings to check against.
+
+    Returns:
+        `True` if any pattern in `patterns` matches `rel_posix`, otherwise `False`.
+    """
     return any(matches_pattern(rel_posix, pat) for pat in patterns)
 
 
@@ -151,7 +266,18 @@ def simulate_file_edit(
     tool_name: str,
     args: Mapping[str, Any],
 ) -> str | None:
-    """Simulate the resulting file text from a file mutation tool call, or None if invalid."""
+    """Simulate the resulting file text from a file mutation tool call, or None if invalid.
+
+    Args:
+        existing_text: Current UTF-8 text content of the target file on disk.
+        tool_name: Name of the file mutation tool being invoked.
+        args: Tool call arguments dictionary.
+
+    Returns:
+        Simulated post-edit file content string, or `None` if the edit arguments are
+        malformed or a target substring does not match `existing_text`.
+    """
+    # --- Step 1: Simulate full-file write or append tools ---
     if tool_name in ("write_to_file", "write_file"):
         if "CodeContent" in args:
             content = args.get("CodeContent")
@@ -165,6 +291,7 @@ def simulate_file_edit(
             return existing_text + content
         return content
 
+    # --- Step 2: Simulate single or chunked replacement tools ---
     if tool_name in ("replace_file_content", "edit_file"):
         chunks = args.get("ReplacementChunks")
         if isinstance(chunks, list):
@@ -181,6 +308,7 @@ def simulate_file_edit(
             return None
         return existing_text.replace(target, replacement)
 
+    # --- Step 3: Simulate multi-chunk replacement tools ---
     if tool_name == "multi_replace_file_content":
         chunks = args.get("ReplacementChunks")
         if not isinstance(chunks, list) or not chunks:
@@ -191,6 +319,17 @@ def simulate_file_edit(
 
 
 def _apply_replacement_chunks(existing_text: str, chunks: Sequence[Any]) -> str | None:
+    """Apply a sequence of replacement chunk dictionaries to `existing_text`.
+
+    Args:
+        existing_text: Starting file content string.
+        chunks: Sequence of chunk mappings containing `TargetContent`/`Target` and
+            `ReplacementContent`/`Replacement` keys.
+
+    Returns:
+        Updated file content string after applying all chunks sequentially, or `None`
+        if any chunk is invalid or its target substring is missing.
+    """
     text = existing_text
     for chunk in chunks:
         if not isinstance(chunk, Mapping):
@@ -210,6 +349,16 @@ def _apply_replacement_chunks(existing_text: str, chunks: Sequence[Any]) -> str 
 
 
 def _extract_tool_name_and_args(payload: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Extract the tool name and argument dictionary from a `PreToolUse` hook payload.
+
+    Args:
+        payload: Raw `PreToolUse` hook event mapping from the host runtime.
+
+    Returns:
+        A 2-tuple `(tool_name, args_dict)` with normalized string tool name and parsed
+        arguments dictionary (empty dict if arguments are absent or unparseable).
+    """
+    # --- Step 1: Extract tool name from nested toolCall or top-level payload keys ---
     tool_call = payload.get("toolCall")
     tc_map = tool_call if isinstance(tool_call, Mapping) else {}
 
@@ -222,6 +371,7 @@ def _extract_tool_name_and_args(payload: Mapping[str, Any]) -> tuple[str, dict[s
         or ""
     ).strip()
 
+    # --- Step 2: Locate raw tool arguments mapping or JSON string ---
     raw_args: Any = None
     for src in (tc_map, payload):
         for key in ("args", "arguments", "input", "toolArgs", "toolInput", "tool_input"):
@@ -231,6 +381,7 @@ def _extract_tool_name_and_args(payload: Mapping[str, Any]) -> tuple[str, dict[s
         if raw_args is not None:
             break
 
+    # --- Step 3: Normalize arguments into a plain dictionary ---
     if isinstance(raw_args, Mapping):
         return tool_name, dict(raw_args)
     if isinstance(raw_args, str) and raw_args.strip():
@@ -244,6 +395,14 @@ def _extract_tool_name_and_args(payload: Mapping[str, Any]) -> tuple[str, dict[s
 
 
 def _extract_target_path(args: Mapping[str, Any]) -> str:
+    """Extract the target file path string from a tool call's arguments mapping.
+
+    Args:
+        args: Parsed tool arguments mapping.
+
+    Returns:
+        Stripped file path string from the first matching key in `_PATH_ARG_KEYS`, or `""`.
+    """
     for key in _PATH_ARG_KEYS:
         val = args.get(key)
         if isinstance(val, str) and val.strip():
@@ -252,6 +411,14 @@ def _extract_target_path(args: Mapping[str, Any]) -> str:
 
 
 def _extract_command_str(args: Mapping[str, Any]) -> str:
+    """Extract the shell command string from a `run_command` tool call's arguments mapping.
+
+    Args:
+        args: Parsed tool arguments mapping.
+
+    Returns:
+        Stripped command line string from the first matching key in `_CMD_ARG_KEYS`, or `""`.
+    """
     for key in _CMD_ARG_KEYS:
         val = args.get(key)
         if isinstance(val, str) and val.strip():
@@ -260,6 +427,15 @@ def _extract_command_str(args: Mapping[str, Any]) -> str:
 
 
 def _normalize_role(raw_role: str | None) -> str:
+    """Normalize an agent role identifier to its canonical short role name.
+
+    Args:
+        raw_role: Raw role string from session state, spawn headers, or hook payload.
+
+    Returns:
+        Canonical role string (`"chief"`, `"pa"`, `"engineer"`, `"auditor"`, `"debugger"`),
+        the lowercased input if unrecognized, or `""` when `raw_role` is empty/None.
+    """
     if not raw_role:
         return ""
     r = raw_role.strip().lower()
@@ -281,6 +457,17 @@ def _finalize_decision(
     session: dict[str, Any] | None,
     decision_dict: dict[str, Any],
 ) -> dict[str, Any]:
+    """Persist structural failure increments and escalation rows for a governance decision.
+
+    Args:
+        db: Open `StateDB` connection for the workspace.
+        session: Active session dictionary from `state.db`, or `None` if unbound.
+        decision_dict: Decision payload returned by `escalation.decide`.
+
+    Returns:
+        The `decision_dict` enriched with `"escalation_row"` when an escalation was recorded.
+    """
+    # --- Step 1: Increment session structural_failures counter if requested ---
     if decision_dict.get("increment_structural_failures") and session is not None:
         conv_id = str(session.get("conversation_id") or "")
         if conv_id:
@@ -289,6 +476,7 @@ def _finalize_decision(
             if updated is not None:
                 session.update(updated)
 
+    # --- Step 2: Record escalation row and optional human attention item in StateDB ---
     esc = decision_dict.get("escalation")
     if isinstance(esc, Mapping):
         recorded = escalation.record_escalation(
@@ -313,6 +501,14 @@ def _finalize_decision(
 
 
 def _is_auditor_mutating_command(cmd_str: str) -> bool:
+    """Return True if `cmd_str` violates the Rule R5 auditor read-only lockdown.
+
+    Args:
+        cmd_str: Raw shell command string executed by `pa-auditor`.
+
+    Returns:
+        `True` if the command invokes mutating git/gh/filesystem verbs or redirects to a file.
+    """
     if not cmd_str:
         return False
     if _R5_AUDITOR_MUTATING_CMD_RE.search(cmd_str):
@@ -322,8 +518,20 @@ def _is_auditor_mutating_command(cmd_str: str) -> bool:
 
 
 def _architect_cmd_mutates_outside_agents(cmd_str: str) -> str | None:
+    """Detect whether an architect shell command mutates files outside `.agents/`.
+
+    Args:
+        cmd_str: Raw shell command string executed by `chief` or `pa`.
+
+    Returns:
+        The offending target file path string if a redirection or file-mutation command
+        targets a path outside `.agents/`, or `None` if the command is compliant.
+    """
+    # --- Step 1: Strip safe fd/devnull redirects and check file redirection targets ---
     if not cmd_str:
         return None
+    # Strip benign `2>&1` and `>/dev/null` redirections first so heredoc or command
+    # pipelines using standard stream suppression do not falsely trigger `_FILE_REDIRECT_RE`.
     scrubbed = _SAFE_REDIRECT_STRIP_RE.sub("", cmd_str)
     redirs = _FILE_REDIRECT_RE.findall(scrubbed)
     for target in redirs:
@@ -331,6 +539,7 @@ def _architect_cmd_mutates_outside_agents(cmd_str: str) -> str | None:
         if cleaned and not cleaned.startswith(".agents/"):
             return cleaned
 
+    # --- Step 2: Check direct filesystem mutation verbs (rm, mv, cp, touch, tee) ---
     mut_match = re.search(
         r"\b(?:rm|mv|cp|touch|tee)\s+(?:-[a-zA-Z]+\s+)*([^\s;|>&]+)",
         scrubbed,
@@ -343,6 +552,17 @@ def _architect_cmd_mutates_outside_agents(cmd_str: str) -> str | None:
 
 
 def _workspace_subpath(rel_posix: str, real_root: Path, ws_dir: Path) -> str | None:
+    """Return the subpath inside the PA workspace directory if `rel_posix` is within it.
+
+    Args:
+        rel_posix: Repo-relative POSIX path to inspect.
+        real_root: Canonical path to the repository root.
+        ws_dir: Canonical path to the active PA workspace directory (`principal-architect-workspace`).
+
+    Returns:
+        Workspace-relative POSIX subpath string (or `""` for the workspace root itself),
+        or `None` if `rel_posix` is outside the PA workspace directory.
+    """
     prefixes: list[str] = []
     if ws_dir.is_relative_to(real_root):
         prefixes.append(ws_dir.relative_to(real_root).as_posix())
@@ -359,6 +579,15 @@ def _workspace_subpath(rel_posix: str, real_root: Path, ws_dir: Path) -> str | N
 
 
 def _find_project_doc(ws_dir: Path, pr_id: str | None) -> Any | None:
+    """Locate and load the `PROJECT.md` document for `pr_id` inside `ws_dir`.
+
+    Args:
+        ws_dir: Path to the `principal-architect-workspace` workspace directory.
+        pr_id: Target Pull Request identifier (`PR-01`, etc.), or `None` to match a sole PR.
+
+    Returns:
+        Loaded `ParsedDocument[ProjectSpec]` instance, or `None` if not found or ambiguous.
+    """
     import schemas
 
     candidates = sorted(ws_dir.glob("pr-*/PROJECT.md"))
@@ -378,6 +607,16 @@ def _find_project_doc(ws_dir: Path, pr_id: str | None) -> Any | None:
 
 
 def _find_bound_workorder(ws_dir: Path, pr_id: str | None, wo_id: str | None) -> Any | None:
+    """Locate and load the bound `WORKORDER.md` document for `(pr_id, wo_id)` inside `ws_dir`.
+
+    Args:
+        ws_dir: Path to the `principal-architect-workspace` workspace directory.
+        pr_id: Optional Pull Request identifier (`PR-01`, etc.).
+        wo_id: Target Work Order identifier (`WO-01`, etc.), or `None` to match a sole WO.
+
+    Returns:
+        Loaded `ParsedDocument[WorkOrderSpec]` instance, or `None` if not found or ambiguous.
+    """
     import schemas
 
     candidates = sorted(ws_dir.glob("pr-*/wo*/WORKORDER.md"))
@@ -410,6 +649,23 @@ def _check_r6_graduation_gate(
     session: dict[str, Any] | None,
     runner: common.Runner,
 ) -> dict[str, Any] | None:
+    """Enforce Rule R6 requiring an `APPROVED` `AuditReport` for current `HEAD` before graduation.
+
+    Args:
+        cmd_str: Raw shell command string matching `_R6_GRADUATE_RE`.
+        real_root: Canonical path to the repository root.
+        ws_dir: Path to the `principal-architect-workspace` workspace directory.
+        pr_id: Session-bound Pull Request identifier, if any.
+        mode: Active execution mode (`"monitored"` or `"autonomous"`).
+        db: Open `StateDB` connection for the workspace.
+        session: Active session row mapping from `state.db`, or `None`.
+        runner: Subprocess runner callable used to query `git rev-parse HEAD`.
+
+    Returns:
+        `None` if a valid `APPROVED` audit report matches `HEAD`, otherwise the finalized
+        R6 governance decision dictionary.
+    """
+    # --- Step 1: Resolve current git HEAD SHA and target PR identifier ---
     import schemas
 
     res = runner(["git", "rev-parse", "HEAD"], cwd=real_root)
@@ -422,6 +678,7 @@ def _check_r6_graduation_gate(
         if proj_doc is not None:
             target_pr_id = proj_doc.spec.charter.pr_id
 
+    # --- Step 2: Scan AUDIT-round-*.md files for an APPROVED verdict matching HEAD ---
     for audit_path in sorted(ws_dir.glob("pr-*/AUDIT-round-*.md")):
         try:
             audit_doc = schemas.load_audit(audit_path)
@@ -437,6 +694,7 @@ def _check_r6_graduation_gate(
         ):
             return None
 
+    # --- Step 3: Escalate or block when no matching APPROVED AuditReport exists ---
     return _finalize_decision(
         db,
         session,
@@ -460,6 +718,24 @@ def _check_architect_file_gates(
     db: state_db.StateDB,
     session: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
+    """Enforce Rules R1 and R1b on file mutations performed by `chief` or `pa` roles.
+
+    Args:
+        role: Normalized architect role (`"chief"` or `"pa"`).
+        tool_name: Name of the file mutation tool being invoked.
+        args: Tool call arguments mapping.
+        raw_path: Target file path extracted from `args`.
+        real_root: Canonical path to the repository root.
+        ws_dir: Path to the `principal-architect-workspace` workspace directory.
+        pr_id: Session-bound Pull Request identifier, if any.
+        mode: Active execution mode (`"monitored"` or `"autonomous"`).
+        db: Open `StateDB` connection for the workspace.
+        session: Active session row mapping from `state.db`, or `None`.
+
+    Returns:
+        `None` if the file edit is permitted, or a finalized R1/R1b decision dictionary.
+    """
+    # --- Step 1: Verify target path resolves inside the PA workspace directory (Rule R1) ---
     inside_repo, rel_posix, real_target = resolve_repo_rel_path(real_root, raw_path)
     ws_sub = _workspace_subpath(rel_posix, real_root, ws_dir) if inside_repo else None
     if not inside_repo or ws_sub is None:
@@ -473,6 +749,7 @@ def _check_architect_file_gates(
             ),
         )
 
+    # --- Step 2: Enforce Chief Architect restriction against authoring WORKORDER.md (Rule R1) ---
     target_name = Path(ws_sub).name
     if role == "chief":
         if target_name == "WORKORDER.md":
@@ -483,7 +760,7 @@ def _check_architect_file_gates(
             )
         return None
 
-    # role == "pa"
+    # --- Step 3: Enforce PA restrictions on PROGRAM.md and locked Charters (Rule R1b) ---
     import schemas
 
     if target_name == "PROGRAM.md":
@@ -530,6 +807,7 @@ def _check_architect_file_gates(
                     ),
                 )
 
+    # --- Step 4: Verify WORKORDER.md allowed_files match Charter allowed_modules (Rule R1b) ---
     if target_name == "WORKORDER.md":
         existing_text = real_target.read_text(encoding="utf-8") if real_target.is_file() else ""
         proposed_text = simulate_file_edit(existing_text, tool_name, args)
@@ -584,6 +862,21 @@ def _check_r2_plan_approval_gate(
     db: state_db.StateDB,
     session: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
+    """Enforce Rule R2 requiring PR plan approval prior to spawning a `pa-engineer` worker.
+
+    Args:
+        args: `invoke_subagent` tool call arguments mapping.
+        ws_dir: Path to the `principal-architect-workspace` workspace directory.
+        pr_id: Session-bound Pull Request identifier, if any.
+        mode: Active execution mode (`"monitored"` or `"autonomous"`).
+        db: Open `StateDB` connection for the workspace.
+        session: Active session row mapping from `state.db`, or `None`.
+
+    Returns:
+        `None` if the subagent spawn is not a worker or the PR is already past `PLANNED`,
+        otherwise the finalized R2 governance decision dictionary.
+    """
+    # --- Step 1: Identify whether the subagent invocation targets a pa-engineer worker ---
     sub_type = str(
         args.get("TypeName") or args.get("subagent_type") or args.get("type_name") or ""
     ).strip()
@@ -602,6 +895,7 @@ def _check_r2_plan_approval_gate(
     if not is_worker_spawn:
         return None
 
+    # --- Step 2: Load target PROJECT.md and check if status is still PLANNED ---
     import schemas
 
     target_pr_id = pr_id
@@ -614,6 +908,7 @@ def _check_r2_plan_approval_gate(
     if proj_doc is None or proj_doc.spec.status != schemas.PRState.PLANNED:
         return None
 
+    # --- Step 3: Validate charter_hash and all Work Order allowed_files for auto-approval ---
     auto_approve = (
         db.get_config("auto_approve_pr_plans", "false") or "false"
     ).strip().lower() in ("true", "1", "yes")
@@ -650,6 +945,7 @@ def _check_r2_plan_approval_gate(
     else:
         loaded_wos = []
 
+    # --- Step 4: Evaluate R2 decision and persist auto-approval state if granted ---
     decision = escalation.decide(
         "R2",
         mode,
@@ -691,6 +987,25 @@ def _check_worker_gates(
     db: state_db.StateDB,
     session: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
+    """Enforce Rules R3 and R4 on file mutations and shell commands executed by `pa-engineer`.
+
+    Args:
+        tool_name: Name of the tool being invoked by the worker.
+        args: Tool call arguments mapping.
+        raw_path: Target file path extracted from `args`.
+        cmd_str: Shell command string extracted from `args`.
+        real_root: Canonical path to the repository root.
+        ws_dir: Path to the `principal-architect-workspace` workspace directory.
+        pr_id: Session-bound Pull Request identifier, if any.
+        wo_id: Session-bound Work Order identifier, if any.
+        mode: Active execution mode (`"monitored"` or `"autonomous"`).
+        db: Open `StateDB` connection for the workspace.
+        session: Active session row mapping from `state.db`, or `None`.
+
+    Returns:
+        `None` if the tool call is permitted, or a finalized R3/R4 decision dictionary.
+    """
+    # --- Step 1: Enforce Rule R4 git/gh command lockdown on run_command calls ---
     if tool_name == "run_command":
         scrubbed_cmd = _COMMIT_MSG_QUOTED_RE.sub("", cmd_str)
         if _R4_FORBIDDEN_GIT_GH_RE.search(scrubbed_cmd):
@@ -705,6 +1020,7 @@ def _check_worker_gates(
             )
         return None
 
+    # --- Step 2: Resolve canonical path and block traversal outside repo_root (Rule R3) ---
     if tool_name not in FILE_MUTATION_TOOLS:
         return None
 
@@ -725,6 +1041,7 @@ def _check_worker_gates(
             ),
         )
 
+    # --- Step 3: Load bound WORKORDER.md and verify Part I spec_hash integrity on self-edits ---
     import schemas
 
     wo_doc = _find_bound_workorder(ws_dir, pr_id, wo_id)
@@ -769,6 +1086,7 @@ def _check_worker_gates(
                 )
         return None
 
+    # --- Step 4: Enforce forbidden_files and allowed_files boundary box (Rule R3) ---
     if matches_any_pattern(rel_posix, wo_doc.spec.forbidden_files) or not matches_any_pattern(
         rel_posix, wo_doc.spec.allowed_files
     ):
@@ -801,7 +1119,17 @@ def evaluate_pre_tool(
     Executes an immediate `<1ms` fast-exit returning `{}` when the workspace is not
     enrolled in the global PA Registry (or local `.state/state.db` when `repo_root` is
     explicitly passed).
+
+    Args:
+        payload: Decoded JSON hook input dictionary for the `PreToolUse` event.
+        repo_root: Optional explicit repository root override for testing or CLI invocation.
+        runner: Subprocess runner callable used for git queries.
+
+    Returns:
+        Governance decision dictionary containing `permissionDecision`, `decision`, and `reason`
+        (or `{}` on unenrolled fast-exit).
     """
+    # --- Step 1: Fast-exit check for unenrolled workspaces (< 1 ms) ---
     resolved_root: Path | None = None
     if repo_root is None:
         workspace_paths = escalation.extract_workspace_paths(payload)
@@ -827,6 +1155,7 @@ def evaluate_pre_tool(
             return {}
         resolved_root = cand_root
 
+    # --- Step 2: Extract tool call metadata and open workspace StateDB ---
     real_root = Path(os.path.realpath(resolved_root))
     ws_dir = common.workspace_dir(real_root)
     db_path = ws_dir / ".state" / "state.db"
@@ -838,6 +1167,7 @@ def evaluate_pre_tool(
     raw_path = _extract_target_path(args)
     cmd_str = _extract_command_str(args)
 
+    # --- Step 3: Resolve session role and evaluate rules R6, R5, R1/R1b, R2, and R3/R4 ---
     with state_db.StateDB(db_path) as db:
         raw_mode = (db.get_config("execution_mode", "monitored") or "monitored").strip().lower()
         mode = raw_mode if raw_mode in ("monitored", "autonomous") else "monitored"
@@ -944,7 +1274,14 @@ def evaluate_pre_tool(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """CLI entrypoint for `PreToolUse` hook (`pre_tool_gate.py`)."""
+    """CLI entrypoint for `PreToolUse` hook (`pre_tool_gate.py`).
+
+    Args:
+        argv: Optional command-line argument sequence (unused; hook reads JSON from stdin).
+
+    Returns:
+        Process exit code (`0` after writing the sanitized JSON hook response to stdout).
+    """
     _ = argv
     payload = escalation.read_hook_input()
     try:
@@ -952,6 +1289,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"[principal-architect] pre_tool_gate error: {exc}", file=sys.stderr)
         res = {}
+    # The host runtime's strict protobuf JSON unmarshaler rejects unknown top-level keys
+    # such as `permissionDecision`, `rule`, or `escalation_row`, and expects `"force_ask"`
+    # rather than internal `"ask"` when prompting the human in monitored mode.
     out: dict[str, Any] = {}
     if isinstance(res, Mapping) and res.get("decision"):
         dec = str(res["decision"])

@@ -1,11 +1,37 @@
-"""Live ephemeral-port integration tests for `sidecar.json` and `cockpit.py` HTTP + SSE API.
+"""Principal Architect Plugin (c) 2026 Matt McNeill
+https://github.com/matthewmcneill/principal-architect-plugin
+SPDX-License-Identifier: Apache-2.0
 
-Exercises SPEC.md §10.1-§10.2 and PR-04 Charter G1 & R1-R5:
-1. `daemon/sidecars/pa_cockpit/sidecar.json` manifest contract (schema v1, no `agent_permissions`).
-2. `GET /api/workspaces`, `GET /api/state?workspace=file://...`, and static UI asset routes.
-3. `GET /api/events` SSE streaming (`?once=1` and persistent live state-change push).
-4. All `POST` mutation endpoints (`/api/mode`, `/api/pr/approve-plan`, `/api/escalation/resolve`,
-   `/api/pr/start`, `/api/wo/debug`, `/api/pr/graduate`, `/api/sync`).
+Module: tests/test_cockpit_api.py
+
+Responsibility:
+    Live ephemeral-port integration tests for the `pa_cockpit` sidecar manifest
+    (`daemon/sidecars/pa_cockpit/sidecar.json`), the HTTP + SSE backend server
+    (`cockpit.py`), the static AuxPane UI bundle (`index.html`, `styles.css`,
+    `app.js`, `preload.js`), and the installation lifecycle scripts
+    (`scripts/install.sh` and `scripts/uninstall.sh`) per `SPEC.md` §§4.1 & 10.1–10.3.
+
+Test Suite Coverage Summary:
+    1. Sidecar Manifest & Static Asset Contracts:
+       - `test_sidecar_manifest_contract`: Validate `sidecar.json` schema v1 fields,
+         entrypoints, `PYTHONPATH`, and absence of `agent_permissions`.
+       - `test_cockpit_frontend_assets_and_ui_contract`: Verify static serving and
+         required DOM IDs, CSS variables, `window.sidecar` hooks, and API routes across
+         `index.html`, `styles.css`, `app.js`, and `preload.js`.
+    2. HTTP State & Live SSE Streaming Endpoints:
+       - `test_get_workspaces_state_and_static_routes`: Verify `GET /api/workspaces`,
+         `GET /api/state?workspace=file://...`, priority-sorted `attention_queue`, and
+         `404` handling for unknown workspaces.
+       - `test_sse_events_once_and_live_push`: Verify `GET /api/events` in single-frame
+         mode (`?once=1`) and persistent live SSE push when `state.db` mutates.
+    3. HTTP POST Mutation Endpoints:
+       - `test_post_mutation_endpoints`: Exercise all 7 mutation routes (`POST /api/mode`,
+         `POST /api/pr/approve-plan`, `POST /api/escalation/resolve`, `POST /api/pr/start`,
+         `POST /api/wo/debug`, `POST /api/pr/graduate`, and `POST /api/sync`).
+    4. Daemon Installation & Uninstallation Scripts:
+       - `test_install_and_uninstall_scripts_isolated_tmp_path`: Verify `scripts/install.sh`
+         and `scripts/uninstall.sh` in an isolated `tmp_path`, including state preservation
+         across upgrades and idempotent removal.
 """
 
 from __future__ import annotations

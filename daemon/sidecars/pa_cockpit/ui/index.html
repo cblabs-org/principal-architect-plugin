@@ -14,14 +14,20 @@
     <header id="zone-header" class="cockpit-header" aria-label="Cockpit Header and Controls">
       <div class="header-top-row">
         <div class="brand-block">
-          <span class="brand-icon" aria-hidden="true">📐</span>
+          <span class="brand-icon" aria-hidden="true">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="8 1.5 14.5 5 8 8.5 1.5 5 8 1.5"></polygon>
+              <polyline points="1.5 8 8 11.5 14.5 8"></polyline>
+              <polyline points="1.5 11 8 14.5 14.5 11"></polyline>
+            </svg>
+          </span>
           <div class="brand-titles">
-            <h1 class="brand-title">Principal Architect Cockpit</h1>
+            <h1 class="brand-title">Principal Architect</h1>
             <p class="brand-subtitle">Stacked PR DAG, Charter Locks &amp; Escalation Queue</p>
           </div>
         </div>
         <button id="btn-sync" type="button" class="btn btn-compact" title="Synchronize Git / GitHub and SQLite state">
-          🔄 Sync
+          &#8635; Sync
         </button>
       </div>
 
@@ -49,10 +55,10 @@
           <span class="field-label">Execution Mode</span>
           <div class="mode-toggle" role="group" aria-label="Execution Mode Toggle">
             <button id="btn-mode-monitored" type="button" class="btn mode-btn active" data-mode="monitored">
-              👀 Monitored
+              Monitored
             </button>
             <button id="btn-mode-autonomous" type="button" class="btn mode-btn" data-mode="autonomous">
-              🤖 Autonomous
+              Autonomous
             </button>
           </div>
         </div>
@@ -70,11 +76,11 @@
       <div id="action-toast" class="action-toast hidden" role="status" aria-live="polite"></div>
     </header>
 
-    <!-- Zone 2: Human Attention Needed Inbox -->
+    <!-- Zone 2: 🔔 Human Attention Needed Inbox -->
     <section id="zone-attention" class="attention-inbox" aria-labelledby="attention-heading">
       <div class="section-header">
-        <h2 id="attention-heading" class="section-title">🔔 Human Attention Needed</h2>
-        <span id="attention-count" class="badge badge-count">0</span>
+        <h2 id="attention-heading" class="section-title">Human Attention Needed</h2>
+        <span id="attention-count" class="badge badge-count zero">0</span>
       </div>
       <div id="attention-list" class="attention-list">
         <div class="empty-state">No open escalations or approvals pending.</div>
