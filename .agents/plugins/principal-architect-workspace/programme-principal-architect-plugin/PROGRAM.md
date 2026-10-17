@@ -3,7 +3,7 @@ schema_version: 1
 programme_id: prog-principal-architect-plugin
 title: "principal-architect-plugin: mechanically enforced multi-tier orchestration plugin (SPEC v1.1)"
 base_branch: main
-status: APPROVED
+status: COMPLETED
 prs:
   - id: PR-01
     slug: pr-01-core-schemas-and-enrollment
@@ -113,15 +113,15 @@ prs:
       - .agents/skills/principal-architect-workspace/
       - tests/test_state_db_and_sync.py
     required_skills: []
-    status: IN_PROGRESS
-    github_pr: null
+    status: GRADUATED
+    github_pr: 5
 ---
 
 # principal-architect-plugin Programme
 
 > **Programme:** Build `principal-architect-plugin` — a self-contained Python 3.11+ / Pydantic v2 split-daemon Antigravity plugin that turns the prompt-driven `principal-architect` skill into a mechanically enforced, token-efficient, multi-tier orchestration system.
 > **Specification:** [SPEC.md](../../../../SPEC.md) v1.1 (2026-10-16) + [Positioning Paper](../../../../docs/positioning-paper.md) Rev 3
-> **Status:** Approved — autonomous execution authorized (2026-10-16). **4/5 PRs graduated (PR-01, PR-02, PR-03, PR-04).** **Active:** PR-05 (`pr-05-dogfood-self-enrollment-and-release`).
+> **Status:** Programme Complete (`v0.1.0`, 2026-10-16). **5/5 PRs graduated (PR-01, PR-02, PR-03, PR-04, PR-05).**
 > **Base branch:** `main` (`a16d659`; `origin` = `github.com/matthewmcneill/principal-architect-plugin`, `vcs_mode: github`, `memory_mode: builtin`)
 > **Execution plan:** [PROGRAM-PLAN.md](PROGRAM-PLAN.md) — dependency graph, branching, per-PR protocol, indicative Work Orders, human tasks, decisions, risks, status tracker.
 
@@ -339,3 +339,7 @@ Downstream PRs may make **additive-only** changes to upstream modules (new funct
 ### 2026-10-16 — PR-04 graduated; PR-05 Chartered & PA spawned (session 1)
 - **Summary (`PR-04`, GitHub PR `#4`, `fd35e69e`):** Tier 2 PA (`41c3f16b`) decomposed `PR-04` into 3 sequential Work Orders (`WO-04.1`..`WO-04.3`), spawned 3 dedicated Tier 3 Execution Workers (`7c9f5ef4`, `17b7c68f`, `7f613224`), and delivered `daemon/sidecars/pa_cockpit/sidecar.json` (`SIDECAR_UI_ENTRYPOINT_AUX_PANE`, zero `agent_permissions`), stdlib-only `cockpit.py` (HTTP + SSE server with all 10 SPEC §10.2 routes), 3-zone Cockpit UI (`ui/index.html`, `ui/styles.css` using host CSS variables, `ui/app.js` with `/preload.js`, `onWorkspaceChange`, `toggleConversation`), environment-isolatable `scripts/install.sh` & `scripts/uninstall.sh`, full `README.md`, and `tests/test_cockpit_api.py` (`121 passed` total across all 6 suites, `ruff` clean). Cold-Firewall Auditor (`631bc95c`) audited `88125eb3` on Round 1 and returned `APPROVED (0 blocking, 0 major, 0 minor)` (`cb762c41`).
 - **Next:** Authored and locked Part I Charter of [`pr-05-dogfood-self-enrollment-and-release/PROJECT.md`](../pr-05-dogfood-self-enrollment-and-release/PROJECT.md) and spawned the Tier 2 Principal Architect for `PR-05`.
+
+### 2026-10-16 — PR-05 graduated; Programme Completed (`v0.1.0`, session 1)
+- **Summary (`PR-05`, GitHub PR `#5`, `e415a2a4`):** Tier 2 PA (`950c6d79`) decomposed `PR-05` into 3 sequential Work Orders (`WO-05.1`..`WO-05.3`), spawned 3 dedicated Tier 3 Execution Workers, and delivered: (1) self-enrollment and tracked `git mv` migration of this programme's workspace from `.agents/skills/principal-architect-workspace/` to `.agents/plugins/principal-architect-workspace/` (`WO-05.1` `51e0d55`), (2) live `pa sync` and `pa status --json` state reconciliation plus permanent automated dogfood tests `test_workspace_dir_dogfood` and `test_dogfood_self_enroll_sync_and_status_on_repo_workspace` in `tests/test_state_db_and_sync.py` (`WO-05.2` `8a31519`), and (3) `CHANGELOG.md` and `0.1.0` version alignment across `pyproject.toml`, `daemon/plugin.json`, and `daemon/workspace-plugin/principal-architect/plugin.json` (`WO-05.3` `02cb8de`). Cold-Firewall Auditor (`4520f6fd`) audited `1456b512` on Round 1 and returned `APPROVED (0 blocking, 0 major, 0 minor)` (`ce98e060`).
+- **Programme Outcome:** All 5 stacked PRs (`PR-01`..`PR-05`, 23 Work Orders, 5 Round-1 `APPROVED` Cold-Firewall Audits) have graduated with `122/122` tests passing across all 6 test suites, `ruff check daemon tests` clean, all 5 `PROJECT.md` `charter_hash` locks and all 23 `WORKORDER.md` `spec_hash` locks verified, and `0` Invariant I10 hygiene findings.
