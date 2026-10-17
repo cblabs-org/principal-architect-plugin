@@ -4,7 +4,7 @@
     "PreInvocation": [
       {
         "type": "command",
-        "command": "python3 ${PLUGIN_ROOT}/scripts/pre_invocation.py",
+        "command": "PLUGIN_ROOT=\"${PLUGIN_ROOT:-${PA_DAEMON_HOME:-$HOME/.gemini/config/plugins/pa-daemon}/workspace-plugin/principal-architect}\"; python3 ${PLUGIN_ROOT}/scripts/pre_invocation.py",
         "timeout": 10
       }
     ],
@@ -14,7 +14,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${PLUGIN_ROOT}/scripts/pre_tool_gate.py",
+            "command": "PLUGIN_ROOT=\"${PLUGIN_ROOT:-${PA_DAEMON_HOME:-$HOME/.gemini/config/plugins/pa-daemon}/workspace-plugin/principal-architect}\"; python3 ${PLUGIN_ROOT}/scripts/pre_tool_gate.py",
             "timeout": 10
           }
         ]
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${PLUGIN_ROOT}/scripts/post_tool_receipt.py",
+            "command": "PLUGIN_ROOT=\"${PLUGIN_ROOT:-${PA_DAEMON_HOME:-$HOME/.gemini/config/plugins/pa-daemon}/workspace-plugin/principal-architect}\"; python3 ${PLUGIN_ROOT}/scripts/post_tool_receipt.py",
             "timeout": 10
           }
         ]
@@ -35,7 +35,7 @@
     "Stop": [
       {
         "type": "command",
-        "command": "python3 ${PLUGIN_ROOT}/scripts/stop_gate.py",
+        "command": "PLUGIN_ROOT=\"${PLUGIN_ROOT:-${PA_DAEMON_HOME:-$HOME/.gemini/config/plugins/pa-daemon}/workspace-plugin/principal-architect}\"; python3 ${PLUGIN_ROOT}/scripts/stop_gate.py",
         "timeout": 10
       }
     ]

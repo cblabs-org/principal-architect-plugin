@@ -952,7 +952,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"[principal-architect] pre_tool_gate error: {exc}", file=sys.stderr)
         res = {}
-    return escalation.write_hook_output(res)
+    out: dict[str, Any] = {}
+    if isinstance(res, Mapping) and res.get("decision"):
+        dec = str(res["decision"])
+        out["decision"] = "force_ask" if dec == "ask" else dec
+        if res.get("reason"):
+            out["reason"] = str(res["reason"])
+    return escalation.write_hook_output(out)
 
 
 if __name__ == "__main__":

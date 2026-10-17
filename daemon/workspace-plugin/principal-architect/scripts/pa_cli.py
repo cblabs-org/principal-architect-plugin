@@ -156,6 +156,285 @@ def detect_memory_mode(repo_root: str | Path) -> Literal["external", "builtin"]:
     return "builtin"
 
 
+def _move_path_git_or_fs(
+    repo_root: Path,
+    src: Path,
+    dst: Path,
+    *,
+    runner: common.Runner = common.run,
+) -> None:
+    """Move `src` to `dst`, preferring `git mv` when `src` is tracked by git."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    rel_src = src.relative_to(repo_root)
+    rel_dst = dst.relative_to(repo_root)
+    ls_res = runner(
+        ["git", "ls-files", "--error-unmatch", str(rel_src)],
+        cwd=repo_root,
+    )
+    if ls_res.returncode == 0:
+        mv_res = runner(
+            ["git", "mv", str(rel_src), str(rel_dst)],
+            cwd=repo_root,
+        )
+        if mv_res.returncode != 0 or (src.exists() and not dst.exists()):
+            shutil.move(str(src), str(dst))
+    else:
+        shutil.move(str(src), str(dst))
+
+
+def _merge_legacy_into_new_workspace(
+    repo_root: Path,
+    legacy_ws: Path,
+    new_ws: Path,
+    *,
+    runner: common.Runner = common.run,
+) -> list[str]:
+    """Move or merge `.agents/skills/principal-architect-workspace` into `.agents/plugins/principal-architect-workspace`."""
+    moved: list[str] = []
+    if not legacy_ws.exists():
+        return moved
+
+    if not new_ws.exists():
+        _move_path_git_or_fs(repo_root, legacy_ws, new_ws, runner=runner)
+        moved.append(common.NEW_WORKSPACE_REL.as_posix())
+        return moved
+
+    for item in sorted(legacy_ws.iterdir()):
+        if item.name == ".state":
+            shutil.rmtree(item, ignore_errors=True)
+            continue
+        dst_item = new_ws / item.name
+        if not dst_item.exists():
+            _move_path_git_or_fs(repo_root, item, dst_item, runner=runner)
+            moved.append(dst_item.relative_to(repo_root).as_posix())
+        elif item.is_dir() and dst_item.is_dir():
+            for child in sorted(item.rglob("*")):
+                if not child.is_file():
+                    continue
+                rel_c = child.relative_to(item)
+                dst_c = dst_item / rel_c
+                dst_c.parent.mkdir(parents=True, exist_ok=True)
+                if dst_c.exists():
+                    dst_c.unlink()
+                _move_path_git_or_fs(repo_root, child, dst_c, runner=runner)
+                moved.append(dst_c.relative_to(repo_root).as_posix())
+            shutil.rmtree(item, ignore_errors=True)
+        elif item.is_file():
+            if dst_item.exists():
+                dst_item.unlink()
+            _move_path_git_or_fs(repo_root, item, dst_item, runner=runner)
+            moved.append(dst_item.relative_to(repo_root).as_posix())
+
+    shutil.rmtree(legacy_ws, ignore_errors=True)
+    return moved
+
+
+def _cleanup_legacy_skill_dir(
+    repo_root: Path,
+    *,
+    runner: common.Runner = common.run,
+) -> bool:
+    """Remove legacy `.agents/skills/principal-architect` directory/submodule if present."""
+    legacy_skill = repo_root / ".agents" / "skills" / "principal-architect"
+    if not legacy_skill.exists() and not legacy_skill.is_symlink():
+        return False
+
+    try:
+        runner(
+            ["git", "rm", "-rf", ".agents/skills/principal-architect"],
+            cwd=repo_root,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    if legacy_skill.is_symlink() or legacy_skill.is_file():
+        legacy_skill.unlink(missing_ok=True)
+    elif legacy_skill.is_dir():
+        shutil.rmtree(legacy_skill, ignore_errors=True)
+    return True
+
+
+def _rewrite_legacy_workspace_paths(new_ws: Path) -> int:
+    """Rewrite stale `.agents/skills/principal-architect-workspace` references in `.md` files."""
+    if not new_ws.is_dir():
+        return 0
+
+    import schemas
+
+    old_str = common.LEGACY_WORKSPACE_REL.as_posix()
+    new_str = common.NEW_WORKSPACE_REL.as_posix()
+    updated = 0
+
+    for md_file in sorted(new_ws.rglob("*.md")):
+        if ".state" in md_file.parts or not md_file.is_file():
+            continue
+        try:
+            text = md_file.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if old_str not in text:
+            continue
+
+        new_text = text.replace(old_str, new_str)
+        md_file.write_text(new_text, encoding="utf-8")
+
+        # Recompute charter_hash or spec_hash if a locked PROJECT.md or WORKORDER.md was rewritten
+        try:
+            if md_file.name == "PROJECT.md":
+                pdoc = schemas.load_project(md_file)
+                if pdoc.spec.charter.charter_hash:
+                    pdoc.spec.charter.charter_hash = schemas.compute_charter_hash(
+                        pdoc.spec.charter, pdoc.sections
+                    )
+                    md_file.write_text(
+                        schemas.dump_document(pdoc.spec, pdoc.sections),
+                        encoding="utf-8",
+                    )
+            elif md_file.name == "WORKORDER.md":
+                wdoc = schemas.load_workorder(md_file)
+                if wdoc.spec.spec_hash:
+                    wdoc.spec.spec_hash = schemas.compute_spec_hash(
+                        wdoc.spec, wdoc.sections
+                    )
+                    md_file.write_text(
+                        schemas.dump_document(wdoc.spec, wdoc.sections),
+                        encoding="utf-8",
+                    )
+        except Exception:  # noqa: BLE001, S110
+            pass
+
+        updated += 1
+    return updated
+
+
+def _bridge_repo_memory(
+    repo_root: Path,
+    new_ws: Path,
+    *,
+    runner: common.Runner = common.run,
+) -> dict[str, Any]:
+    """Ensure PA memory is registered in `.agents/memory/config.json` and run `repo-memory` seed/index."""
+    config_updated = False
+    rm_cfg_path = repo_root / ".agents" / "memory" / "config.json"
+    new_mem_rel = f"{common.NEW_WORKSPACE_REL.as_posix()}/memory"
+    old_mem_rel = f"{common.LEGACY_WORKSPACE_REL.as_posix()}/memory"
+
+    if rm_cfg_path.is_file() and (new_ws / "memory").is_dir():
+        try:
+            cfg_data = json.loads(rm_cfg_path.read_text(encoding="utf-8"))
+            if isinstance(cfg_data, dict):
+                raw_seeds = cfg_data.get("doc_seeds")
+                seeds = [str(s) for s in raw_seeds] if isinstance(raw_seeds, list) else []
+                filtered = [s for s in seeds if s != old_mem_rel]
+                if new_mem_rel not in filtered:
+                    filtered.append(new_mem_rel)
+                if filtered != seeds:
+                    cfg_data["doc_seeds"] = filtered
+                    rm_cfg_path.write_text(
+                        json.dumps(cfg_data, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+                    config_updated = True
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    rm_bin = (
+        os.environ.get("PA_REPO_MEMORY_BIN")
+        or shutil.which("repo-memory")
+        or str(Path.home() / ".local" / "bin" / "repo-memory")
+    )
+    commands_run: list[str] = []
+    seeded = False
+
+    if Path(rm_bin).is_file() or shutil.which(rm_bin) is not None:
+        subcmds = ["seed", "seed-docs", "index"]
+        for sub in subcmds:
+            cmd = [rm_bin, sub, "--repo", str(repo_root)]
+            try:
+                res = runner(cmd, cwd=repo_root)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if res.returncode == 0:
+                commands_run.append(f"repo-memory {sub}")
+                seeded = True
+
+    return {
+        "config_updated": config_updated,
+        "commands_run": commands_run,
+        "seeded": seeded,
+    }
+
+
+def _cmd_migrate(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
+    """Migrate legacy `.agents/skills/principal-architect-workspace`, sync state.db, and bridge `repo-memory`."""
+    import vcs_sync
+
+    raw_target = Path(args.path).expanduser()
+    if not raw_target.exists():
+        print(f"Error: Target path does not exist: {args.path}", file=sys.stderr)
+        return 2
+
+    repo_root = common.find_repo_root(raw_target, runner=runner)
+    if repo_root is None:
+        print(f"Error: Not inside a git repository: {args.path}", file=sys.stderr)
+        return 2
+
+    real_root = Path(os.path.realpath(repo_root))
+    legacy_ws = real_root / common.LEGACY_WORKSPACE_REL
+    new_ws = real_root / common.NEW_WORKSPACE_REL
+
+    moved_paths = _merge_legacy_into_new_workspace(real_root, legacy_ws, new_ws, runner=runner)
+    removed_legacy_skill = False
+    if getattr(args, "cleanup_legacy_skill", True):
+        removed_legacy_skill = _cleanup_legacy_skill_dir(real_root, runner=runner)
+
+    rewritten_files = _rewrite_legacy_workspace_paths(new_ws)
+
+    # Ensure workspace and state.db exist and run VCS/trailer/audit sync
+    new_ws.mkdir(parents=True, exist_ok=True)
+    (new_ws / ".state").mkdir(parents=True, exist_ok=True)
+    bus = vcs_sync.get_vcs_bus(real_root, runner=runner)
+    sync_summary = bus.sync_state()
+
+    should_seed_rm = getattr(args, "seed_repo_memory", None)
+    if should_seed_rm is None:
+        should_seed_rm = detect_memory_mode(real_root) == "external"
+
+    rm_summary: dict[str, Any] = {
+        "config_updated": False,
+        "commands_run": [],
+        "seeded": False,
+    }
+    if should_seed_rm:
+        rm_summary = _bridge_repo_memory(real_root, new_ws, runner=runner)
+
+    result = {
+        "repo_root": str(real_root),
+        "workspace_dir": str(new_ws),
+        "moved_paths": moved_paths,
+        "removed_legacy_skill": removed_legacy_skill,
+        "rewritten_markdown_files": rewritten_files,
+        "sync": sync_summary,
+        "repo_memory": rm_summary,
+    }
+
+    if getattr(args, "as_json", False):
+        print(json.dumps(result, indent=2))
+    else:
+        print(
+            f"Migrated repository: {real_root}\n"
+            f"  workspace_dir:            {new_ws}\n"
+            f"  moved_paths:              {len(moved_paths)}\n"
+            f"  removed_legacy_skill:     {removed_legacy_skill}\n"
+            f"  rewritten_markdown_files: {rewritten_files}\n"
+            f"  synced_wos:               {sync_summary.get('synced_wos', 0)}\n"
+            f"  synced_receipts:          {sync_summary.get('synced_receipts', 0)}\n"
+            f"  synced_audits:            {sync_summary.get('synced_audits', 0)}\n"
+            f"  repo_memory_seeded:       {rm_summary['seeded']} ({', '.join(rm_summary['commands_run']) or 'skipped'})"
+        )
+    return 0
+
+
 def _cmd_enroll(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
     """Execute the normative 9-step `pa enroll` sequence (SPEC §4.3, Charter §2.3)."""
     raw_target = Path(args.path).expanduser()
@@ -186,29 +465,24 @@ def _cmd_enroll(args: argparse.Namespace, *, runner: common.Runner = common.run)
     # Step 2: Legacy migration check (Charter R8)
     legacy_ws = repo_root / common.LEGACY_WORKSPACE_REL
     new_ws = repo_root / common.NEW_WORKSPACE_REL
-    if legacy_ws.exists() and new_ws.exists():
+    force_migrate = bool(getattr(args, "migrate", False))
+    had_legacy = legacy_ws.exists()
+
+    if legacy_ws.exists() and new_ws.exists() and not force_migrate:
         print(
             "Error: Cannot migrate workspace: both "
-            f"{common.LEGACY_WORKSPACE_REL} and {common.NEW_WORKSPACE_REL} exist.",
+            f"{common.LEGACY_WORKSPACE_REL} and {common.NEW_WORKSPACE_REL} exist. "
+            "Run `pa migrate` or pass `--migrate` to merge.",
             file=sys.stderr,
         )
         return 2
 
-    if legacy_ws.exists() and not new_ws.exists():
-        new_ws.parent.mkdir(parents=True, exist_ok=True)
-        ls_res = runner(
-            ["git", "ls-files", "--error-unmatch", str(common.LEGACY_WORKSPACE_REL)],
-            cwd=repo_root,
-        )
-        if ls_res.returncode == 0:
-            mv_res = runner(
-                ["git", "mv", str(common.LEGACY_WORKSPACE_REL), str(common.NEW_WORKSPACE_REL)],
-                cwd=repo_root,
-            )
-            if mv_res.returncode != 0 or (legacy_ws.exists() and not new_ws.exists()):
-                shutil.move(str(legacy_ws), str(new_ws))
-        else:
-            shutil.move(str(legacy_ws), str(new_ws))
+    if legacy_ws.exists():
+        _merge_legacy_into_new_workspace(repo_root, legacy_ws, new_ws, runner=runner)
+
+    if had_legacy or force_migrate:
+        _cleanup_legacy_skill_dir(repo_root, runner=runner)
+        _rewrite_legacy_workspace_paths(new_ws)
 
     # Step 3 & 6: Ensure workspace and .state directories exist; open StateDB
     new_ws.mkdir(parents=True, exist_ok=True)
@@ -304,15 +578,23 @@ def _cmd_enroll(args: argparse.Namespace, *, runner: common.Runner = common.run)
         _ensure_line_in_file(new_ws / ".gitignore", ".state/")
 
         # Step 6: Persist configuration in StateDB
+        req_exec = getattr(args, "execution_mode", None)
         existing_exec = db.get_config("execution_mode")
-        execution_mode = (
-            existing_exec if existing_exec in ("monitored", "autonomous") else "monitored"
-        )
+        if req_exec in ("monitored", "autonomous"):
+            execution_mode = req_exec
+        else:
+            execution_mode = (
+                existing_exec if existing_exec in ("monitored", "autonomous") else "monitored"
+            )
         db.set_config("execution_mode", execution_mode)
         db.set_config("memory_mode", memory_mode)
         db.set_config("vcs_mode", vcs_mode)
         db.set_config("extra_skills_json", json.dumps(extra_skills))
         db.set_config("exclude_rules_json", json.dumps(exclude_rules))
+
+        req_auto_approve = getattr(args, "auto_approve_pr_plans", None)
+        if req_auto_approve is not None:
+            db.set_config("auto_approve_pr_plans", "true" if req_auto_approve else "false")
 
     # Step 7: Write/merge <repo>/.agents/plugins.json and add to .git/info/exclude
     wp_path = str(common.daemon_home() / "workspace-plugin")
@@ -351,6 +633,9 @@ def _cmd_enroll(args: argparse.Namespace, *, runner: common.Runner = common.run)
 
     # Step 8: Register repository in global Registry
     state_db.Registry().register(repo_root, workspace_dir=new_ws)
+
+    if (had_legacy or force_migrate) and memory_mode == "external":
+        _bridge_repo_memory(repo_root, new_ws, runner=runner)
 
     # Step 9: Print one-screen summary to stderr and exit 0
     print(
@@ -2634,7 +2919,70 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATTERN",
         help="Rule glob pattern to exclude in .state/pa-worker-rules.json (repeatable).",
     )
+    p_enroll.add_argument(
+        "--execution-mode",
+        choices=["monitored", "autonomous"],
+        default=None,
+        help="Execution mode to configure ('monitored' or 'autonomous').",
+    )
+    p_enroll.add_argument(
+        "--auto-approve-pr-plans",
+        dest="auto_approve_pr_plans",
+        action="store_true",
+        default=None,
+        help="Automatically approve valid PR Work Order plans in autonomous mode.",
+    )
+    p_enroll.add_argument(
+        "--no-auto-approve-pr-plans",
+        dest="auto_approve_pr_plans",
+        action="store_false",
+        help="Require human approval for PR Work Order plans even in autonomous mode.",
+    )
+    p_enroll.add_argument(
+        "--migrate",
+        action="store_true",
+        help="Merge/migrate legacy .agents/skills/principal-architect-workspace, rewrite stale paths, clean up legacy skill, and seed repo-memory.",
+    )
     p_enroll.set_defaults(_handler=_cmd_enroll)
+
+    # 1b. pa migrate
+    p_migrate = subparsers.add_parser(
+        "migrate",
+        help="Migrate legacy .agents/skills/principal-architect-workspace, sync state.db, and bridge repo-memory.",
+    )
+    p_migrate.add_argument(
+        "path",
+        nargs="?",
+        default=".",
+        help="Path to the target repository (default: current directory).",
+    )
+    p_migrate.add_argument(
+        "--seed-repo-memory",
+        dest="seed_repo_memory",
+        action="store_true",
+        default=None,
+        help="Force seeding repo-memory from PA WORKORDER.md and memory/ files.",
+    )
+    p_migrate.add_argument(
+        "--no-seed-repo-memory",
+        dest="seed_repo_memory",
+        action="store_false",
+        help="Skip seeding repo-memory during migration.",
+    )
+    p_migrate.add_argument(
+        "--no-cleanup-legacy-skill",
+        dest="cleanup_legacy_skill",
+        action="store_false",
+        default=True,
+        help="Do not remove .agents/skills/principal-architect directory/submodule.",
+    )
+    p_migrate.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Emit machine-readable JSON migration summary to stdout.",
+    )
+    p_migrate.set_defaults(_handler=_cmd_migrate)
 
     # 2. pa unenroll
     p_unenroll = subparsers.add_parser(

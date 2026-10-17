@@ -397,12 +397,17 @@ def test_hooks_json_schema() -> None:
     pa_hooks = data["principal-architect"]
     assert pa_hooks["enabled"] is True
 
+    prefix = (
+        'PLUGIN_ROOT="${PLUGIN_ROOT:-${PA_DAEMON_HOME:-$HOME/.gemini/config/plugins/pa-daemon}'
+        '/workspace-plugin/principal-architect}"; '
+    )
+
     # PreInvocation
     pre_inv = pa_hooks["PreInvocation"]
     assert len(pre_inv) == 1
     assert pre_inv[0] == {
         "type": "command",
-        "command": "python3 ${PLUGIN_ROOT}/scripts/pre_invocation.py",
+        "command": prefix + "python3 ${PLUGIN_ROOT}/scripts/pre_invocation.py",
         "timeout": 10,
     }
 
@@ -416,7 +421,7 @@ def test_hooks_json_schema() -> None:
     assert pre_tool[0]["hooks"] == [
         {
             "type": "command",
-            "command": "python3 ${PLUGIN_ROOT}/scripts/pre_tool_gate.py",
+            "command": prefix + "python3 ${PLUGIN_ROOT}/scripts/pre_tool_gate.py",
             "timeout": 10,
         }
     ]
@@ -428,7 +433,7 @@ def test_hooks_json_schema() -> None:
     assert post_tool[0]["hooks"] == [
         {
             "type": "command",
-            "command": "python3 ${PLUGIN_ROOT}/scripts/post_tool_receipt.py",
+            "command": prefix + "python3 ${PLUGIN_ROOT}/scripts/post_tool_receipt.py",
             "timeout": 10,
         }
     ]
@@ -438,7 +443,7 @@ def test_hooks_json_schema() -> None:
     assert len(stop) == 1
     assert stop[0] == {
         "type": "command",
-        "command": "python3 ${PLUGIN_ROOT}/scripts/stop_gate.py",
+        "command": prefix + "python3 ${PLUGIN_ROOT}/scripts/stop_gate.py",
         "timeout": 10,
     }
 
@@ -1283,8 +1288,9 @@ def test_pre_tool_gate_r5_auditor_and_r6_graduation(
     )
     assert sub_res.returncode == 0
     sub_json = json.loads(sub_res.stdout.strip())
-    assert sub_json["rule"] == "R4"
-    assert sub_json["permissionDecision"] == "deny"
+    assert set(sub_json.keys()) <= {"decision", "reason"}
+    assert sub_json["decision"] == "deny"
+    assert "git push" in sub_json["reason"]
 
 
 # ---------------------------------------------------------------------------

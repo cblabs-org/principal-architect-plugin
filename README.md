@@ -184,7 +184,8 @@ The global daemon bundles the **Principal Architect Cockpit** AuxPane sidecar (`
 
 | Command | Description |
 |---|---|
-| `pa enroll [path] [--memory-mode auto\|external\|builtin] [--vcs-mode auto\|github\|local_git] [--extra-skill <name>] [--exclude-rule <glob>]` | Enroll a repository, migrate legacy workspace paths if present, generate `.state/` manifests, initialize `.state/state.db`, and register in `daemon/state/registry.json`. |
+| `pa enroll [path] [--execution-mode monitored\|autonomous] [--auto-approve-pr-plans \| --no-auto-approve-pr-plans] [--memory-mode auto\|external\|builtin] [--vcs-mode auto\|github\|local_git] [--extra-skill <name>] [--exclude-rule <glob>] [--migrate]` | Enroll a repository, migrate legacy workspace paths if present, generate `.state/` manifests, initialize `.state/state.db`, and register in `daemon/state/registry.json`. |
+| `pa migrate [path] [--seed-repo-memory \| --no-seed-repo-memory] [--no-cleanup-legacy-skill] [--json]` | Move or merge legacy `.agents/skills/principal-architect-workspace/` into `.agents/plugins/principal-architect-workspace/`, remove legacy `.agents/skills/principal-architect`, rewrite stale path references, backfill `.state/state.db` via `pa sync`, and seed `repo-memory` when `memory_mode=external`. |
 | `pa unenroll [path]` | Remove the workspace plugin entry from `.agents/plugins.json` and unregister from `daemon/state/registry.json`. |
 | `pa status [path] [--json]` | Reconcile committed specs, local git trailers, and `.state/state.db`; output human-readable tree or `--json`. |
 | `pa mode [monitored\|autonomous] [--path <repo>]` | Query or set the repository's `execution_mode` (`monitored` or `autonomous`). |

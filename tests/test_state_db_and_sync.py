@@ -1252,3 +1252,103 @@ def test_dogfood_self_enroll_sync_and_status_on_repo_workspace(
     assert (repo_ws / ".state" / "state.db").exists() == had_state_db_before
 
 
+def test_pa_migrate_and_enroll_with_migrate_and_repo_memory_bridge(
+    tmp_path: Path,
+    daemon_home: Path,
+    fake_runner: FakeRunner,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify pa migrate and pa enroll --migrate merge legacy workspace, rewrite paths, and bridge repo-memory."""
+    import pa_cli
+
+    repo = tmp_path / "repo_migrate"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    fake_runner.set_response(["git", "remote", "get-url", "origin"], returncode=1)
+
+    # Create both legacy .agents/skills/principal-architect-workspace and partial .agents/plugins/principal-architect-workspace
+    legacy_ws = repo / common.LEGACY_WORKSPACE_REL
+    new_ws = repo / common.NEW_WORKSPACE_REL
+    (legacy_ws / "memory").mkdir(parents=True)
+    (legacy_ws / "memory" / "MEMORY.md").write_text(
+        "# Legacy Memory\nPath: .agents/skills/principal-architect-workspace/memory/MEMORY.md\n",
+        encoding="utf-8",
+    )
+    (legacy_ws / "memory" / "MODULE_INDEX.md").write_text("# Legacy Modules\n", encoding="utf-8")
+    (legacy_ws / "memory" / "PROJECT_INDEX.md").write_text("# Legacy Projects\n", encoding="utf-8")
+
+    # Create legacy skill directory .agents/skills/principal-architect
+    legacy_skill_dir = repo / ".agents" / "skills" / "principal-architect"
+    legacy_skill_dir.mkdir(parents=True)
+    (legacy_skill_dir / "SKILL.md").write_text("# Legacy Skill\n", encoding="utf-8")
+
+    # Create partial new_ws and .agents/memory/config.json + .memory to simulate external repo-memory
+    new_ws.mkdir(parents=True)
+    (repo / ".memory").mkdir(parents=True)
+    rm_cfg = repo / ".agents" / "memory" / "config.json"
+    rm_cfg.parent.mkdir(parents=True, exist_ok=True)
+    rm_cfg.write_text(
+        json.dumps(
+            {
+                "doc_seeds": [
+                    "SPEC.md",
+                    ".agents/skills/principal-architect-workspace/memory",
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fake_rm_bin = tmp_path / "fake-repo-memory"
+    fake_rm_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_rm_bin.chmod(0o755)
+    monkeypatch.setenv("PA_REPO_MEMORY_BIN", str(fake_rm_bin))
+    fake_runner.set_response([str(fake_rm_bin), "seed"], returncode=0, stdout="seeded WOs")
+    fake_runner.set_response([str(fake_rm_bin), "seed-docs"], returncode=0, stdout="seeded docs")
+    fake_runner.set_response([str(fake_rm_bin), "index"], returncode=0, stdout="indexed")
+
+    capsys.readouterr()
+    rc = pa_cli.main(["migrate", str(repo), "--json"], runner=fake_runner)
+    assert rc == 0
+    mig_out = json.loads(capsys.readouterr().out)
+    assert mig_out["removed_legacy_skill"] is True
+    assert not legacy_skill_dir.exists()
+    assert not legacy_ws.exists()
+    assert mig_out["rewritten_markdown_files"] == 1
+    migrated_mem = (new_ws / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert ".agents/plugins/principal-architect-workspace/memory/MEMORY.md" in migrated_mem
+    assert ".agents/skills/principal-architect-workspace" not in migrated_mem
+    assert mig_out["repo_memory"]["config_updated"] is True
+    assert mig_out["repo_memory"]["seeded"] is True
+    assert mig_out["repo_memory"]["commands_run"] == [
+        "repo-memory seed",
+        "repo-memory seed-docs",
+        "repo-memory index",
+    ]
+    updated_cfg = json.loads(rm_cfg.read_text(encoding="utf-8"))
+    assert updated_cfg["doc_seeds"] == [
+        "SPEC.md",
+        ".agents/plugins/principal-architect-workspace/memory",
+    ]
+
+    # Also verify pa enroll --migrate --execution-mode autonomous --auto-approve-pr-plans
+    rc_enroll = pa_cli.main(
+        [
+            "enroll",
+            str(repo),
+            "--migrate",
+            "--execution-mode",
+            "autonomous",
+            "--auto-approve-pr-plans",
+        ],
+        runner=fake_runner,
+    )
+    assert rc_enroll == 0
+    with StateDB(new_ws / ".state" / "state.db") as db:
+        assert db.get_config("execution_mode") == "autonomous"
+        assert db.get_config("auto_approve_pr_plans") == "true"
+        assert db.get_config("memory_mode") == "external"
+
+
+
