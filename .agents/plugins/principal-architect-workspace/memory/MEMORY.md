@@ -10,7 +10,7 @@
 ## Active Projects
 | Project | Status | Modules | Context |
 |---|---|---|---|
-| pr-05-dogfood-self-enrollment-and-release | IN_PROGRESS (WO2/3; base `feat/pr-04-cockpit-auxpane-ui`) | dogfood-enrollment, release-v0.1.0, tests | [PROJECT.md](../pr-05-dogfood-self-enrollment-and-release/PROJECT.md) |
+| pr-05-dogfood-self-enrollment-and-release | IN_PROGRESS (WO3/3; base `feat/pr-04-cockpit-auxpane-ui`) | dogfood-enrollment, release-v0.1.0, tests | [PROJECT.md](../pr-05-dogfood-self-enrollment-and-release/PROJECT.md) |
 
 ## Recently Completed (last 5)
 | Project | Completed | Modules | Key Outcome |

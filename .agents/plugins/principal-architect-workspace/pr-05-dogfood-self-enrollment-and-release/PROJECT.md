@@ -39,9 +39,9 @@ work_orders:
     slug: wo2-sync-and-reconcile
     title: "Live state reconciliation (pa sync & pa status --json) and automated dogfood suite"
     complexity: standard
-    status: PENDING
-    attempts: 0
-    commit_sha: null
+    status: COMPLETED
+    attempts: 1
+    commit_sha: "8a315197bd78938e17da12eecdaa4f8d4d4107f5"
   - id: WO-05.3
     slug: wo3-release-v0-1-0
     title: "CHANGELOG.md, v0.1.0 release metadata verification, and README release notes"
