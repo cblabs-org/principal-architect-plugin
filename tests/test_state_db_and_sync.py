@@ -100,12 +100,13 @@ def test_workspace_dir_resolution(tmp_repo: Path) -> None:
 
 
 def test_workspace_dir_dogfood() -> None:
-    """Verify workspace_dir on this repository resolves to the active legacy workspace."""
+    """Verify workspace_dir on this repository resolves to the migrated plugins workspace."""
     repo_root = common.find_repo_root(Path(__file__).resolve())
     assert repo_root is not None
     ws = common.workspace_dir(repo_root)
     assert ws.exists()
-    assert ws == repo_root / common.LEGACY_WORKSPACE_REL
+    assert ws == repo_root / common.NEW_WORKSPACE_REL
+    assert not (repo_root / common.LEGACY_WORKSPACE_REL).exists()
 
 
 def test_daemon_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

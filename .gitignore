@@ -25,4 +25,5 @@ dist/
 
 # Dynamic configuration & state
 .agents/plugins.json
+.agents/plugins/principal-architect-workspace/.state/
 daemon/state/
