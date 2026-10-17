@@ -189,6 +189,9 @@
     const norm = String(rawStatus || "PENDING")
       .toLowerCase()
       .replace(/_/g, "-");
+    if (norm === "merged") {
+      return "status-graduated";
+    }
     return `status-${norm}`;
   }
 
@@ -198,6 +201,9 @@
     const latestAudit = pr.latest_audit;
     if (st === "GRADUATED") {
       return `🟣 Graduated${ghNum}`;
+    }
+    if (pr.is_merged) {
+      return `🟣 Merged${ghNum}`;
     }
     if (st === "AUDIT_APPROVED" || (latestAudit && latestAudit.verdict === "APPROVED")) {
       return `✅ Audit Approved${ghNum}`;
@@ -544,25 +550,144 @@
     return row;
   }
 
-  function buildPrCard(pr) {
+  function buildProgrammeCard(prog, options = {}) {
+    const isCollapsed = Boolean(options.collapsed);
     const card = document.createElement("div");
-    card.className = "pr-card";
+    card.className =
+      "programme-card collapsible" +
+      (isCollapsed ? " collapsed" : "") +
+      (options.historical ? " historical" : " active");
+
+    const header = document.createElement("div");
+    header.className = "programme-header";
+
+    const titleGroup = document.createElement("div");
+    titleGroup.className = "programme-title-group";
+
+    const toggleIcon = document.createElement("span");
+    toggleIcon.className = "pr-collapse-toggle";
+    toggleIcon.innerHTML = isCollapsed ? "&#9654;" : "&#9660;";
+    toggleIcon.setAttribute("aria-hidden", "true");
+    titleGroup.appendChild(toggleIcon);
+
+    const titleText = document.createElement("div");
+    titleText.className = "programme-title";
+    titleText.textContent = `🏛️ ${prog.title} (${prog.programme_id})`;
+    titleGroup.appendChild(titleText);
+
+    header.appendChild(titleGroup);
+
+    const statusPill = document.createElement("span");
+    statusPill.className = `status-pill ${statusClass(prog.status)}`;
+    statusPill.textContent = prog.status;
+    header.appendChild(statusPill);
+
+    header.addEventListener("click", (evt) => {
+      if (evt.target.closest("button, a, select, input")) {
+        return;
+      }
+      card.classList.toggle("collapsed");
+      const nowCollapsed = card.classList.contains("collapsed");
+      toggleIcon.innerHTML = nowCollapsed ? "&#9654;" : "&#9660;";
+    });
+
+    card.appendChild(header);
+
+    const body = document.createElement("div");
+    body.className = "programme-body";
+    body.innerHTML = `
+      <div class="programme-meta">
+        <span class="badge badge-muted">VCS: ${escapeHtml(prog.vcs_mode)}</span>
+        <span class="badge badge-muted">Memory: ${escapeHtml(prog.memory_mode)}</span>
+        <span class="badge badge-muted">Mode: ${escapeHtml(prog.execution_mode)}</span>
+        <span class="badge badge-muted">Model: ${escapeHtml(prog.architect_model)}</span>
+      </div>
+    `;
+    card.appendChild(body);
+    return card;
+  }
+
+  function buildPrCard(pr, options = {}) {
+    const isCollapsed = Boolean(options.collapsed);
+    const isHistorical =
+      Boolean(pr.is_merged) ||
+      String(pr.status).toUpperCase() === "GRADUATED" ||
+      String(pr.status).toUpperCase() === "CLOSED";
+
+    const card = document.createElement("div");
+    card.className =
+      "pr-card collapsible" +
+      (isCollapsed ? " collapsed" : "") +
+      (isHistorical ? " historical" : " active");
 
     const headerTop = document.createElement("div");
     headerTop.className = "pr-header-top";
-    headerTop.innerHTML = `
-      <div class="pr-title-group">
-        <span class="pr-id-code">${escapeHtml(pr.pr_id)}</span>
-        <span class="pr-title-text">${escapeHtml(pr.title)}</span>
-      </div>
-      <span class="status-pill ${statusClass(pr.status)}">${escapeHtml(formatPrStatusBadge(pr))}</span>
-    `;
+
+    const titleGroup = document.createElement("div");
+    titleGroup.className = "pr-title-group";
+
+    const toggleIcon = document.createElement("span");
+    toggleIcon.className = "pr-collapse-toggle";
+    toggleIcon.innerHTML = isCollapsed ? "&#9654;" : "&#9660;";
+    toggleIcon.setAttribute("aria-hidden", "true");
+    titleGroup.appendChild(toggleIcon);
+
+    const prIdCode = document.createElement("span");
+    prIdCode.className = "pr-id-code";
+    prIdCode.textContent = pr.pr_id;
+    titleGroup.appendChild(prIdCode);
+
+    const prTitleText = document.createElement("span");
+    prTitleText.className = "pr-title-text";
+    prTitleText.textContent = pr.title;
+    titleGroup.appendChild(prTitleText);
+
+    headerTop.appendChild(titleGroup);
+
+    const rightBadges = document.createElement("div");
+    rightBadges.className = "pr-header-right-badges";
+
+    if (pr.github_pr) {
+      const ghBadge = document.createElement("span");
+      ghBadge.className = "badge badge-muted";
+      ghBadge.textContent = `#${pr.github_pr}`;
+      rightBadges.appendChild(ghBadge);
+    }
+
+    const workOrders = Array.isArray(pr.work_orders) ? pr.work_orders : [];
+    if (workOrders.length > 0) {
+      const woCountBadge = document.createElement("span");
+      woCountBadge.className = "badge badge-muted";
+      woCountBadge.textContent = `${workOrders.length} WO${workOrders.length === 1 ? "" : "s"}`;
+      rightBadges.appendChild(woCountBadge);
+    }
+
+    const statusBadge = document.createElement("span");
+    statusBadge.className = `status-pill ${statusClass(pr.is_merged ? "merged" : pr.status)}`;
+    statusBadge.textContent = formatPrStatusBadge(pr);
+    rightBadges.appendChild(statusBadge);
+
+    headerTop.appendChild(rightBadges);
+
+    headerTop.addEventListener("click", (evt) => {
+      if (evt.target.closest("button, a, select, input")) {
+        return;
+      }
+      card.classList.toggle("collapsed");
+      const nowCollapsed = card.classList.contains("collapsed");
+      toggleIcon.innerHTML = nowCollapsed ? "&#9654;" : "&#9660;";
+    });
+
     card.appendChild(headerTop);
+
+    // Card Body (hidden when card has class .collapsed)
+    const cardBody = document.createElement("div");
+    cardBody.className = "pr-card-body";
 
     const branchLine = document.createElement("div");
     branchLine.className = "pr-branch-line";
     branchLine.textContent = `${pr.branch} → ${pr.base_branch}`;
-    card.appendChild(branchLine);
+    cardBody.appendChild(branchLine);
 
     const badgesRow = document.createElement("div");
     badgesRow.className = "pr-badges-row";
@@ -585,7 +710,7 @@
       badgesRow.appendChild(auditBadge);
     }
 
-    card.appendChild(badgesRow);
+    cardBody.appendChild(badgesRow);
 
     const prActions = document.createElement("div");
     prActions.className = "pr-actions";
@@ -625,18 +750,18 @@
     btnGradPr.addEventListener("click", () => graduatePr(pr.pr_id));
     prActions.appendChild(btnGradPr);
 
-    card.appendChild(prActions);
+    cardBody.appendChild(prActions);
 
-    const workOrders = Array.isArray(pr.work_orders) ? pr.work_orders : [];
     if (workOrders.length > 0) {
       const woList = document.createElement("div");
       woList.className = "wo-list";
       for (const wo of workOrders) {
         woList.appendChild(buildWorkOrderRow(wo));
       }
-      card.appendChild(woList);
+      cardBody.appendChild(woList);
     }
 
+    card.appendChild(cardBody);
     return card;
   }
 
@@ -661,25 +786,117 @@
 
     dagContainer.innerHTML = "";
 
-    for (const prog of programmes) {
-      const progCard = document.createElement("div");
-      progCard.className = "programme-card";
-      progCard.innerHTML = `
-        <div class="programme-header">
-          <div class="programme-title">🏛️ ${escapeHtml(prog.title)} (${escapeHtml(prog.programme_id)})</div>
-          <span class="status-pill ${statusClass(prog.status)}">${escapeHtml(prog.status)}</span>
-        </div>
-        <div class="programme-meta">
-          <span class="badge badge-muted">VCS: ${escapeHtml(prog.vcs_mode)}</span>
-          <span class="badge badge-muted">Memory: ${escapeHtml(prog.memory_mode)}</span>
-          <span class="badge badge-muted">Mode: ${escapeHtml(prog.execution_mode)}</span>
-        </div>
-      `;
-      dagContainer.appendChild(progCard);
-    }
+    // 1. Partition PRs into Active Development vs Historical & Merged
+    const activePrs = [];
+    const historicalPrs = [];
 
     for (const pr of prs) {
-      dagContainer.appendChild(buildPrCard(pr));
+      const isHistorical =
+        Boolean(pr.is_merged) ||
+        String(pr.status).toUpperCase() === "GRADUATED" ||
+        String(pr.status).toUpperCase() === "CLOSED";
+      if (isHistorical) {
+        historicalPrs.push(pr);
+      } else {
+        activePrs.push(pr);
+      }
+    }
+
+    // Active PRs: maintain forward stack/dependency order (PR-01 -> PR-02 -> PR-03...)
+    // Historical PRs: sorted in REVERSE CHRONOLOGICAL ORDER (most recent first: PR-05 -> PR-04 -> ...)
+    historicalPrs.sort((a, b) => {
+      if (b.github_pr && a.github_pr && b.github_pr !== a.github_pr) {
+        return b.github_pr - a.github_pr;
+      }
+      if (b.approved_at && a.approved_at && b.approved_at !== a.approved_at) {
+        return b.approved_at.localeCompare(a.approved_at);
+      }
+      return b.pr_id.localeCompare(a.pr_id, undefined, { numeric: true });
+    });
+
+    // 2. Zone 3.1: Active Development Section (at the TOP, expanded by default)
+    const activeSection = document.createElement("div");
+    activeSection.className = "dag-section active-dev-section";
+
+    const activeHeader = document.createElement("div");
+    activeHeader.className = "dag-section-header";
+    activeHeader.innerHTML = `
+      <div class="dag-section-title">
+        <span>⚡ Active Development</span>
+        <span class="badge ${activePrs.length > 0 ? "badge-live" : "badge-muted"}">${activePrs.length} Active</span>
+      </div>
+    `;
+    activeSection.appendChild(activeHeader);
+
+    // Active Programmes
+    for (const prog of programmes) {
+      const isProgActive =
+        String(prog.status).toUpperCase() !== "COMPLETED" &&
+        String(prog.status).toUpperCase() !== "ARCHIVED";
+      if (isProgActive) {
+        activeSection.appendChild(buildProgrammeCard(prog, { collapsed: false }));
+      }
+    }
+
+    if (activePrs.length === 0) {
+      const emptyActive = document.createElement("div");
+      emptyActive.className = "empty-state";
+      emptyActive.textContent = "✨ No active PRs in progress. All changes are graduated or merged.";
+      activeSection.appendChild(emptyActive);
+    } else {
+      for (const pr of activePrs) {
+        // Active PRs are EXPANDED by default
+        activeSection.appendChild(buildPrCard(pr, { collapsed: false }));
+      }
+    }
+    dagContainer.appendChild(activeSection);
+
+    // 3. Zone 3.2: Historical & Merged Section (at the BOTTOM, reverse chronological order and collapsed)
+    const completedProgs = programmes.filter(
+      (p) =>
+        String(p.status).toUpperCase() === "COMPLETED" ||
+        String(p.status).toUpperCase() === "ARCHIVED"
+    );
+
+    if (historicalPrs.length > 0 || completedProgs.length > 0) {
+      const histSection = document.createElement("div");
+      histSection.className = "dag-section historical-section";
+
+      const histHeader = document.createElement("div");
+      histHeader.className = "dag-section-header clickable";
+      histHeader.innerHTML = `
+        <div class="dag-section-title">
+          <span class="section-collapse-icon" aria-hidden="true">&#9660;</span>
+          <span>📜 Historical &amp; Merged</span>
+          <span class="badge badge-muted">${historicalPrs.length} PR${historicalPrs.length === 1 ? "" : "s"}</span>
+        </div>
+      `;
+
+      const histList = document.createElement("div");
+      histList.className = "historical-list";
+
+      // Completed programmes in history (collapsed by default)
+      for (const prog of completedProgs) {
+        histList.appendChild(buildProgrammeCard(prog, { collapsed: true, historical: true }));
+      }
+
+      // Historical PRs (collapsed by default in reverse chronological order)
+      for (const pr of historicalPrs) {
+        histList.appendChild(buildPrCard(pr, { collapsed: true }));
+      }
+
+      histHeader.addEventListener("click", () => {
+        histList.classList.toggle("collapsed");
+        const isCollapsed = histList.classList.contains("collapsed");
+        const icon = histHeader.querySelector(".section-collapse-icon");
+        if (icon) {
+          icon.innerHTML = isCollapsed ? "&#9654;" : "&#9660;";
+        }
+      });
+
+      histSection.appendChild(histHeader);
+      histSection.appendChild(histList);
+      dagContainer.appendChild(histSection);
     }
   }
 

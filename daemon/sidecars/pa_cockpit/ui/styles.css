@@ -603,7 +603,53 @@ body {
 .dag-container {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
+}
+
+.dag-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dag-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 0;
+}
+
+.dag-section-header.clickable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.dag-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.section-collapse-icon {
+  font-size: 9.5px;
+  color: var(--muted-foreground);
+  transition: transform 0.15s ease;
+  display: inline-block;
+  width: 12px;
+  text-align: center;
+}
+
+.historical-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.historical-list.collapsed {
+  display: none;
 }
 
 .programme-card {
@@ -616,6 +662,27 @@ body {
   border-radius: var(--pa-radius-sm);
 }
 
+.programme-card.collapsible .programme-header {
+  cursor: pointer;
+  user-select: none;
+}
+
+.programme-title-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.programme-card.collapsed .programme-body {
+  display: none;
+}
+
+.programme-card.collapsed {
+  gap: 0;
+  padding: 8px 10px;
+}
+
 .programme-header {
   display: flex;
   flex-wrap: wrap;
@@ -626,7 +693,7 @@ body {
 
 .programme-title {
   font-weight: 600;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--foreground);
 }
 
@@ -644,6 +711,41 @@ body {
   background: var(--background);
   border: 1px solid var(--border);
   border-radius: var(--pa-radius-sm);
+  transition: border-color 0.12s ease;
+}
+
+.pr-card.active {
+  border-left: 3px solid var(--primary);
+}
+
+.pr-card.historical {
+  background: color-mix(in srgb, var(--card) 45%, var(--background));
+}
+
+.pr-card.collapsible .pr-header-top {
+  cursor: pointer;
+  user-select: none;
+}
+
+.pr-collapse-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  font-size: 9.5px;
+  color: var(--muted-foreground);
+  transition: transform 0.15s ease;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.pr-card.collapsed .pr-card-body {
+  display: none;
+}
+
+.pr-card.collapsed {
+  gap: 0;
+  padding: 8px 10px;
 }
 
 .pr-header-top {
@@ -656,9 +758,17 @@ body {
 
 .pr-title-group {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
   min-width: 0;
+  flex: 1 1 auto;
+}
+
+.pr-header-right-badges {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
 }
 
 .pr-id-code {

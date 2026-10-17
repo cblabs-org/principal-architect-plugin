@@ -196,6 +196,48 @@ def _format_dt(val: Any) -> str | None:
     return str(val)
 
 
+def _is_pr_merged(
+    proj_doc: schemas.Document[schemas.ProjectSpec],
+    work_orders: list[dict[str, Any]],
+    git_trailers: dict[str, tuple[str, str | None]],
+    repo_root: Path,
+) -> bool:
+    """Determine whether a PR is merged into base_branch in git or has status GRADUATED/CLOSED."""
+    status_str = proj_doc.spec.status.value.upper()
+    if status_str in ("GRADUATED", "CLOSED"):
+        return True
+
+    ch = proj_doc.spec.charter
+    base_branch = ch.base_branch or "main"
+
+    # 1. Check if git trailers on HEAD (e.g. main) contain all of this PR's work orders
+    if work_orders:
+        all_wos_in_git = all(
+            (wo.get("wo_id", "") in git_trailers or wo.get("wo_id", "").upper() in git_trailers)
+            for wo in work_orders
+        )
+        if all_wos_in_git:
+            return True
+
+    # 2. Check if git ancestry confirms the branch is merged into base_branch
+    if (repo_root / ".git").is_dir():
+        for cand in (ch.branch, f"feat/{ch.slug}", ch.slug):
+            if not cand:
+                continue
+            try:
+                res = common.run(
+                    ["git", "merge-base", "--is-ancestor", cand, base_branch],
+                    cwd=repo_root,
+                    check=False,
+                )
+                if res.returncode == 0:
+                    return True
+            except (OSError, RuntimeError):
+                pass
+
+    return False
+
+
 def build_workspace_state(
     repo_root: str | Path,
     *,
@@ -241,6 +283,17 @@ def build_workspace_state(
             except Exception:  # noqa: BLE001, S112
                 continue
             status_val = getattr(prog_doc.spec.status, "value", str(prog_doc.spec.status))
+            prog_prs = [p.model_dump(mode="json") for p in prog_doc.spec.prs]
+            is_completed = (
+                status_val.upper() in ("COMPLETED", "GRADUATED", "ARCHIVED")
+                or (
+                    bool(prog_prs)
+                    and all(
+                        str(p.get("status", "")).upper() in ("GRADUATED", "CLOSED")
+                        for p in prog_prs
+                    )
+                )
+            )
             programmes.append(
                 {
                     "programme_id": prog_doc.spec.programme_id,
@@ -252,9 +305,11 @@ def build_workspace_state(
                     "memory_mode": memory_mode,
                     "execution_mode": execution_mode,
                     "architect_model": architect_model,
-                    "prs": [p.model_dump(mode="json") for p in prog_doc.spec.prs],
+                    "prs": prog_prs,
                     "approved_at": _format_dt(getattr(prog_doc.spec, "approved_at", None)),
                     "created_at": _format_dt(getattr(prog_doc.spec, "created_at", None)),
+                    "is_completed": is_completed,
+                    "is_active": not is_completed,
                 }
             )
 
@@ -488,6 +543,12 @@ def build_workspace_state(
                     _build_wo_entry(wdoc.spec.wo_id, wo_dir_name, None, wdoc)
                 )
 
+            is_merged = _is_pr_merged(proj_doc, work_orders, git_trailers, real_root)
+            is_active = not is_merged and proj_doc.spec.status.value.upper() not in (
+                "GRADUATED",
+                "CLOSED",
+                "CANCELLED",
+            )
             prs.append(
                 {
                     "pr_id": pr_id,
@@ -509,6 +570,8 @@ def build_workspace_state(
                     "pa_conversation_id": pa_conv_id,
                     "latest_audit": latest_audit,
                     "work_orders": work_orders,
+                    "is_merged": is_merged,
+                    "is_active": is_active,
                 }
             )
 
