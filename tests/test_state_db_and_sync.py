@@ -44,6 +44,9 @@ Test Suite Coverage Summary:
        - `test_pa_mode_get_set_and_invalid`, `test_pa_status_synthetic_and_dogfood`,
          `test_dogfood_self_enroll_sync_and_status_on_repo_workspace`: Verify `pa mode`,
          `pa sync`, and `pa status --json` against synthetic and live dogfood workspaces.
+       - `test_pa_status_and_migrate_legacy_project_tolerance`: Verify `pa status` and
+         `pa migrate` handle legacy frontmatter-less `PROJECT.md`/`WORKORDER.md` files
+         and corrupt YAML specs gracefully without crashing.
 """
 
 from __future__ import annotations
@@ -1395,6 +1398,142 @@ def test_pa_migrate_and_enroll_with_migrate_and_repo_memory_bridge(
         assert db.get_config("execution_mode") == "autonomous"
         assert db.get_config("auto_approve_pr_plans") == "true"
         assert db.get_config("memory_mode") == "external"
+
+
+def test_pa_status_and_migrate_legacy_project_tolerance(
+    tmp_path: Path,
+    daemon_home: Path,
+    fake_runner: FakeRunner,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Verify pa migrate and pa status tolerate legacy PROJECT.md/WORKORDER.md files and parse errors."""
+    import pa_cli
+
+    # --- Step 1: Set up a repository with legacy skill workspace containing H1, blockquote, archive, and corrupt PRs ---
+    repo = tmp_path / "repo_legacy_tolerance"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    fake_runner.set_response(["git", "remote", "get-url", "origin"], returncode=1)
+
+    legacy_ws = repo / common.LEGACY_WORKSPACE_REL
+    # 1. Legacy PR starting with '# H1' and legacy v1 WORKORDER.md
+    pr01 = legacy_ws / "pr-01-foundation"
+    pr01.mkdir(parents=True)
+    (pr01 / "PROJECT.md").write_text(
+        "# PROJECT: Foundation Architecture\n\n"
+        "**Base Branch:** `main`\n\n"
+        "## Status\n\n"
+        "COMPLETE\n",
+        encoding="utf-8",
+    )
+    wo01 = pr01 / "wo1-scaffold"
+    wo01.mkdir(parents=True)
+    (wo01 / "WORKORDER.md").write_text(
+        "---\n"
+        "name: foundation-wo1\n"
+        "description: Scaffold initial package layout\n"
+        "complexity: mechanical\n"
+        "---\n\n"
+        "# Work Order 1 — Scaffold Initial Package Layout\n\n"
+        "## Completion Report\n\n"
+        "- **Status:** ✅ Completed\n"
+        "- **Commit:** `abc1234`\n",
+        encoding="utf-8",
+    )
+
+    # 2. Legacy PR starting with '>' blockquote
+    pr02 = legacy_ws / "pr-02-blockquote"
+    pr02.mkdir(parents=True)
+    (pr02 / "PROJECT.md").write_text(
+        "> **Blockquote PR Charter**\n\n"
+        "Legacy specification without YAML frontmatter.\n",
+        encoding="utf-8",
+    )
+
+    # 3. Corrupt YAML frontmatter PR (genuine parse_error)
+    pr03 = legacy_ws / "pr-03-corrupt"
+    pr03.mkdir(parents=True)
+    (pr03 / "PROJECT.md").write_text(
+        "---\n"
+        "schema_version: 1\n"
+        "charter: [unclosed\n"
+        "---\n"
+        "# Corrupt PR\n",
+        encoding="utf-8",
+    )
+
+    # 4. Valid Split-Authority PR-04 to confirm remaining PRs continue processing
+    pr04 = legacy_ws / "pr-04-valid"
+    pr04.mkdir(parents=True)
+    (pr04 / "PROJECT.md").write_text(
+        common.render_template_file(
+            "PROJECT",
+            {
+                "pr_id": "PR-04",
+                "programme_id": "prog-demo",
+                "slug": "pr-04-valid",
+                "title": "Valid Split-Authority PR",
+                "branch": "feat/pr-04-valid",
+                "base_branch": "main",
+                "allowed_module": "src/",
+                "verification_command": "pytest",
+            },
+        ),
+        encoding="utf-8",
+    )
+
+    # 5. Archived legacy PROJECT.md
+    arch_pr = legacy_ws / "archive" / "pr-00-old"
+    arch_pr.mkdir(parents=True)
+    (arch_pr / "PROJECT.md").write_text("# Old Archived PR\n", encoding="utf-8")
+
+    # --- Step 2: Run pa enroll --migrate and verify warnings are emitted without crashing ---
+    capsys.readouterr()
+    rc_enroll = pa_cli.main(["enroll", str(repo), "--migrate"], runner=fake_runner)
+    assert rc_enroll == 0
+    enroll_err = capsys.readouterr().err
+    assert "Warning: PROJECT.md" in enroll_err
+    assert "pr-01-foundation/PROJECT.md" in enroll_err
+
+    # --- Step 3: Run pa status (human and --json) and verify legacy/parse_error reporting ---
+    rc_status = pa_cli.main(["status", str(repo)], runner=fake_runner)
+    assert rc_status == 0
+    human_out = capsys.readouterr().out
+    assert "PR-01 (pr-01-foundation): Foundation Architecture [GRADUATED] [legacy]" in human_out
+    assert "WO-01.1 [mechanical]: Scaffold Initial Package Layout — COMPLETED (abc1234) [legacy]" in human_out
+    assert "PR-02 (pr-02-blockquote): Blockquote PR Charter [PLANNED] [legacy]" in human_out
+    assert "PR-03 (pr-03-corrupt)" in human_out
+    assert "[parse_error]" in human_out
+    assert "PR-04 (pr-04-valid): Valid Split-Authority PR [PLANNED]" in human_out
+    assert "Unparseable / Legacy Files (" in human_out
+
+    rc_json = pa_cli.main(["status", str(repo), "--json"], runner=fake_runner)
+    assert rc_json == 0
+    status_data = json.loads(capsys.readouterr().out)
+    prs_by_id = {p["pr_id"]: p for p in status_data["prs"]}
+    assert set(prs_by_id.keys()) == {"PR-01", "PR-02", "PR-03", "PR-04"}
+    assert prs_by_id["PR-01"]["schema"] == "legacy"
+    assert prs_by_id["PR-01"]["status"] == "GRADUATED"
+    assert prs_by_id["PR-01"]["work_orders"][0]["id"] == "WO-01.1"
+    assert prs_by_id["PR-01"]["work_orders"][0]["schema"] == "legacy"
+    assert prs_by_id["PR-02"]["schema"] == "legacy"
+    assert prs_by_id["PR-03"]["parse_error"] is True
+    assert "schema" not in prs_by_id["PR-04"]
+    assert "parse_error" not in prs_by_id["PR-04"]
+    assert len(status_data["unparseable_files"]) == 5
+
+    # --- Step 4: Run pa migrate --upgrade-legacy --json to auto-generate minimal ProjectSpec frontmatter ---
+    rc_mig = pa_cli.main(
+        ["migrate", str(repo), "--upgrade-legacy", "--json"],
+        runner=fake_runner,
+    )
+    assert rc_mig == 0
+    mig_data = json.loads(capsys.readouterr().out)
+    upgraded_paths = [f["path"] for f in mig_data["legacy_files"] if f.get("upgraded")]
+    assert any("pr-01-foundation/PROJECT.md" in p for p in upgraded_paths)
+    assert any("pr-02-blockquote/PROJECT.md" in p for p in upgraded_paths)
+    assert any("archive/pr-00-old/PROJECT.md" in p for p in upgraded_paths)
+
 
 
 
