@@ -188,19 +188,22 @@ def _seed_enrolled_workspace(tmp_repo: Path, daemon_home: Path) -> Path:
 
 
 def test_sidecar_manifest_contract() -> None:
-    """Verify `daemon/sidecars/pa_cockpit/sidecar.json` matches SPEC.md §10.1 and Charter G1/R5."""
+    """Verify `daemon/sidecars/pa_cockpit/sidecar.json` matches SPEC.md §10.1 and Antigravity SidecarConfig schema."""
     sidecar_path = REPO_ROOT / "daemon" / "sidecars" / "pa_cockpit" / "sidecar.json"
     assert sidecar_path.is_file()
 
     data = json.loads(sidecar_path.read_text(encoding="utf-8"))
-    assert data["schema"] == "v1"
-    assert data["ui"]["entrypoint"] == "SIDECAR_UI_ENTRYPOINT_AUX_PANE"
-    assert "Principal Architect" in data["ui"]["title"]
-    assert data["main"] == [
-        "python3",
+    assert data["command"] == "python3"
+    assert data["args"] == [
         "${PLUGIN_ROOT}/workspace-plugin/principal-architect/scripts/cockpit.py",
     ]
-    assert data["restart_policy"] == "on_failure"
+    assert data["has_web_ui"] is True
+    assert data["restart_policy"] == "always"
+    assert data["display_name"] == "Principal Architect Cockpit"
+    assert data["ui_config"]["display_name"] == "Principal Architect"
+    entrypoints = [v["entrypoint"] for v in data["ui_config"]["views"]]
+    assert "SIDECAR_UI_ENTRYPOINT_SIDEBAR" in entrypoints
+    assert "SIDECAR_UI_ENTRYPOINT_AUX_PANE" in entrypoints
     assert data["env"]["PYTHONPATH"] == (
         "${PLUGIN_ROOT}/workspace-plugin/principal-architect/scripts"
     )

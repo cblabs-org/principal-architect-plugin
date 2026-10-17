@@ -607,16 +607,29 @@ Selected when `repo-memory-plugin` is **not** installed or enrolled on the repos
 
 ```json
 {
-  "ui": {
-    "entrypoints": ["SIDECAR_UI_ENTRYPOINT_AUX_PANE"],
-    "title": "Principal Architect",
-    "icon": "layers"
-  },
-  "main": [
-    "python3",
+  "command": "python3",
+  "args": [
     "${PLUGIN_ROOT}/workspace-plugin/principal-architect/scripts/cockpit.py"
   ],
-  "restart_policy": "on_failure",
+  "restart_policy": "always",
+  "display_name": "Principal Architect Cockpit",
+  "description": "Programme, Stacked PRs, Work Orders & Escalation Queue",
+  "has_web_ui": true,
+  "ui_config": {
+    "display_name": "Principal Architect",
+    "views": [
+      {
+        "path": "/",
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_SIDEBAR",
+        "title": "Principal Architect"
+      },
+      {
+        "path": "/",
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_AUX_PANE",
+        "title": "Principal Architect Cockpit"
+      }
+    ]
+  },
   "env": {
     "PYTHONPATH": "${PLUGIN_ROOT}/workspace-plugin/principal-architect/scripts"
   }

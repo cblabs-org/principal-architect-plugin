@@ -50,6 +50,26 @@ chmod +x "${REPO_ROOT}/scripts/enroll.sh" "${REPO_ROOT}/scripts/unenroll.sh"
 mkdir -p "${PA_BIN_DIR}"
 ln -sf "${PA_DAEMON_HOME}/workspace-plugin/principal-architect/scripts/pa_cli.py" "${PA_BIN_DIR}/pa"
 
+# Enable plugin and cockpit sidecar in Jetski / Antigravity Language Server if reachable
+LS_ADDR="${ANTIGRAVITY_LS_ADDRESS:-localhost:5387}"
+if [[ -n "${ANTIGRAVITY_CSRF_TOKEN:-}" ]] && curl -fsS "http://${LS_ADDR}/healthz" >/dev/null 2>&1; then
+  echo "Enabling pa-daemon plugin and pa_cockpit sidecar via JetboxWriteState..."
+  curl -sS -X POST \
+    "http://${LS_ADDR}/exa.language_server_pb.LanguageServerService/JetboxWriteState" \
+    -H "Content-Type: application/json" \
+    -H "x-codeium-csrf-token: ${ANTIGRAVITY_CSRF_TOKEN}" \
+    -d '{
+      "userConfig": {
+        "plugins": {
+          "pa-daemon": { "enabled": true }
+        },
+        "sidecars": {
+          "pa-daemon/pa_cockpit": { "enabled": true }
+        }
+      }
+    }' >/dev/null 2>&1 || true
+fi
+
 echo "Installed principal-architect-plugin:"
 echo "  PA_DAEMON_HOME: ${PA_DAEMON_HOME}"
 echo "  pa CLI:         ${PA_BIN_DIR}/pa"

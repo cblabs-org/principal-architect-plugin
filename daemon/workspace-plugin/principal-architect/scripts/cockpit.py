@@ -1427,11 +1427,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=os.environ.get("HOST", "127.0.0.1"),
         help="Bind host address (default: 127.0.0.1 or $HOST).",
     )
+    default_port = int(
+        os.environ.get("ANTIGRAVITY_SIDECAR_WEB_PORT")
+        or os.environ.get("PORT")
+        or "0"
+    )
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.environ.get("PORT", "0")),
-        help="Bind port (default: 0 ephemeral or $PORT).",
+        default=default_port,
+        help="Bind port (default: $ANTIGRAVITY_SIDECAR_WEB_PORT, $PORT, or 0 ephemeral).",
     )
     parser.add_argument(
         "--daemon-home",
