@@ -24,7 +24,7 @@ charter:
     - "pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py tests/test_github_and_local_git_bus.py tests/test_memory_modes.py tests/test_cockpit_api.py"
   charter_locked: true
   charter_hash: "814b217d643808d255816fe07d98603c8df048a20ba2d133b847e536f608f457"
-status: IN_PROGRESS
+status: STAGED_FOR_AUDIT
 approved_at: "2026-10-16T23:58:00Z"
 github_pr: null
 work_orders:
@@ -46,9 +46,9 @@ work_orders:
     slug: wo3-release-v0-1-0
     title: "CHANGELOG.md, v0.1.0 release metadata verification, and README release notes"
     complexity: mechanical
-    status: PENDING
-    attempts: 0
-    commit_sha: null
+    status: COMPLETED
+    attempts: 1
+    commit_sha: "02cb8de21d1b51c404fe66106991301ae9900997"
 ---
 
 # PR-05: Dogfood self-enrollment, workspace migration, state reconciliation, and v0.1.0 release
