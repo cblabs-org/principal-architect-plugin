@@ -65,9 +65,22 @@ _PRELOAD_SHIM_JS = (
     "window.sidecar = window.sidecar || {\n"
     "  getWorkspaceUris: function() { return []; },\n"
     "  onWorkspaceChange: function() {},\n"
-    "  ui: { toggleConversation: function() {} },\n"
+    "  ui: { toggleConversation: function() {}, toggleAuxPane: function() {} },\n"
     "  agent: { sendMessage: function() {} }\n"
     "};\n"
+    "window.addEventListener('message', function(event) {\n"
+    "  if (event.data && event.data.type === 'theme-change') {\n"
+    "    var payload = event.data.payload || {};\n"
+    "    var vars = payload.cssVariables || {};\n"
+    "    for (var k in vars) { document.documentElement.style.setProperty(k, vars[k]); }\n"
+    "    if (payload.themeType) {\n"
+    "      document.documentElement.setAttribute('data-theme', payload.themeType);\n"
+    "      document.documentElement.classList.toggle('dark', payload.themeType === 'dark');\n"
+    "      document.documentElement.classList.toggle('light', payload.themeType === 'light');\n"
+    "    }\n"
+    "    if (payload.theme) { document.documentElement.setAttribute('data-theme-name', payload.theme); }\n"
+    "  }\n"
+    "});\n"
 )
 
 
@@ -824,7 +837,7 @@ class CockpitRequestHandler(BaseHTTPRequestHandler):
                 last_keepalive = time.monotonic()
 
                 while not getattr(self.server, "_pa_stop_sse", False):
-                    time.sleep(0.1)
+                    time.sleep(0.75)
                     if getattr(self.server, "_pa_stop_sse", False):
                         break
                     cur_fp = _workspace_fingerprint(repo_root, self.server.daemon_home)

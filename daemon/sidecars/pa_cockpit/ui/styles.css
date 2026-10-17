@@ -3,27 +3,104 @@
  */
 
 :root {
-  --background: #0d1117;
-  --foreground: #e6edf3;
-  --card: #161b22;
-  --border: #30363d;
-  --primary: #388bfd;
-  --muted-foreground: #8b949e;
+  /* Default semantic design tokens (Light Theme fallback when running standalone or prior to host sync) */
+  --background: #ffffff;
+  --foreground: #1f2328;
+  --card: #f6f8fa;
+  --card-border: #d0d7de;
+  --border: #d0d7de;
+  --primary: #0969da;
+  --primary-foreground: #ffffff;
+  --secondary: #eaeef2;
+  --secondary-foreground: #1f2328;
+  --muted: #f3f4f6;
+  --muted-foreground: #656d76;
+  --error: #cf222e;
 
-  --pa-bg: var(--background, #0d1117);
-  --pa-fg: var(--foreground, #e6edf3);
-  --pa-card: var(--card, #161b22);
-  --pa-border: var(--border, #30363d);
-  --pa-primary: var(--primary, #388bfd);
-  --pa-muted: var(--muted-foreground, #8b949e);
+  /* Aliases for Cockpit namespace */
+  --pa-bg: var(--background);
+  --pa-fg: var(--foreground);
+  --pa-card: var(--card);
+  --pa-card-border: var(--card-border, var(--border));
+  --pa-border: var(--border);
+  --pa-primary: var(--primary);
+  --pa-primary-fg: var(--primary-foreground, #ffffff);
+  --pa-muted: var(--muted-foreground);
 
-  --pa-success: #2ea043;
-  --pa-warning: #d29922;
-  --pa-danger: #f85149;
-  --pa-purple: #a371f7;
+  /* Status Colors (Light Theme defaults) */
+  --pa-success: #1a7f37;
+  --pa-warning: #9a6700;
+  --pa-warning-fg: #ffffff;
+  --pa-danger: #cf222e;
+  --pa-purple: #8250df;
   --pa-radius: 8px;
   --pa-radius-sm: 5px;
   --pa-font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0d1117;
+    --foreground: #e6edf3;
+    --card: #161b22;
+    --card-border: #30363d;
+    --border: #30363d;
+    --primary: #388bfd;
+    --primary-foreground: #ffffff;
+    --secondary: #21262d;
+    --secondary-foreground: #e6edf3;
+    --muted: #21262d;
+    --muted-foreground: #8b949e;
+    --error: #f85149;
+
+    --pa-success: #2ea043;
+    --pa-warning: #d29922;
+    --pa-warning-fg: #0d1117;
+    --pa-danger: #f85149;
+    --pa-purple: #a371f7;
+  }
+}
+
+[data-theme="dark"] {
+  --background: #0d1117;
+  --foreground: #e6edf3;
+  --card: #161b22;
+  --card-border: #30363d;
+  --border: #30363d;
+  --primary: #388bfd;
+  --primary-foreground: #ffffff;
+  --secondary: #21262d;
+  --secondary-foreground: #e6edf3;
+  --muted: #21262d;
+  --muted-foreground: #8b949e;
+  --error: #f85149;
+
+  --pa-success: #2ea043;
+  --pa-warning: #d29922;
+  --pa-warning-fg: #0d1117;
+  --pa-danger: #f85149;
+  --pa-purple: #a371f7;
+}
+
+[data-theme="light"] {
+  --background: #ffffff;
+  --foreground: #1f2328;
+  --card: #f6f8fa;
+  --card-border: #d0d7de;
+  --border: #d0d7de;
+  --primary: #0969da;
+  --primary-foreground: #ffffff;
+  --secondary: #eaeef2;
+  --secondary-foreground: #1f2328;
+  --muted: #f3f4f6;
+  --muted-foreground: #656d76;
+  --error: #cf222e;
+
+  --pa-success: #1a7f37;
+  --pa-warning: #9a6700;
+  --pa-warning-fg: #ffffff;
+  --pa-danger: #cf222e;
+  --pa-purple: #8250df;
 }
 
 *,
@@ -60,7 +137,7 @@ body {
   gap: 8px;
   padding: 10px 12px;
   background: var(--card);
-  border: 1px solid var(--border);
+  border: 1px solid var(--card-border, var(--border));
   border-radius: var(--pa-radius);
 }
 
@@ -135,6 +212,11 @@ body {
   border-color: var(--primary);
 }
 
+.select-control option {
+  background: var(--card, var(--background));
+  color: var(--foreground);
+}
+
 .header-badges-row {
   display: flex;
   flex-wrap: wrap;
@@ -180,11 +262,17 @@ body {
   font-weight: 500;
   border-radius: 4px;
   cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.mode-btn:hover:not(.active) {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 6%, transparent);
 }
 
 .mode-btn.active {
   background: var(--primary);
-  color: #ffffff;
+  color: var(--primary-foreground, #ffffff);
   font-weight: 600;
 }
 
@@ -214,17 +302,19 @@ body {
 
 .badge-live {
   color: var(--pa-success);
-  border-color: rgba(46, 160, 67, 0.45);
+  border-color: color-mix(in srgb, var(--pa-success) 45%, transparent);
+  background: color-mix(in srgb, var(--pa-success) 10%, transparent);
 }
 
 .badge-live.disconnected {
   color: var(--pa-warning);
-  border-color: rgba(210, 153, 34, 0.45);
+  border-color: color-mix(in srgb, var(--pa-warning) 45%, transparent);
+  background: color-mix(in srgb, var(--pa-warning) 10%, transparent);
 }
 
 .badge-count {
   background: var(--pa-warning);
-  color: #0d1117;
+  color: var(--pa-warning-fg, #ffffff);
   border-color: transparent;
   font-weight: 700;
 }
@@ -237,64 +327,66 @@ body {
 
 .badge-muted {
   color: var(--muted-foreground);
+  background: var(--background);
 }
 
 .status-pill.status-approved,
 .status-pill.status-completed,
 .status-pill.status-audit-approved {
-  color: #3fb950;
-  border-color: rgba(46, 160, 67, 0.5);
-  background: rgba(46, 160, 67, 0.12);
+  color: var(--pa-success);
+  border-color: color-mix(in srgb, var(--pa-success) 45%, transparent);
+  background: color-mix(in srgb, var(--pa-success) 12%, transparent);
 }
 
 .status-pill.status-graduated {
   color: var(--pa-purple);
-  border-color: rgba(163, 113, 247, 0.5);
-  background: rgba(163, 113, 247, 0.14);
+  border-color: color-mix(in srgb, var(--pa-purple) 45%, transparent);
+  background: color-mix(in srgb, var(--pa-purple) 14%, transparent);
 }
 
 .status-pill.status-in-progress,
 .status-pill.status-running,
 .status-pill.status-staged-for-audit {
   color: var(--primary);
-  border-color: rgba(56, 139, 253, 0.5);
-  background: rgba(56, 139, 253, 0.12);
+  border-color: color-mix(in srgb, var(--primary) 45%, transparent);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
 }
 
 .status-pill.status-blocked,
 .status-pill.status-escalated,
 .status-pill.status-changes-requested {
   color: var(--pa-danger);
-  border-color: rgba(248, 81, 73, 0.5);
-  background: rgba(248, 81, 73, 0.12);
+  border-color: color-mix(in srgb, var(--pa-danger) 45%, transparent);
+  background: color-mix(in srgb, var(--pa-danger) 12%, transparent);
 }
 
 .status-pill.status-planned,
 .status-pill.status-pending {
   color: var(--pa-warning);
-  border-color: rgba(210, 153, 34, 0.45);
-  background: rgba(210, 153, 34, 0.1);
+  border-color: color-mix(in srgb, var(--pa-warning) 45%, transparent);
+  background: color-mix(in srgb, var(--pa-warning) 10%, transparent);
 }
 
 .charter-badge {
   font-family: var(--pa-font-mono);
   font-size: 10.5px;
-  color: #58a6ff;
-  border-color: rgba(56, 139, 253, 0.45);
-  background: rgba(56, 139, 253, 0.1);
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 45%, transparent);
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
 }
 
 .charter-badge.unlocked {
   color: var(--pa-warning);
-  border-color: rgba(210, 153, 34, 0.45);
+  border-color: color-mix(in srgb, var(--pa-warning) 45%, transparent);
+  background: color-mix(in srgb, var(--pa-warning) 10%, transparent);
 }
 
 .receipt-badge {
   font-family: var(--pa-font-mono);
   font-size: 10.5px;
-  color: #3fb950;
-  border-color: rgba(46, 160, 67, 0.45);
-  background: rgba(46, 160, 67, 0.1);
+  color: var(--pa-success);
+  border-color: color-mix(in srgb, var(--pa-success) 45%, transparent);
+  background: color-mix(in srgb, var(--pa-success) 10%, transparent);
 }
 
 .skill-pill {
@@ -318,11 +410,16 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--pa-radius-sm);
   cursor: pointer;
-  transition: border-color 0.12s ease, opacity 0.12s ease;
+  transition: border-color 0.12s ease, opacity 0.12s ease, background-color 0.12s ease;
 }
 
 .btn:hover:not(:disabled) {
   border-color: var(--primary);
+  background: color-mix(in srgb, var(--foreground) 5%, var(--background));
+}
+
+.btn:active:not(:disabled) {
+  background: color-mix(in srgb, var(--foreground) 10%, var(--background));
 }
 
 .btn:disabled {
@@ -338,15 +435,24 @@ body {
 .btn-primary {
   background: var(--primary);
   border-color: var(--primary);
-  color: #ffffff;
+  color: var(--primary-foreground, #ffffff);
   font-weight: 600;
 }
 
+.btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--primary) 88%, var(--foreground));
+  border-color: color-mix(in srgb, var(--primary) 88%, var(--foreground));
+}
+
 .btn-danger {
-  background: rgba(248, 81, 73, 0.16);
-  border-color: rgba(248, 81, 73, 0.6);
+  background: color-mix(in srgb, var(--pa-danger) 12%, var(--background));
+  border-color: color-mix(in srgb, var(--pa-danger) 45%, var(--border));
   color: var(--pa-danger);
   font-weight: 600;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--pa-danger) 20%, var(--background));
 }
 
 /* Action Toast */
@@ -362,6 +468,7 @@ body {
 .action-toast.error {
   border-color: var(--pa-danger);
   color: var(--pa-danger);
+  background: color-mix(in srgb, var(--pa-danger) 10%, var(--background));
 }
 
 .hidden {
@@ -398,7 +505,7 @@ body {
 .attention-inbox {
   padding: 10px 12px;
   background: var(--card);
-  border: 1px solid var(--border);
+  border: 1px solid var(--card-border, var(--border));
   border-radius: var(--pa-radius);
 }
 
@@ -449,6 +556,13 @@ body {
   color: var(--muted-foreground);
 }
 
+.attention-card-body {
+  font-size: 11.5px;
+  color: var(--foreground);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
 .requested-files-list {
   display: flex;
   flex-direction: column;
@@ -482,7 +596,7 @@ body {
 .programme-dag {
   padding: 10px 12px;
   background: var(--card);
-  border: 1px solid var(--border);
+  border: 1px solid var(--card-border, var(--border));
   border-radius: var(--pa-radius);
 }
 
