@@ -24,7 +24,7 @@ charter:
     - "pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py tests/test_github_and_local_git_bus.py tests/test_memory_modes.py tests/test_cockpit_api.py"
   charter_locked: true
   charter_hash: "814b217d643808d255816fe07d98603c8df048a20ba2d133b847e536f608f457"
-status: APPROVED
+status: IN_PROGRESS
 approved_at: "2026-10-16T23:58:00Z"
 github_pr: null
 work_orders:
@@ -32,9 +32,9 @@ work_orders:
     slug: wo1-self-enroll-and-migrate
     title: "Self-enrollment and legacy workspace migration (.agents/skills -> .agents/plugins)"
     complexity: standard
-    status: PENDING
-    attempts: 0
-    commit_sha: null
+    status: COMPLETED
+    attempts: 1
+    commit_sha: "51e0d55da424e160d0c1b6272a0b04517adff774"
   - id: WO-05.2
     slug: wo2-sync-and-reconcile
     title: "Live state reconciliation (pa sync & pa status --json) and automated dogfood suite"
@@ -137,7 +137,7 @@ work_orders:
 
 | WO ID | Slug & Branch | Base Branch | Complexity | Allowed Files | Summary | Status |
 |---|---|---|---|---|---|---|
-| **WO-05.1** | [`wo1-self-enroll-and-migrate`](wo1-self-enroll-and-migrate/WORKORDER.md)<br>`pr-05-dogfood-self-enrollment-and-release/wo1-self-enroll-and-migrate` | `feat/pr-04-cockpit-auxpane-ui` | `standard` | `.gitignore`, `.agents/skills/principal-architect-workspace/`, `.agents/plugins/principal-architect-workspace/`, `tests/test_state_db_and_sync.py` | Execute `scripts/install.sh` and `pa enroll .` in isolated `PA_DAEMON_HOME` to migrate `.agents/skills/principal-architect-workspace/` to `.agents/plugins/principal-architect-workspace/` via `git mv`, add `.state/` to root `.gitignore`, update `test_workspace_dir_dogfood`, and verify all committed `charter_hash`/`spec_hash` locks. | `PENDING` |
+| **WO-05.1** | [`wo1-self-enroll-and-migrate`](wo1-self-enroll-and-migrate/WORKORDER.md)<br>`pr-05-dogfood-self-enrollment-and-release/wo1-self-enroll-and-migrate` | `feat/pr-04-cockpit-auxpane-ui` | `standard` | `.gitignore`, `.agents/skills/principal-architect-workspace/`, `.agents/plugins/principal-architect-workspace/`, `tests/test_state_db_and_sync.py` | Execute `scripts/install.sh` and `pa enroll .` in isolated `PA_DAEMON_HOME` to migrate `.agents/skills/principal-architect-workspace/` to `.agents/plugins/principal-architect-workspace/` via `git mv`, add `.state/` to root `.gitignore`, update `test_workspace_dir_dogfood`, and verify all committed `charter_hash`/`spec_hash` locks. | `COMPLETED` (`51e0d55`, `rcpt_0b1f0c3a6d7a`) |
 | **WO-05.2** | [`wo2-sync-and-reconcile`](wo2-sync-and-reconcile/WORKORDER.md)<br>`pr-05-dogfood-self-enrollment-and-release/wo2-sync-and-reconcile` | `pr-05-dogfood-self-enrollment-and-release/wo1-self-enroll-and-migrate` | `standard` | `tests/test_state_db_and_sync.py` | Verify live `pa enroll` + `pa sync` + `pa status --json` state reconciliation on this repository and add permanent dogfood test `test_dogfood_self_enroll_sync_and_status_on_repo_workspace` in `tests/test_state_db_and_sync.py`. | `PENDING` |
 | **WO-05.3** | [`wo3-release-v0-1-0`](wo3-release-v0-1-0/WORKORDER.md)<br>`pr-05-dogfood-self-enrollment-and-release/wo3-release-v0-1-0` | `pr-05-dogfood-self-enrollment-and-release/wo2-sync-and-reconcile` | `mechanical` | `CHANGELOG.md`, `README.md`, `pyproject.toml`, `daemon/plugin.json`, `daemon/workspace-plugin/principal-architect/plugin.json` | Author `CHANGELOG.md` for `v0.1.0` (`2026-10-16`) across `PR-01`..`PR-05`, verify `0.1.0` version alignment across `pyproject.toml` and both `plugin.json` manifests, and update `README.md`. | `PENDING` |
 
@@ -146,3 +146,4 @@ work_orders:
 ## 4. Outcome & Session Log (Principal Architect)
 
 - **2026-10-16T23:58:00Z — Part II Implementation Plan Approved:** Recorded user's standing programme-level autonomous execution authorization (`status: APPROVED`, decomposition approved by user under programme authorization `2026-10-16`). Decomposed `PR-05` into 3 sequential single-writer Work Orders (`WO-05.1` `wo1-self-enroll-and-migrate`, `WO-05.2` `wo2-sync-and-reconcile`, `WO-05.3` `wo3-release-v0-1-0`).
+- **2026-10-17T00:07:13Z — `WO-05.1` (`wo1-self-enroll-and-migrate`) Completed:** Executed `scripts/install.sh` and `pa enroll . --memory-mode builtin --vcs-mode local_git` in an isolated temporary directory (`/tmp/pa-dogfood-pr05`), exercising the tracked `git mv` migration from `.agents/skills/principal-architect-workspace/` to `.agents/plugins/principal-architect-workspace/` and creating `.agents/plugins/principal-architect-workspace/.gitignore` (ignoring `.state/`). Added `.agents/plugins/principal-architect-workspace/.state/` to root `.gitignore`, removed the empty `.agents/skills` directory and all untracked runtime state, updated `test_workspace_dir_dogfood` in `tests/test_state_db_and_sync.py`, and verified all 5 `PROJECT.md` `charter_hash` locks (`PR-01`..`PR-05`), 21 `WORKORDER.md` `spec_hash` locks, and 4 `AUDIT-round-1.md` reports (`121 passed`, `ruff check` clean, commit `51e0d55da424e160d0c1b6272a0b04517adff774`, receipt `rcpt_0b1f0c3a6d7a`).
