@@ -684,6 +684,17 @@ def test_post_mutation_endpoints(
         assert grad_200["status"] == "GRADUATED"
         assert schemas.load_project(proj_md).spec.status == schemas.PRState.GRADUATED
 
+        # 6b. State-machine guards: GRADUATED PR and COMPLETED WO reject mutations with 409 Conflict
+        for guarded_route, guarded_payload in (
+            ("/api/pr/start", {"workspace": ws_str, "pr_id": "PR-01"}),
+            ("/api/pr/approve-plan", {"workspace": ws_str, "pr_id": "PR-01"}),
+            ("/api/pr/graduate", {"workspace": ws_str, "pr_id": "PR-01"}),
+            ("/api/wo/debug", {"workspace": ws_str, "wo_id": "WO-01.1"}),
+        ):
+            code_409, body_409 = _http_post_json(f"{base_url}{guarded_route}", guarded_payload)
+            assert code_409 == 409, f"Expected 409 for {guarded_route} on historical/completed target"
+            assert body_409["ok"] is False
+
         # 7. POST /api/sync
         code_sync, sync_res = _http_post_json(
             f"{base_url}/api/sync",

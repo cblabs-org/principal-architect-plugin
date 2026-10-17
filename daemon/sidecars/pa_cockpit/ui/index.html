@@ -15,10 +15,8 @@
       <div class="header-top-row">
         <div class="brand-block">
           <span class="brand-icon" aria-hidden="true">
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <polygon points="8 1.5 14.5 5 8 8.5 1.5 5 8 1.5"></polygon>
-              <polyline points="1.5 8 8 11.5 14.5 8"></polyline>
-              <polyline points="1.5 11 8 14.5 14.5 11"></polyline>
+            <svg class="ag-icon" width="16" height="16" viewBox="0 -960 960 960">
+              <path d="M480-412.31L60.39-636.15L480-860L900-636.15L480-412.31Zm0,156.15L83.39-467.38l62.84-34.46L480-324.46L814.15-501.85L877-467.38L480-256.16ZM480-100L83.39-311.23l62.84-34.46L480-168.31L814.15-345.69L877-311.23L480-100Zm0-380.61L774.92-636.15L480-791.69L185.46-636.15L480-480.61Z" />
             </svg>
           </span>
           <div class="brand-titles">
@@ -27,7 +25,10 @@
           </div>
         </div>
         <button id="btn-sync" type="button" class="btn btn-compact" title="Synchronize Git / GitHub and SQLite state">
-          &#8635; Sync
+          <svg class="ag-icon" width="13" height="13" viewBox="0 -960 960 960" aria-hidden="true">
+            <path d="M481.54-180q-125.62,0-212.81-87.17T181.54-479.94t87.19-212.83T481.54-780q70.15,0 132.77,31.19t104.15,88.04V-780h60v244.61H533.85v-60h158q-31.62-57.92-87.69-91.27T481.54-720q-100,0-170,70t-70,170t70,170t170,70q77,0 139-44t87-116h63.23Q743.54-302.08 663.5-241.04T481.54-180Z" />
+          </svg>
+          <span>Sync</span>
         </button>
       </div>
 
@@ -46,7 +47,11 @@
           Memory: Built-in
         </span>
         <span id="badge-sse-status" class="badge badge-live" title="Server-Sent Events Connection Status">
-          ● Live SSE
+          <span class="ag-status-dot" aria-hidden="true">
+            <span class="ag-status-dot-core"></span>
+            <span class="ag-status-dot-ping animate-unread-ping"></span>
+          </span>
+          <span>Live SSE</span>
         </span>
       </div>
 
@@ -79,7 +84,12 @@
     <!-- Zone 2: 🔔 Human Attention Needed Inbox -->
     <section id="zone-attention" class="attention-inbox" aria-labelledby="attention-heading">
       <div class="section-header">
-        <h2 id="attention-heading" class="section-title">Human Attention Needed</h2>
+        <h2 id="attention-heading" class="section-title">
+          <svg class="ag-icon" width="13" height="13" viewBox="0 -960 960 960" aria-hidden="true">
+            <path d="M180-204.62v-60h72.31V-563.08q0-80.69 49.81-142.69T430-785.08V-810q0-20.83 14.57-35.42T479.95-860t35.43,14.58T530-810v24.92q78.08,17.31 127.88,79.31t49.81,142.69v298.46H780v60H180ZM479.93-92.31q-29.85,0-51.05-21.24t-21.19-51.07H552.31q0,29.92-21.26,51.11T479.93-92.31ZM312.31-264.61H647.69V-563.08q0-69.46-49.12-118.58T480-730.77T361.42-681.65T312.31-563.08v298.46Z" />
+          </svg>
+          <span>Human Attention Needed</span>
+        </h2>
         <span id="attention-count" class="badge badge-count zero">0</span>
       </div>
       <div id="attention-list" class="attention-list">
@@ -90,7 +100,12 @@
     <!-- Zone 3: Interactive Programme -> Stacked PR -> Work Order DAG -->
     <section id="zone-dag" class="programme-dag" aria-labelledby="dag-heading">
       <div class="section-header">
-        <h2 id="dag-heading" class="section-title">Programme &amp; Stacked PR DAG</h2>
+        <h2 id="dag-heading" class="section-title">
+          <svg class="ag-icon" width="13" height="13" viewBox="0 -960 960 960" aria-hidden="true">
+            <path d="M450-180V-467.85l-210-210V-560H180V-780H400v60H282.15L510-492.15V-180H450ZM580.15-536.77l-43.38-43.38L677.85-720H560v-60H780v220H720V-677.85L580.15-536.77Z" />
+          </svg>
+          <span>Programme &amp; Stacked PR DAG</span>
+        </h2>
         <span id="dag-pr-count" class="badge badge-muted">0 PRs</span>
       </div>
       <div id="dag-container" class="dag-container">

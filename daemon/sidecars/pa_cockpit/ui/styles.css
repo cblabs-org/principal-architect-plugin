@@ -1,83 +1,48 @@
-/**
- * Principal Architect Plugin (c) 2026 Matt McNeill
- * https://github.com/matthewmcneill/principal-architect-plugin
- * SPDX-License-Identifier: Apache-2.0
- *
- * Module: daemon/sidecars/pa_cockpit/ui/styles.css
- *
- * Responsibility:
- *   Adaptive stylesheet for the Principal Architect Cockpit AuxPane and Sidebar UI
- *   (optimized for 320px–520px sidebar widths). Synchronizes seamlessly with the
- *   Antigravity IDE host theme via injected CSS custom properties while
- *   providing standalone light/dark `color-mix()` derived surface fallbacks.
- *
- * Architecture & Token Summary:
- *   1. Adaptive Host Theme Tokens:
- *      - `--background`, `--foreground`: Primary surface and text colors pushed by `preload.js`.
- *      - `--primary`, `--primary-foreground`: Interactive accent and active mode toggle colors.
- *      - `--card`, `--card-border`, `--border`: Elevated container surfaces and hairline dividers.
- *      - `--muted`, `--muted-foreground`: De-emphasized metadata labels and empty-state text.
- *      - `--secondary`, `--secondary-foreground`: Subtle button and pill surface tokens.
- *   2. Semantic Status Palette:
- *      - `--pa-emerald` / `--pa-success`: Approved audits, verified SHA-256 receipts, and live SSE badges.
- *      - `--pa-amber` / `--pa-warning`: Planned/pending states, unlocked charters, and P1 attention items.
- *      - `--pa-red` / `--pa-danger`: Blocked Work Orders, changes-requested audits, and P0 escalations.
- *      - `--pa-purple`: Graduated and merged PR lifecycle pills.
- *      - `--pa-blue` / `--pa-link`: In-progress execution, active PR left-border accents, and locked Charter badges.
- *      - `--pa-slate`: Muted metadata badges, historical cards, and secondary counters.
- *   3. Layout Zones:
- *      - Zone 1 (`.cockpit-header`): Brand header, workspace selector, VCS/Memory/SSE badges,
- *        segmented Monitored/Autonomous mode toggle, and Architect model selector.
- *      - Zone 2 (`.attention-inbox`): Priority-ordered (`priority-p0`, `priority-p1`, `priority-p2`)
- *        "🔔 Human Attention Needed" queue with file-expansion checkboxes and HITL action buttons.
- *      - Zone 3 (`.programme-dag`): Collapsible Programme cards, Stacked PR cards (`.pr-card.active`
- *        and `.pr-card.historical`), and nested Work Order rows (`.wo-row`).
+/* Principal Architect Cockpit AuxPane Styles
+ * Native Antigravity Design System, CONTRAST_CONFIG Surface Architecture,
+ * Google Symbols wght300 SVG Iconography & Keyframe Animations
+ * (320px-520px AuxPane width friendly).
  */
 
 :root {
-  color-scheme: light; /* Default color scheme prior to dark-mode media query or host `data-theme` sync */
+  color-scheme: light;
 
-  /* Default light-theme seed tokens & color-mix() derived surfaces */
-  --background: #f9f9f9; /* Primary viewport background surface */
-  --foreground: #101010; /* Primary body and heading text color */
-  --primary: #007acc; /* Primary interactive brand accent and active toggle fill */
-  --primary-foreground: #ffffff; /* Foreground text color on `--primary` surfaces */
-  --card: color-mix(in srgb, var(--background) 70%, #ffffff); /* Elevated zone and card container surface */
-  --card-border: color-mix(in srgb, var(--foreground) 7.5%, var(--card)); /* Border color for top-level zone containers */
-  --border: rgba(0, 0, 0, 0.075); /* Standard hairline border for controls, rows, and badges */
-  --muted: color-mix(in srgb, #000000 2.5%, var(--background)); /* Subtle background fill for muted containers */
-  --muted-foreground: color-mix(in srgb, var(--foreground) 50%, var(--background)); /* De-emphasized label, subtitle, and metadata text color */
-  --secondary: color-mix(in srgb, #000000 6%, var(--background)); /* Secondary control fill color */
-  --secondary-foreground: color-mix(in srgb, var(--foreground) 75%, var(--background)); /* Foreground text color on `--secondary` surfaces */
-  --error: #f05151; /* Host error state color token */
+  /* Antigravity LIGHT_DEFAULTS seed tokens & CONTRAST_CONFIG derived surfaces */
+  --background: #f9f9f9;
+  --foreground: #101010;
+  --primary: #007acc;
+  --primary-foreground: #ffffff;
+  --card: color-mix(in srgb, var(--background) 70%, #ffffff);
+  --card-border: color-mix(in srgb, var(--foreground) 7.5%, var(--card));
+  --border: rgba(0, 0, 0, 0.075);
+  --muted: color-mix(in srgb, #000000 2.5%, var(--background));
+  --muted-foreground: color-mix(in srgb, var(--foreground) 50%, var(--background));
+  --secondary: color-mix(in srgb, #000000 6%, var(--background));
+  --secondary-foreground: color-mix(in srgb, var(--foreground) 75%, var(--background));
+  --error: #f05151;
 
   /* Aliases for Cockpit namespace */
-  --pa-bg: var(--background); /* Cockpit alias for primary background */
-  --pa-fg: var(--foreground); /* Cockpit alias for primary foreground text */
-  --pa-card: var(--card); /* Cockpit alias for card container surface */
-  --pa-card-border: var(--card-border, var(--border)); /* Cockpit alias for card border */
-  --pa-border: var(--border); /* Cockpit alias for standard hairline border */
-  --pa-primary: var(--primary); /* Cockpit alias for primary accent */
-  --pa-primary-fg: var(--primary-foreground, #ffffff); /* Cockpit alias for text on primary buttons */
-  --pa-muted: var(--muted-foreground); /* Cockpit alias for muted text */
+  --pa-bg: var(--background);
+  --pa-fg: var(--foreground);
+  --pa-card: var(--card);
+  --pa-card-border: var(--card-border, var(--border));
+  --pa-border: var(--border);
+  --pa-primary: var(--primary);
+  --pa-primary-fg: var(--primary-foreground, #ffffff);
+  --pa-muted: var(--muted-foreground);
 
-  /* Semantic light-theme status palette tokens */
-  --pa-success: #58983f; /* Emerald green for approved audits, verified receipts, and live SSE */
-  --pa-emerald: var(--pa-success); /* Semantic alias for emerald success state */
-  --pa-warning: #ac830b; /* Amber gold for pending/planned states and P1 attention items */
-  --pa-amber: var(--pa-warning); /* Semantic alias for amber warning state */
-  --pa-warning-fg: #ffffff; /* Foreground text on solid warning badges */
-  --pa-danger: var(--error, #f05151); /* Crimson red for blocked WOs, P0 escalations, and deny actions */
-  --pa-red: var(--pa-danger); /* Semantic alias for red danger/blocker state */
-  --pa-purple: #8f519f; /* Royal purple for graduated and merged PR lifecycle states */
-  --pa-link: #3e8ed1; /* Blue accent for interactive links and active indicators */
-  --pa-blue: var(--pa-link); /* Semantic alias for active in-progress and locked charter accents */
-  --pa-slate: var(--muted-foreground); /* Semantic alias for neutral/historical metadata badges */
+  /* Antigravity WEB_STATUS_COLORS_LIGHT & Tailwind palette tokens */
+  --pa-success: #58983f;
+  --pa-warning: #ac830b;
+  --pa-warning-fg: #ffffff;
+  --pa-danger: var(--error, #f05151);
+  --pa-purple: #8f519f;
+  --pa-link: #3e8ed1;
 
   /* Radii, Typography & Easings */
-  --pa-radius: 6px; /* Outer border radius for top-level zone containers */
-  --pa-radius-sm: 5px; /* Inner border radius for cards, buttons, and inputs */
-  --pa-font-sans: var( /* Sans-serif UI font stack inheriting from host `--vscode-font-family` */
+  --pa-radius: 6px;
+  --pa-radius-sm: 5px;
+  --pa-font-sans: var(
     --vscode-font-family,
     -apple-system,
     BlinkMacSystemFont,
@@ -87,7 +52,7 @@
     Arial,
     sans-serif
   );
-  --pa-font-mono: var( /* Monospace font stack for IDs, hashes, and paths inheriting from `--editor-font-family` */
+  --pa-font-mono: var(
     --editor-font-family,
     ui-monospace,
     SFMono-Regular,
@@ -96,15 +61,15 @@
     Consolas,
     monospace
   );
-  --ease-expo-out: cubic-bezier(0.16, 1, 0.3, 1); /* Exponential ease-out curve for smooth layout transitions */
-  --ease-cubic-out: cubic-bezier(0.23, 1, 0.32, 1); /* Cubic ease-out curve for interactive hover/toggle states */
+  --ease-expo-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-cubic-out: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
 
-    /* Default dark-theme seed tokens & color-mix() derived surfaces */
+    /* Antigravity DARK_DEFAULTS seed tokens & CONTRAST_CONFIG derived surfaces */
     --background: #101010;
     --foreground: #cccccc;
     --primary: #007acc;
@@ -118,7 +83,7 @@
     --secondary-foreground: color-mix(in srgb, var(--foreground) 75%, var(--background));
     --error: #de5555;
 
-    /* Semantic dark-theme status palette tokens */
+    /* Antigravity WEB_STATUS_COLORS_DARK & Tailwind palette tokens */
     --pa-success: #7aae66;
     --pa-warning: #e8975f;
     --pa-warning-fg: #101010;
@@ -176,13 +141,145 @@
   --pa-link: #3e8ed1;
 }
 
+/* ==========================================================================
+   Antigravity Keyframe Animations (from tailwind_theme.css & LoadingSpinner)
+   ========================================================================== */
+
+@keyframes ag-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes unread-ping {
+  0% {
+    transform: scale(0.375);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(0.375);
+    opacity: 0;
+  }
+}
+
+@keyframes fade-in {
+  0% {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes shimmer-text {
+  0% {
+    -webkit-mask-position: 100% 50%;
+    mask-position: 100% 50%;
+  }
+  68%,
+  100% {
+    -webkit-mask-position: 0% 50%;
+    mask-position: 0% 50%;
+  }
+}
+
+.animate-spin {
+  animation: ag-spin 0.9s linear infinite;
+}
+
+.animate-unread-ping {
+  animation: unread-ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.animate-shimmer-text {
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    rgb(0 0 0 / 0.57) 0%,
+    rgb(0 0 0 / 0.57) 35%,
+    rgb(0 0 0 / 0.85) 43%,
+    rgb(0 0 0 / 1) 50%,
+    rgb(0 0 0 / 0.85) 57%,
+    rgb(0 0 0 / 0.57) 65%,
+    rgb(0 0 0 / 0.57) 100%
+  );
+  mask-image: linear-gradient(
+    90deg,
+    rgb(0 0 0 / 0.57) 0%,
+    rgb(0 0 0 / 0.57) 35%,
+    rgb(0 0 0 / 0.85) 43%,
+    rgb(0 0 0 / 1) 50%,
+    rgb(0 0 0 / 0.85) 57%,
+    rgb(0 0 0 / 0.57) 65%,
+    rgb(0 0 0 / 0.57) 100%
+  );
+  -webkit-mask-size: 300% 100%;
+  mask-size: 300% 100%;
+  animation: shimmer-text 1.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-spin,
+  .animate-unread-ping,
+  .animate-shimmer-text {
+    animation: none !important;
+    -webkit-mask-image: none !important;
+    mask-image: none !important;
+  }
+}
+
+/* Shared SVG icon utility (Google Symbols wght300 24px geometry) */
+.ag-icon {
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+  fill: currentColor;
+  user-select: none;
+}
+
+/* Antigravity AttentionDot / Status Dot */
+.ag-status-dot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+}
+
+.ag-status-dot-core {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background-color: currentColor;
+}
+
+.ag-status-dot-ping {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background-color: currentColor;
+  opacity: 0;
+  pointer-events: none;
+}
+
 *,
 *::before,
 *::after {
   box-sizing: border-box;
 }
 
-/* Subtle scrollbar styling */
+/* Antigravity .scrollbar-muted convention */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -248,9 +345,9 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
-  color: var(--muted-foreground);
+  width: 18px;
+  height: 18px;
+  color: var(--primary);
   flex-shrink: 0;
 }
 
@@ -359,6 +456,9 @@ body {
 }
 
 .mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   border: none;
   background: transparent;
   color: var(--muted-foreground);
@@ -392,10 +492,10 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 1px 6px;
+  padding: 1.5px 6.5px;
   font-size: 10.5px;
   font-weight: 500;
-  line-height: 1.4;
+  line-height: 1.35;
   border-radius: 9999px;
   border: 1px solid var(--border);
   background: var(--muted);
@@ -590,6 +690,7 @@ body {
   border: 1px solid var(--card-border, var(--border));
   background: var(--card);
   color: var(--foreground);
+  animation: fade-in 150ms var(--ease-expo-out);
 }
 
 .action-toast.error {
@@ -613,6 +714,9 @@ body {
 
 .section-title {
   margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
@@ -652,6 +756,7 @@ body {
   border: 1px solid var(--card-border, var(--border));
   border-left: 2px solid var(--pa-warning);
   border-radius: var(--pa-radius);
+  animation: fade-in 150ms var(--ease-expo-out);
 }
 
 .attention-card.priority-p0 {
@@ -758,19 +863,31 @@ body {
 .dag-section-title {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   font-size: 11px;
   font-weight: 600;
   color: var(--secondary-foreground);
 }
 
-.section-collapse-icon {
-  font-size: 9px;
+/* Smooth ChevronRightIcon rotation (90deg when expanded, 0deg when collapsed) */
+.section-collapse-icon,
+.pr-collapse-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
   color: var(--muted-foreground);
-  transition: transform 0.15s var(--ease-cubic-out);
-  display: inline-block;
-  width: 12px;
-  text-align: center;
+  transform: rotate(90deg);
+  transition: transform 150ms var(--ease-cubic-out), color 150ms var(--ease-cubic-out);
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.section-collapse-icon.is-collapsed,
+.programme-card.collapsed .pr-collapse-toggle,
+.pr-card.collapsed .pr-collapse-toggle {
+  transform: rotate(0deg);
 }
 
 .historical-list {
@@ -806,7 +923,7 @@ body {
 .programme-title-group {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
 }
 
@@ -869,18 +986,6 @@ body {
   user-select: none;
 }
 
-.pr-collapse-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 12px;
-  font-size: 9px;
-  color: var(--muted-foreground);
-  transition: transform 0.15s var(--ease-cubic-out);
-  user-select: none;
-  flex-shrink: 0;
-}
-
 .pr-card-body {
   display: flex;
   flex-direction: column;
@@ -907,7 +1012,7 @@ body {
 .pr-title-group {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
   flex: 1 1 auto;
 }
@@ -937,6 +1042,9 @@ body {
 }
 
 .pr-branch-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-family: var(--pa-font-mono);
   font-size: 10px;
   color: var(--muted-foreground);

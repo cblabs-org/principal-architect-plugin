@@ -10,12 +10,17 @@
  *   Cockpit (`SPEC.md` §10.3, PR-04 Charter G2/R5). Synchronizes active repository
  *   workspaces with the Antigravity host bridge (`window.sidecar`), subscribes to
  *   live Server-Sent Events (`/api/events`) with `/api/state` HTTP fallback, and
- *   renders the three-zone operational cockpit interface.
+ *   renders the three-zone operational cockpit interface using native Antigravity
+ *   Google Symbols wght300 SVG iconography and keyframe animations.
  *
  * Component / Function Summary:
- *   DOM & Transport Utilities:
+ *   DOM, Icon & Transport Utilities:
  *     - escapeHtml(raw): Escape HTML special characters for safe DOM interpolation.
+ *     - iconSvg(name, size, extraClass): Render an inline Antigravity Google Symbol wght300 SVG icon.
+ *     - statusDotHtml(ping): Render an Antigravity AttentionDot / live status dot with optional ping animation.
+ *     - statusIconFor(rawStatus): Map a lifecycle status token to its corresponding Antigravity SVG icon.
  *     - showToast(message, isError): Render a transient status or error toast in Zone 1.
+ *     - isOpenableConversationId(conversationId): Check whether a conversation ID is a real IDE thread vs synthetic fallback.
  *     - jumpToConversation(conversationId): Focus an agent thread in the host IDE sidebar.
  *     - postJson(endpoint, payload): Execute a JSON POST request against the Cockpit API.
  *   Mutation Actions:
@@ -34,7 +39,7 @@
  *     - renderZone2Attention(state): Render the priority-ordered "🔔 Human Attention Needed" inbox.
  *   Zone 3 Active/Historical DAG:
  *     - statusClass(rawStatus): Normalize a PR or Work Order status into a CSS pill class.
- *     - formatPrStatusBadge(pr): Format the human-readable lifecycle and audit badge for a PR card.
+ *     - formatPrStatusBadge(pr): Format the SVG-badged lifecycle and audit pill HTML for a PR card.
  *     - buildWorkOrderRow(wo): Construct a DOM row for a single Work Order with receipt and skill pills.
  *     - buildProgrammeCard(prog, options): Construct a collapsible Programme summary card.
  *     - buildPrCard(pr, options): Construct a collapsible Stacked PR card with Charter lock and WO list.
@@ -56,8 +61,102 @@
     workspaces: [], // Enrolled repository metadata records from GET /api/workspaces.
     activeWorkspace: "", // Repository root path or file:// URI currently displayed.
     latestState: null, // Most recent workspace state payload from /api/state or SSE.
+    lastRenderedStateJson: "", // Serialized JSON of last rendered state to skip no-op DOM rebuilds.
     eventSource: null, // Active EventSource instance subscribed to /api/events.
+    prCollapsedOverrides: new Map(), // User-toggled collapse state keyed by pr_id.
+    programmeCollapsedOverrides: new Map(), // User-toggled collapse state keyed by programme_id.
+    historicalSectionCollapsed: false, // User-toggled collapse state for the Historical & Merged section.
   };
+
+  /**
+   * Canonical Antigravity Google Symbols wght300 24px SVG path data (`viewBox="0 -960 960 960"`).
+   * Matches `agent_ui_toolkit/src/icons/generated/*.tsx` and `LoadingSpinner.tsx`.
+   */
+  const GOOGLE_SYMBOL_PATHS = {
+    progress_activity:
+      "M332.55-129.9q-69.29-29.9-121.02-81.63T129.9-332.55T100-480.35t29.96-147.5t81.58-120.61t121.04-81.58T480-860q12.75,0 21.37,8.63T510-829.99t-8.62,21.37T480-800q-133,0-226.5,93.5T160-480t93.5,226.5T480-160t226.5-93.5T800-480q0-12.77 8.63-21.38T830.01-510t21.37,8.62T860-480q0,77.99-29.96,147.42T748.46-211.54T627.85-129.96T480.35-100t-147.8-29.9Z",
+    check_circle:
+      "M423.23-309.85L692.15-578.77L650-620.92L423.23-394.15l-114-114L267.08-466L423.23-309.85ZM480.07-100q-78.84,0-148.2-29.92T211.18-211.13T129.93-331.76T100-479.93t29.92-148.2t81.21-120.68t120.63-81.25T479.93-860t148.2,29.92t120.68,81.21t81.25,120.63T860-480.07t-29.92,148.2T748.87-211.18T628.24-129.93T480.07-100ZM480-160q134,0 227-93t93-227T707-707T480-800T253-707T160-480t93,227t227,93Z",
+    verified:
+      "M352.46-85.39L281.08-205.69L145.54-235.39l13.23-139.54L66.93-480l91.85-105.08L145.54-724.61l135.54-29.69l71.38-120.31L480-820.46l127.54-54.15l71.38,120.31l135.54,29.69L801.23-585.08L893.07-480L801.23-374.92l13.23,139.54L678.92-205.69L607.54-85.39L480-139.54L352.46-85.39ZM378-162l102-43.23L583.23-162L640-258l110-25.23L740-396l74-84l-74-85.23L750-678L640-702l-58-96L480-754.77L376.77-798L320-702L210-678l10,112.77L146-480l74,84L210-282l110,24l58,96ZM438-351.85L650.15-564L608-607.38l-170,170l-86-84.77L309.85-480L438-351.85Z",
+    chevron_right:
+      "M517.85-480l-184-184L376-706.15L602.15-480L376-253.85L333.85-296l184-184Z",
+    refresh:
+      "M481.54-180q-125.62,0-212.81-87.17T181.54-479.94t87.19-212.83T481.54-780q70.15,0 132.77,31.19t104.15,88.04V-780h60v244.61H533.85v-60h158q-31.62-57.92-87.69-91.27T481.54-720q-100,0-170,70t-70,170t70,170t170,70q77,0 139-44t87-116h63.23Q743.54-302.08 663.5-241.04T481.54-180Z",
+    lock:
+      "M252.31-100q-29.92,0-51.11-21.19T180-172.31V-547.69q0-29.92 21.19-51.11T252.31-620H300v-80q0-74.92 52.54-127.46T480-880t127.46,52.54T660-700v80h47.69q29.92,0 51.11,21.19T780-547.69v375.38q0,29.92-21.19,51.11T707.69-100H252.31Zm0-60H707.69q5.39,0 8.85-3.46t3.46-8.85V-547.69q0-5.39-3.46-8.85T707.69-560H252.31q-5.39,0-8.85,3.46T240-547.69v375.38q0,5.39 3.46,8.85t8.85,3.46ZM529.58-310.42Q550-330.85 550-360t-20.42-49.58T480-430t-49.58,20.42T410-360t20.42,49.58T480-290t49.58-20.42ZM360-620H600v-80q0-50-35-85t-85-35t-85,35t-35,85v80Z",
+    lock_open:
+      "M252.31-620H600v-80q0-50-35-85t-85-35t-85,35t-35,85H300q0-74.92 52.54-127.46T480-880t127.46,52.54T660-700v80h47.69q29.92,0 51.11,21.19T780-547.69v375.38q0,29.92-21.19,51.11T707.69-100H252.31q-29.92,0-51.11-21.19T180-172.31V-547.69q0-29.92 21.19-51.11T252.31-620Zm0,460H707.69q5.39,0 8.85-3.46t3.46-8.85V-547.69q0-5.39-3.46-8.85T707.69-560H252.31q-5.39,0-8.85,3.46T240-547.69v375.38q0,5.39 3.46,8.85t8.85,3.46ZM529.58-310.42Q550-330.85 550-360t-20.42-49.58T480-430t-49.58,20.42T410-360t20.42,49.58T480-290t49.58-20.42Z",
+    error:
+      "M502.92-300.15q9.38-9.38 9.38-22.92T502.92-346T480-355.38T457.08-346t-9.38,22.92t9.38,22.92T480-290.77t22.92-9.38ZM450-436.92h60v-240H450v240ZM480.07-100q-78.84,0-148.2-29.92T211.18-211.13T129.93-331.76T100-479.93t29.92-148.2t81.21-120.68t120.63-81.25T479.93-860t148.2,29.92t120.68,81.21t81.25,120.63T860-480.07t-29.92,148.2T748.87-211.18T628.24-129.93T480.07-100ZM480-160q134,0 227-93t93-227T707-707T480-800T253-707T160-480t93,227t227,93Z",
+    warning:
+      "M74.62-140L480-840L885.38-140H74.62ZM178-200H782L480-720L178-200Zm324.92-57.08q9.38-9.38 9.38-22.92t-9.38-22.92T480-312.31t-22.92,9.38T447.69-280t9.38,22.92T480-247.69t22.92-9.38ZM450-352.31h60v-200H450v200Z",
+    cancel:
+      "M336-293.85l144-144l144,144L666.15-336l-144-144l144-144L624-666.15l-144,144l-144-144L293.85-624l144,144l-144,144L336-293.85ZM480.07-100q-78.84,0-148.2-29.92T211.18-211.13T129.93-331.76T100-479.93t29.92-148.2t81.21-120.68t120.63-81.25T479.93-860t148.2,29.92t120.68,81.21t81.25,120.63T860-480.07t-29.92,148.2T748.87-211.18T628.24-129.93T480.07-100ZM480-160q134,0 227-93t93-227T707-707T480-800T253-707T160-480t93,227t227,93Z",
+    pending:
+      "M315.38-444.57Q330-459.14 330-479.95t-14.57-35.43T280.05-530t-35.43,14.57T230-480.05t14.57,35.43T279.95-430t35.43-14.57Zm200,0Q530-459.14 530-479.95t-14.57-35.43T480.05-530t-35.43,14.57T430-480.05t14.57,35.43T479.95-430t35.43-14.57Zm200,0Q730-459.14 730-479.95t-14.57-35.43T680.05-530t-35.43,14.57T630-480.05t14.57,35.43T679.95-430t35.43-14.57ZM480.07-100q-78.84,0-148.2-29.92T211.18-211.13T129.93-331.76T100-479.93t29.92-148.2t81.21-120.68t120.63-81.25T479.93-860t148.2,29.92t120.68,81.21t81.25,120.63T860-480.07t-29.92,148.2T748.87-211.18T628.24-129.93T480.07-100ZM480-160q134,0 227-93t93-227T707-707T480-800T253-707T160-480t93,227t227,93Z",
+    play_arrow:
+      "M340-236.16V-723.84L723.07-480L340-236.16ZM400-346L610.77-480L400-614v268Z",
+    rocket_launch:
+      "M216.77-535.15l88,37.23q16.31-32.62 34.77-63.04t40.69-59.89l-58.69-11.38q-3.08-0.77-5.96,0.19t-5.19,3.27l-93.62,93.62Zm135.85,74.92l113.62,113q44.69-18.69 92.69-51.69t91.15-76.15q67.31-67.31 104.11-146.65T790.61-785q-83.92-0.38-163.39,36.42T480.46-644.46q-43.15,43.15-76.15,91.35t-51.69,92.88ZM524.92-589.61q0-29.08 20.31-49.38t49.88-20.31T645-639t20.31,49.38T645-540.23t-49.88,20.31t-49.88-20.31t-20.31-49.38Zm15.84,378.85l93.62-93.62q2.31-2.31 3.27-5.19t0.19-5.96l-11.38-58.69Q597-352 566.58-333.85t-63.04,34.46l37.23,88.62ZM845.31-839.92q12.85,115.61-27.35,219.15T685.69-425.15q-1.92,1.92-3.46,3.46t-3.46,3.46l18.08,90.54q3.62,18.08-1.62,35.15t-18.08,29.92L520.31-106.16L445.15-282.77L288.39-439.54L111.77-515.08L267.62-671.54q12.85-12.85 30.23-18.27t35.46-1.81l91.31,18.46q1.92-1.92 3.27-3.46t3.27-3.46q92.08-92.08 195.31-132.38t218.84-27.46Z",
+    bug_report:
+      "M480-200q66,0 113-47t47-113V-520q0-66-47-113T480-680T367-633T320-520v160q0,66 47,113t113,47ZM406.15-330H553.85v-60H406.15v60Zm0-160H553.85v-60H406.15v60ZM480-140q-59.61,0-110.11-29.31T289.69-250H180v-60h87.08q-6.08-24.62-6.58-49.81T260-410H180v-60h80q0-25.39 0.12-50.58T267.08-570H180v-60H289.69q14.38-24.54 34-44.73t44.92-34.04l-67.85-69.08l41.38-41.38L427.39-734q25.69-7.85 52-7.85t52,7.85l87.23-85.23L660-777.85l-69.08,69.08q25.31,13.85 45.15,33.73T670.31-630H780v60H692.92q6.85,24.23 6.96,49.42T700-470h80v60H700q0,25-0.5,50.19T692.92-310H780v60H670.31q-29.69,51.38-80.19,80.69T480-140Z",
+    chat:
+      "M250-410H550v-60H250v60Zm0-120H710v-60H250v60Zm0-120H710v-60H250v60ZM100-118.46V-787.69Q100-818 121-839t51.31-21H787.69Q818-860 839-839t21,51.31v455.38Q860-302 839-281t-51.31,21H241.54L100-118.46ZM216-320H787.69q4.62,0 8.46-3.85t3.85-8.46V-787.69q0-4.62-3.85-8.46T787.69-800H172.31q-4.62,0-8.46,3.85T160-787.69v523.08L216-320Z",
+    visibility:
+      "M595.58-384.51q47.5-47.59 47.5-115.58T595.49-615.58t-115.58-47.5T364.42-615.49t-47.5,115.58t47.59,115.49t115.58,47.5t115.49-47.59ZM403.5-423.5Q372-455 372-500t31.5-76.5T480-608t76.5,31.5T588-500t-31.5,76.5T480-392t-76.5-31.5ZM228.62-296.12Q115.16-372.23 61.54-500q53.62-127.77 167.02-203.88T479.95-780t251.44,76.11T898.46-500Q844.84-372.23 731.44-296.12T480.05-220T228.62-296.12ZM687.5-339.5Q782-399 832-500Q782-601 687.5-660.5T480-720T272.5-660.5T128-500q50,101 144.5,160.5T480-280t207.5-59.5Z",
+    commit:
+      "M356.54-335.5q-52-45.5-64.46-114.5H100v-60H292.08q12.46-69 64.46-114.5T480-670t123.65,45.5T667.92-510H860v60H667.92q-12.08,69-64.27,114.5T480-290T356.54-335.5ZM480-350q53.85,0 91.92-38.08T610-480t-38.08-91.92T480-610t-91.92,38.08T350-480t38.08,91.92T480-350Z",
+    call_split:
+      "M450-180V-467.85l-210-210V-560H180V-780H400v60H282.15L510-492.15V-180H450ZM580.15-536.77l-43.38-43.38L677.85-720H560v-60H780v220H720V-677.85L580.15-536.77Z",
+  };
+
+  /**
+   * Render an inline Google Symbol SVG matching Antigravity's `GoogleSymbol.tsx` / `LoadingSpinner.tsx`.
+   * @param {keyof typeof GOOGLE_SYMBOL_PATHS} name - Google Symbol identifier.
+   * @param {number} [size=12] - Icon width and height in pixels.
+   * @param {string} [extraClass=""] - Optional CSS class names (e.g. "animate-spin").
+   * @returns {string} SVG element markup string.
+   */
+  function iconSvg(name, size = 12, extraClass = "") {
+    const pathData = GOOGLE_SYMBOL_PATHS[name] || GOOGLE_SYMBOL_PATHS.pending;
+    const cls = extraClass ? `ag-icon ${extraClass}` : "ag-icon";
+    return `<svg class="${cls}" width="${size}" height="${size}" viewBox="0 -960 960 960" aria-hidden="true"><path d="${pathData}"/></svg>`;
+  }
+
+  /**
+   * Render an Antigravity `AttentionDot` / live status indicator dot.
+   * @param {boolean} [ping=false] - Whether to include the `animate-unread-ping` pulse ring.
+   * @returns {string} HTML markup for the status dot.
+   */
+  function statusDotHtml(ping = false) {
+    const pingSpan = ping
+      ? '<span class="ag-status-dot-ping animate-unread-ping"></span>'
+      : "";
+    return `<span class="ag-status-dot" aria-hidden="true"><span class="ag-status-dot-core"></span>${pingSpan}</span>`;
+  }
+
+  /**
+   * Select the canonical Antigravity status SVG icon for a lifecycle status string.
+   * @param {string | null | undefined} rawStatus - Lifecycle status token.
+   * @returns {string} Inline SVG markup (`check_circle`, spinning `progress_activity`, `verified`, `error`, or `pending`).
+   */
+  function statusIconFor(rawStatus) {
+    const norm = String(rawStatus || "PENDING").toUpperCase();
+    if (norm === "APPROVED" || norm === "COMPLETED" || norm === "AUDIT_APPROVED") {
+      return iconSvg("check_circle", 12);
+    }
+    if (norm === "GRADUATED" || norm === "MERGED") {
+      return iconSvg("verified", 12);
+    }
+    if (norm === "IN_PROGRESS" || norm === "RUNNING" || norm === "STAGED_FOR_AUDIT") {
+      return iconSvg("progress_activity", 12, "animate-spin");
+    }
+    if (norm === "BLOCKED" || norm === "ESCALATED" || norm === "CHANGES_REQUESTED") {
+      return iconSvg("error", 12);
+    }
+    return iconSvg("pending", 12);
+  }
 
   /**
    * Escape HTML special characters for safe DOM insertion.
@@ -94,13 +193,27 @@
   }
 
   /**
+   * Determine whether a conversation ID represents a real, openable IDE conversation
+   * rather than an empty string or a synthetic headless/offline fallback ID (`headless-*`, `ls-*`).
+   * @param {string | null | undefined} conversationId - Candidate conversation ID.
+   * @returns {boolean} True when the ID can be opened via `window.sidecar.ui.toggleConversation`.
+   */
+  function isOpenableConversationId(conversationId) {
+    const raw = String(conversationId || "").trim();
+    if (!raw) {
+      return false;
+    }
+    return !raw.startsWith("headless-") && !raw.startsWith("ls-");
+  }
+
+  /**
    * Focus/open an agent conversation in the Antigravity IDE sidebar when available.
    * @param {string | null | undefined} conversationId - Target agent conversation UUID.
    * @returns {void}
    */
   function jumpToConversation(conversationId) {
-    if (!conversationId) {
-      showToast("No bound conversation ID for this target yet.", true);
+    if (!isOpenableConversationId(conversationId)) {
+      showToast("No active IDE conversation is bound to this target.", true);
       return;
     }
     if (
@@ -147,12 +260,22 @@
    * @returns {Promise<void>}
    */
   async function triggerSync() {
+    const btnSync = document.getElementById("btn-sync");
+    if (btnSync) {
+      btnSync.innerHTML = `${iconSvg("progress_activity", 13, "animate-spin")}<span>Syncing</span>`;
+      btnSync.disabled = true;
+    }
     try {
       const res = await postJson("/api/sync", {});
       showToast(`Synced state (audits: ${res.synced_audits ?? 0})`);
       await fetchWorkspaceState();
     } catch (err) {
       showToast(err.message, true);
+    } finally {
+      if (btnSync) {
+        btnSync.innerHTML = `${iconSvg("refresh", 13)}<span>Sync</span>`;
+        btnSync.disabled = false;
+      }
     }
   }
 
@@ -224,7 +347,7 @@
     try {
       const res = await postJson("/api/pr/start", { pr_id: prId });
       showToast(`Started ${res.pr_id}`);
-      if (res.conversation_id) {
+      if (isOpenableConversationId(res.conversation_id)) {
         jumpToConversation(res.conversation_id);
       }
       await fetchWorkspaceState();
@@ -242,7 +365,7 @@
     try {
       const res = await postJson("/api/wo/debug", { wo_id: woId });
       showToast(`Launched debugger for ${res.wo_id}`);
-      if (res.conversation_id) {
+      if (isOpenableConversationId(res.conversation_id)) {
         jumpToConversation(res.conversation_id);
       }
       await fetchWorkspaceState();
@@ -284,38 +407,41 @@
   }
 
   /**
-   * Format a concise status badge label for a Stacked PR card.
+   * Format a concise SVG-badged status pill HTML string for a Stacked PR card.
    * @param {Record<string, any>} pr - Serialized PR state record.
-   * @returns {string} Formatted badge string with geometric status prefix.
+   * @returns {string} HTML string with inline Google Symbol SVG icon and status label.
    */
   function formatPrStatusBadge(pr) {
     // --- Step 1: Normalize status and optional GitHub PR number ---
     const st = String(pr.status || "PLANNED").toUpperCase();
-    const ghNum = pr.github_pr ? ` #${pr.github_pr}` : "";
+    const ghNum = pr.github_pr ? ` #${escapeHtml(pr.github_pr)}` : "";
     const latestAudit = pr.latest_audit;
 
     // --- Step 2: Check terminal graduation and merge states ---
     if (st === "GRADUATED") {
-      return `● Graduated${ghNum}`;
+      return `${iconSvg("verified", 12)}<span>Graduated${ghNum}</span>`;
     }
     if (pr.is_merged) {
-      return `● Merged${ghNum}`;
+      return `${iconSvg("verified", 12)}<span>Merged${ghNum}</span>`;
     }
 
     // --- Step 3: Check Cold-Firewall audit verdicts and staging states ---
     if (st === "AUDIT_APPROVED" || (latestAudit && latestAudit.verdict === "APPROVED")) {
-      return `✓ Audit Approved${ghNum}`;
+      return `${iconSvg("check_circle", 12)}<span>Audit Approved${ghNum}</span>`;
     }
     if (latestAudit && latestAudit.verdict === "CHANGES_REQUESTED") {
-      return `! Changes Requested (R${latestAudit.audit_round || 1}/5)`;
+      return `${iconSvg("error", 12)}<span>Changes Requested (R${escapeHtml(latestAudit.audit_round || 1)}/5)</span>`;
     }
     if (st === "STAGED_FOR_AUDIT") {
-      return `↑ Staged for Audit${ghNum}`;
+      return `${iconSvg("progress_activity", 12, "animate-spin")}<span class="animate-shimmer-text">Staged for Audit${ghNum}</span>`;
+    }
+    if (st === "IN_PROGRESS" || st === "RUNNING") {
+      return `${iconSvg("progress_activity", 12, "animate-spin")}<span class="animate-shimmer-text">In Progress${ghNum}</span>`;
     }
     if (pr.github_pr) {
-      return `◌ Draft PR #${pr.github_pr} ↗`;
+      return `${iconSvg("pending", 12)}<span>Draft PR #${escapeHtml(pr.github_pr)}</span>`;
     }
-    return `○ ${st}`;
+    return `${statusIconFor(st)}<span>${escapeHtml(st)}</span>`;
   }
 
   /**
@@ -329,7 +455,7 @@
     const vcsBadge = document.getElementById("badge-vcs-mode");
     if (vcsBadge) {
       const vcsLabel = env.vcs_mode === "github" ? "GitHub" : "Local";
-      vcsBadge.textContent = `Git: ${vcsLabel}`;
+      vcsBadge.innerHTML = `${iconSvg("commit", 12)}<span>Git: ${escapeHtml(vcsLabel)}</span>`;
     }
 
     const memBadge = document.getElementById("badge-memory-mode");
@@ -458,7 +584,11 @@
     });
 
     // --- Step 2: Update counter badge and handle empty queue state ---
-    countEl.textContent = String(queue.length);
+    if (queue.length > 0) {
+      countEl.innerHTML = `${statusDotHtml(true)}<span>${queue.length}</span>`;
+    } else {
+      countEl.textContent = "0";
+    }
     countEl.classList.toggle("zero", queue.length === 0);
 
     if (queue.length === 0) {
@@ -467,10 +597,14 @@
       return;
     }
 
-    // --- Step 3: Index PR objects by ID for quick conversation lookup ---
+    // --- Step 3: Index PR and Work Order objects by ID for state-machine gating ---
     const prsById = {};
+    const wosById = {};
     for (const pr of (state && state.prs) || []) {
       prsById[String(pr.pr_id).toUpperCase()] = pr;
+      for (const wo of pr.work_orders || []) {
+        wosById[String(wo.wo_id).toUpperCase()] = wo;
+      }
     }
 
     // --- Step 4: Build an interactive card for each queued attention item ---
@@ -484,7 +618,18 @@
       const prId = item.pr_id || esc.pr_id || "";
       const woId = item.wo_id || esc.wo_id || "";
       const prObj = prsById[String(prId).toUpperCase()] || null;
+      const woObj = wosById[String(woId).toUpperCase()] || null;
       const paConvId = prObj ? prObj.pa_conversation_id : "";
+      const prStatus = prObj ? String(prObj.status || "PLANNED").toUpperCase() : "";
+      const isPrHistorical = Boolean(
+        prObj &&
+          (prObj.is_merged ||
+            prStatus === "GRADUATED" ||
+            prStatus === "CLOSED" ||
+            prStatus === "CANCELLED")
+      );
+      const woStatus = woObj ? String(woObj.status || "PENDING").toUpperCase() : "";
+      const isWoCompleted = woStatus === "COMPLETED";
 
       const headerDiv = document.createElement("div");
       headerDiv.className = "attention-card-header";
@@ -534,7 +679,7 @@
         card.appendChild(checkboxesContainer);
       }
 
-      // --- Step 6: Wire category-specific HITL action buttons ---
+      // --- Step 6: Wire category-specific HITL action buttons with SVG icons ---
       const actionsDiv = document.createElement("div");
       actionsDiv.className = "attention-actions";
 
@@ -542,14 +687,22 @@
         const btnApprove = document.createElement("button");
         btnApprove.type = "button";
         btnApprove.className = "btn btn-primary btn-compact";
-        btnApprove.textContent = "Approve Plan";
+        btnApprove.innerHTML = `${iconSvg("check_circle", 12)}<span>Approve Plan</span>`;
+        btnApprove.disabled = !prId || isPrHistorical || (prStatus !== "" && prStatus !== "PLANNED");
+        btnApprove.title = btnApprove.disabled
+          ? "Plan approval is only available while the PR is in PLANNED state."
+          : `Approve Part II Implementation Plan for ${prId}`;
         btnApprove.addEventListener("click", () => approvePrPlan(prId));
         actionsDiv.appendChild(btnApprove);
 
         const btnOpenPa = document.createElement("button");
         btnOpenPa.type = "button";
         btnOpenPa.className = "btn btn-compact";
-        btnOpenPa.textContent = "Open PA Thread";
+        btnOpenPa.innerHTML = `${iconSvg("chat", 12)}<span>Open PA Thread</span>`;
+        btnOpenPa.disabled = !isOpenableConversationId(paConvId);
+        btnOpenPa.title = btnOpenPa.disabled
+          ? "No active Principal Architect IDE conversation bound."
+          : `Open Principal Architect conversation (${paConvId})`;
         btnOpenPa.addEventListener("click", () => jumpToConversation(paConvId));
         actionsDiv.appendChild(btnOpenPa);
       } else if (category === "ESCALATION_RESOLVE") {
@@ -557,7 +710,16 @@
         const btnApproveResume = document.createElement("button");
         btnApproveResume.type = "button";
         btnApproveResume.className = "btn btn-primary btn-compact";
-        btnApproveResume.textContent = "Approve & Resume";
+        btnApproveResume.innerHTML = `${iconSvg("check_circle", 12)}<span>Approve & Resume</span>`;
+        btnApproveResume.disabled = !escId || isPrHistorical;
+        if (checkboxesContainer) {
+          checkboxesContainer.addEventListener("change", () => {
+            const checkedCount = checkboxesContainer.querySelectorAll(
+              'input[type="checkbox"]:checked'
+            ).length;
+            btnApproveResume.disabled = !escId || isPrHistorical || checkedCount === 0;
+          });
+        }
         btnApproveResume.addEventListener("click", () => {
           const selected = checkboxesContainer
             ? Array.from(
@@ -571,21 +733,30 @@
         const btnDeny = document.createElement("button");
         btnDeny.type = "button";
         btnDeny.className = "btn btn-danger btn-compact";
-        btnDeny.textContent = "Deny";
+        btnDeny.innerHTML = `${iconSvg("cancel", 12)}<span>Deny</span>`;
+        btnDeny.disabled = !escId;
         btnDeny.addEventListener("click", () => resolveEscalation(escId, "deny"));
         actionsDiv.appendChild(btnDeny);
       } else if (category === "DEBUG_WORKER") {
         const btnDebug = document.createElement("button");
         btnDebug.type = "button";
         btnDebug.className = "btn btn-primary btn-compact";
-        btnDebug.textContent = "Launch Interactive Debug";
+        btnDebug.innerHTML = `${iconSvg("bug_report", 12)}<span>Launch Interactive Debug</span>`;
+        btnDebug.disabled = !woId || isPrHistorical || isWoCompleted;
+        btnDebug.title = btnDebug.disabled
+          ? "Cannot debug a completed or historical Work Order."
+          : `Spawn an interactive Tier 3b Debugger session for ${woId}`;
         btnDebug.addEventListener("click", () => debugWorkOrder(woId));
         actionsDiv.appendChild(btnDebug);
       } else if (category === "GRADUATE_PR") {
         const btnGrad = document.createElement("button");
         btnGrad.type = "button";
         btnGrad.className = "btn btn-primary btn-compact";
-        btnGrad.textContent = "Graduate PR";
+        btnGrad.innerHTML = `${iconSvg("rocket_launch", 12)}<span>Graduate PR</span>`;
+        btnGrad.disabled = !prId || isPrHistorical;
+        btnGrad.title = btnGrad.disabled
+          ? "PR is already graduated or merged."
+          : `Graduate ${prId} into repository memory`;
         btnGrad.addEventListener("click", () => graduatePr(prId));
         actionsDiv.appendChild(btnGrad);
       } else {
@@ -593,7 +764,8 @@
           const btnDebug = document.createElement("button");
           btnDebug.type = "button";
           btnDebug.className = "btn btn-compact";
-          btnDebug.textContent = "Launch Interactive Debug";
+          btnDebug.innerHTML = `${iconSvg("bug_report", 12)}<span>Launch Interactive Debug</span>`;
+          btnDebug.disabled = isPrHistorical || isWoCompleted;
           btnDebug.addEventListener("click", () => debugWorkOrder(woId));
           actionsDiv.appendChild(btnDebug);
         }
@@ -601,7 +773,8 @@
           const btnOpenPa = document.createElement("button");
           btnOpenPa.type = "button";
           btnOpenPa.className = "btn btn-compact";
-          btnOpenPa.textContent = "Open PA Thread";
+          btnOpenPa.innerHTML = `${iconSvg("chat", 12)}<span>Open PA Thread</span>`;
+          btnOpenPa.disabled = !isOpenableConversationId(paConvId);
           btnOpenPa.addEventListener("click", () => jumpToConversation(paConvId));
           actionsDiv.appendChild(btnOpenPa);
         }
@@ -615,12 +788,19 @@
   /**
    * Build a DOM element representing a single Work Order row inside a PR card.
    * @param {Record<string, any>} wo - Serialized Work Order state record.
+   * @param {{ historical?: boolean }} [options={}] - Parent PR context flags.
    * @returns {HTMLDivElement} Constructed `.wo-row` DOM element.
    */
-  function buildWorkOrderRow(wo) {
-    // --- Step 1: Render Work Order ID, title, and lifecycle status pill ---
+  function buildWorkOrderRow(wo, options = {}) {
+    // --- Step 1: Render Work Order ID, title, and SVG-badged lifecycle status pill ---
     const row = document.createElement("div");
     row.className = "wo-row";
+
+    const woSt = String(wo.status || "PENDING").toUpperCase();
+    const isHistorical = Boolean(options.historical);
+    const isCompleted = woSt === "COMPLETED";
+    const isRunning = woSt === "IN_PROGRESS" || woSt === "RUNNING";
+    const labelClass = isRunning ? ' class="animate-shimmer-text"' : "";
 
     const topRow = document.createElement("div");
     topRow.className = "wo-row-top";
@@ -629,7 +809,7 @@
         <span class="wo-id-code">${escapeHtml(wo.wo_id)}</span>
         <span class="wo-title-text">${escapeHtml(wo.title)}</span>
       </div>
-      <span class="status-pill ${statusClass(wo.status)}">${escapeHtml(wo.status)}</span>
+      <span class="status-pill ${statusClass(wo.status)}">${statusIconFor(wo.status)}<span${labelClass}>${escapeHtml(wo.status)}</span></span>
     `;
     row.appendChild(topRow);
 
@@ -651,7 +831,7 @@
       const rcptBadge = document.createElement("span");
       rcptBadge.className = "receipt-badge";
       const shortHash = wo.tree_hash ? String(wo.tree_hash).slice(0, 8) : "";
-      rcptBadge.textContent = `✓ ${wo.receipt_id || shortHash}`;
+      rcptBadge.innerHTML = `${iconSvg("check_circle", 11)}<span>${escapeHtml(wo.receipt_id || shortHash)}</span>`;
       rcptBadge.title = wo.tree_hash ? `Tree SHA-256: ${wo.tree_hash}` : "";
       metaRow.appendChild(rcptBadge);
     }
@@ -665,22 +845,58 @@
 
     row.appendChild(metaRow);
 
-    // --- Step 3: Wire Peek Worker and Interactive Debug action buttons ---
+    // --- Step 3: Wire Peek Worker and Interactive Debug action buttons with state-machine gating ---
+    const canPeekWorker = isOpenableConversationId(wo.subagent_id);
+    if (isHistorical || isCompleted) {
+      // Historical or completed Work Orders are immutable; only offer Peek Worker if a real thread exists.
+      if (canPeekWorker) {
+        const actionsRow = document.createElement("div");
+        actionsRow.className = "wo-actions";
+        const btnPeek = document.createElement("button");
+        btnPeek.type = "button";
+        btnPeek.className = "btn btn-compact";
+        btnPeek.innerHTML = `${iconSvg("visibility", 12)}<span>Peek Worker</span>`;
+        btnPeek.title = `Open Worker conversation (${wo.subagent_id})`;
+        btnPeek.addEventListener("click", () => jumpToConversation(wo.subagent_id));
+        actionsRow.appendChild(btnPeek);
+        row.appendChild(actionsRow);
+      }
+      return row;
+    }
+
     const actionsRow = document.createElement("div");
     actionsRow.className = "wo-actions";
 
     const btnPeek = document.createElement("button");
     btnPeek.type = "button";
     btnPeek.className = "btn btn-compact";
-    btnPeek.textContent = "Peek Worker";
-    btnPeek.disabled = !wo.subagent_id;
+    btnPeek.innerHTML = `${iconSvg("visibility", 12)}<span>Peek Worker</span>`;
+    btnPeek.disabled = !canPeekWorker;
+    btnPeek.title = canPeekWorker
+      ? `Open Worker conversation (${wo.subagent_id})`
+      : "No active Worker IDE conversation bound yet.";
     btnPeek.addEventListener("click", () => jumpToConversation(wo.subagent_id));
     actionsRow.appendChild(btnPeek);
+
+    const isInteractiveComplexity = String(wo.complexity || "").toLowerCase() === "interactive";
+    const hasAttempts = Number(wo.attempts || 0) > 0;
+    const canDebugWo =
+      woSt === "BLOCKED" ||
+      woSt === "ESCALATED_TO_PA" ||
+      woSt === "ESCALATED" ||
+      woSt === "FAILED" ||
+      woSt === "IN_PROGRESS" ||
+      woSt === "RUNNING" ||
+      (woSt === "PENDING" && (isInteractiveComplexity || hasAttempts));
 
     const btnDebug = document.createElement("button");
     btnDebug.type = "button";
     btnDebug.className = "btn btn-compact";
-    btnDebug.textContent = "Debug";
+    btnDebug.innerHTML = `${iconSvg("bug_report", 12)}<span>Debug</span>`;
+    btnDebug.disabled = !canDebugWo;
+    btnDebug.title = canDebugWo
+      ? `Launch interactive Tier 3b Debugger session for ${wo.wo_id}`
+      : "Work Order has not started or encountered a blocker yet.";
     btnDebug.addEventListener("click", () => debugWorkOrder(wo.wo_id));
     actionsRow.appendChild(btnDebug);
 
@@ -696,7 +912,10 @@
    */
   function buildProgrammeCard(prog, options = {}) {
     // --- Step 1: Initialize collapsible card container and header elements ---
-    const isCollapsed = Boolean(options.collapsed);
+    const progKey = String(prog.programme_id || prog.slug || "");
+    const isCollapsed = stateStore.programmeCollapsedOverrides.has(progKey)
+      ? Boolean(stateStore.programmeCollapsedOverrides.get(progKey))
+      : Boolean(options.collapsed);
     const card = document.createElement("div");
     card.className =
       "programme-card collapsible" +
@@ -711,7 +930,7 @@
 
     const toggleIcon = document.createElement("span");
     toggleIcon.className = "pr-collapse-toggle";
-    toggleIcon.innerHTML = isCollapsed ? "&#9654;" : "&#9660;";
+    toggleIcon.innerHTML = iconSvg("chevron_right", 14);
     toggleIcon.setAttribute("aria-hidden", "true");
     titleGroup.appendChild(toggleIcon);
 
@@ -724,17 +943,21 @@
 
     const statusPill = document.createElement("span");
     statusPill.className = `status-pill ${statusClass(prog.status)}`;
-    statusPill.textContent = prog.status;
+    statusPill.innerHTML = `${statusIconFor(prog.status)}<span>${escapeHtml(prog.status)}</span>`;
     header.appendChild(statusPill);
 
-    // --- Step 2: Bind click handler to toggle card collapse state ---
+    // --- Step 2: Bind click handler to toggle and persist card collapse state ---
     header.addEventListener("click", (evt) => {
       if (evt.target.closest("button, a, select, input")) {
         return;
       }
       card.classList.toggle("collapsed");
-      const nowCollapsed = card.classList.contains("collapsed");
-      toggleIcon.innerHTML = nowCollapsed ? "&#9654;" : "&#9660;";
+      if (progKey) {
+        stateStore.programmeCollapsedOverrides.set(
+          progKey,
+          card.classList.contains("collapsed")
+        );
+      }
     });
 
     card.appendChild(header);
@@ -762,7 +985,10 @@
    */
   function buildPrCard(pr, options = {}) {
     // --- Step 1: Determine active vs historical styling and build collapsible header ---
-    const isCollapsed = Boolean(options.collapsed);
+    const prKey = String(pr.pr_id || pr.slug || "");
+    const isCollapsed = stateStore.prCollapsedOverrides.has(prKey)
+      ? Boolean(stateStore.prCollapsedOverrides.get(prKey))
+      : Boolean(options.collapsed);
     const isHistorical =
       Boolean(pr.is_merged) ||
       String(pr.status).toUpperCase() === "GRADUATED" ||
@@ -782,7 +1008,7 @@
 
     const toggleIcon = document.createElement("span");
     toggleIcon.className = "pr-collapse-toggle";
-    toggleIcon.innerHTML = isCollapsed ? "&#9654;" : "&#9660;";
+    toggleIcon.innerHTML = iconSvg("chevron_right", 14);
     toggleIcon.setAttribute("aria-hidden", "true");
     titleGroup.appendChild(toggleIcon);
 
@@ -819,7 +1045,7 @@
 
     const statusBadge = document.createElement("span");
     statusBadge.className = `status-pill ${statusClass(pr.is_merged ? "merged" : pr.status)}`;
-    statusBadge.textContent = formatPrStatusBadge(pr);
+    statusBadge.innerHTML = formatPrStatusBadge(pr);
     rightBadges.appendChild(statusBadge);
 
     headerTop.appendChild(rightBadges);
@@ -829,8 +1055,12 @@
         return;
       }
       card.classList.toggle("collapsed");
-      const nowCollapsed = card.classList.contains("collapsed");
-      toggleIcon.innerHTML = nowCollapsed ? "&#9654;" : "&#9660;";
+      if (prKey) {
+        stateStore.prCollapsedOverrides.set(
+          prKey,
+          card.classList.contains("collapsed")
+        );
+      }
     });
 
     card.appendChild(headerTop);
@@ -841,7 +1071,7 @@
 
     const branchLine = document.createElement("div");
     branchLine.className = "pr-branch-line";
-    branchLine.textContent = `${pr.branch} → ${pr.base_branch}`;
+    branchLine.innerHTML = `${iconSvg("call_split", 11)}<span>${escapeHtml(pr.branch)} → ${escapeHtml(pr.base_branch)}</span>`;
     cardBody.appendChild(branchLine);
 
     const badgesRow = document.createElement("div");
@@ -850,9 +1080,9 @@
     const charterBadge = document.createElement("span");
     const hashPrefix = pr.charter_hash ? String(pr.charter_hash).slice(0, 8) : "unlocked";
     charterBadge.className = `charter-badge ${pr.charter_locked ? "" : "unlocked"}`;
-    charterBadge.textContent = pr.charter_locked
-      ? `Charter Locked (${hashPrefix})`
-      : `Charter Unlocked`;
+    charterBadge.innerHTML = pr.charter_locked
+      ? `${iconSvg("lock", 11)}<span>Charter Locked (${escapeHtml(hashPrefix)})</span>`
+      : `${iconSvg("lock_open", 11)}<span>Charter Unlocked</span>`;
     charterBadge.title = pr.charter_locked
       ? `🔒 Charter by Chief (${pr.charter_hash})`
       : "Part I PR Charter is unlocked";
@@ -864,59 +1094,109 @@
       auditBadge.className = `status-pill ${
         verdict === "APPROVED" ? "status-approved" : "status-changes-requested"
       }`;
-      auditBadge.textContent = `Audit R${pr.latest_audit.audit_round || 1}: ${verdict}`;
+      auditBadge.innerHTML = `${statusIconFor(verdict)}<span>Audit R${escapeHtml(pr.latest_audit.audit_round || 1)}: ${escapeHtml(verdict)}</span>`;
       badgesRow.appendChild(auditBadge);
     }
 
     cardBody.appendChild(badgesRow);
 
-    // --- Step 4: Wire PR-level lifecycle action buttons (Jump to PA, Start, Approve Plan, Graduate) ---
-    const prActions = document.createElement("div");
-    prActions.className = "pr-actions";
+    // --- Step 4: Wire PR-level lifecycle action buttons with state-machine gating ---
+    const prStatus = String(pr.status || "PLANNED").toUpperCase();
+    const canJumpPa = isOpenableConversationId(pr.pa_conversation_id);
+    if (isHistorical) {
+      // Historical & Merged PRs are read-only; only offer Jump to PA when a real IDE conversation exists.
+      if (canJumpPa) {
+        const prActions = document.createElement("div");
+        prActions.className = "pr-actions";
+        const btnJumpPa = document.createElement("button");
+        btnJumpPa.type = "button";
+        btnJumpPa.className = "btn btn-compact";
+        btnJumpPa.innerHTML = `${iconSvg("chat", 12)}<span>Jump to PA</span>`;
+        btnJumpPa.title = `Open Principal Architect conversation (${pr.pa_conversation_id})`;
+        btnJumpPa.addEventListener("click", () => jumpToConversation(pr.pa_conversation_id));
+        prActions.appendChild(btnJumpPa);
+        cardBody.appendChild(prActions);
+      }
+    } else {
+      const prActions = document.createElement("div");
+      prActions.className = "pr-actions";
 
-    const btnJumpPa = document.createElement("button");
-    btnJumpPa.type = "button";
-    btnJumpPa.className = "btn btn-compact";
-    btnJumpPa.textContent = "Jump to PA";
-    btnJumpPa.disabled = !pr.pa_conversation_id;
-    btnJumpPa.addEventListener("click", () => jumpToConversation(pr.pa_conversation_id));
-    prActions.appendChild(btnJumpPa);
+      const btnJumpPa = document.createElement("button");
+      btnJumpPa.type = "button";
+      btnJumpPa.className = "btn btn-compact";
+      btnJumpPa.innerHTML = `${iconSvg("chat", 12)}<span>Jump to PA</span>`;
+      btnJumpPa.disabled = !canJumpPa;
+      btnJumpPa.title = canJumpPa
+        ? `Open Principal Architect conversation (${pr.pa_conversation_id})`
+        : "No active Principal Architect IDE conversation bound yet.";
+      btnJumpPa.addEventListener("click", () => jumpToConversation(pr.pa_conversation_id));
+      prActions.appendChild(btnJumpPa);
 
-    const btnStartPr = document.createElement("button");
-    btnStartPr.type = "button";
-    btnStartPr.className = "btn btn-compact";
-    btnStartPr.textContent = "Start PR";
-    btnStartPr.addEventListener("click", () => startPr(pr.pr_id));
-    prActions.appendChild(btnStartPr);
+      const charterReady = Boolean(pr.charter_locked) && pr.charter_valid !== false;
+      const canStartPr =
+        charterReady &&
+        (prStatus === "PLANNED" ||
+          prStatus === "APPROVED" ||
+          prStatus === "CHANGES_REQUESTED" ||
+          (prStatus === "IN_PROGRESS" && !canJumpPa));
+      const btnStartPr = document.createElement("button");
+      btnStartPr.type = "button";
+      btnStartPr.className = "btn btn-compact";
+      btnStartPr.innerHTML = `${iconSvg("play_arrow", 12)}<span>Start PR</span>`;
+      btnStartPr.disabled = !canStartPr;
+      if (!charterReady) {
+        btnStartPr.title = "Lock and validate the Part I PR Charter before starting.";
+      } else if (prStatus === "IN_PROGRESS" && canJumpPa) {
+        btnStartPr.title = "PR is already in progress; use Jump to PA to open the thread.";
+      } else if (!canStartPr) {
+        btnStartPr.title = `Cannot start PR while in ${prStatus} state.`;
+      } else {
+        btnStartPr.title = `Launch or resume Principal Architect session for ${pr.pr_id}`;
+      }
+      btnStartPr.addEventListener("click", () => startPr(pr.pr_id));
+      prActions.appendChild(btnStartPr);
 
-    if (String(pr.status).toUpperCase() === "PLANNED") {
-      const btnApprovePlan = document.createElement("button");
-      btnApprovePlan.type = "button";
-      btnApprovePlan.className = "btn btn-primary btn-compact";
-      btnApprovePlan.textContent = "Approve Plan";
-      btnApprovePlan.addEventListener("click", () => approvePrPlan(pr.pr_id));
-      prActions.appendChild(btnApprovePlan);
+      if (prStatus === "PLANNED") {
+        const canApprovePlan = charterReady && workOrders.length > 0;
+        const btnApprovePlan = document.createElement("button");
+        btnApprovePlan.type = "button";
+        btnApprovePlan.className = "btn btn-primary btn-compact";
+        btnApprovePlan.innerHTML = `${iconSvg("check_circle", 12)}<span>Approve Plan</span>`;
+        btnApprovePlan.disabled = !canApprovePlan;
+        btnApprovePlan.title = canApprovePlan
+          ? `Approve Part II Implementation Plan (${workOrders.length} Work Order${workOrders.length === 1 ? "" : "s"})`
+          : "Requires a locked Part I Charter and at least 1 decomposed Work Order.";
+        btnApprovePlan.addEventListener("click", () => approvePrPlan(pr.pr_id));
+        prActions.appendChild(btnApprovePlan);
+      }
+
+      const isAuditApproved =
+        prStatus === "AUDIT_APPROVED" ||
+        Boolean(pr.latest_audit && pr.latest_audit.verdict === "APPROVED");
+      const allWosCompleted =
+        workOrders.length > 0 &&
+        workOrders.every((w) => String(w.status || "").toUpperCase() === "COMPLETED");
+      const canGraduatePr = isAuditApproved && allWosCompleted && prStatus !== "GRADUATED";
+      const btnGradPr = document.createElement("button");
+      btnGradPr.type = "button";
+      btnGradPr.className = "btn btn-primary btn-compact";
+      btnGradPr.innerHTML = `${iconSvg("rocket_launch", 12)}<span>Graduate PR</span>`;
+      btnGradPr.disabled = !canGraduatePr;
+      btnGradPr.title = canGraduatePr
+        ? `Graduate ${pr.pr_id} and distill architectural memory`
+        : "Requires all Work Orders COMPLETED and Cold-Firewall Audit APPROVED.";
+      btnGradPr.addEventListener("click", () => graduatePr(pr.pr_id));
+      prActions.appendChild(btnGradPr);
+
+      cardBody.appendChild(prActions);
     }
-
-    const isAuditApproved =
-      String(pr.status).toUpperCase() === "AUDIT_APPROVED" ||
-      Boolean(pr.latest_audit && pr.latest_audit.verdict === "APPROVED");
-    const btnGradPr = document.createElement("button");
-    btnGradPr.type = "button";
-    btnGradPr.className = "btn btn-primary btn-compact";
-    btnGradPr.textContent = "Graduate PR";
-    btnGradPr.disabled = !isAuditApproved || String(pr.status).toUpperCase() === "GRADUATED";
-    btnGradPr.addEventListener("click", () => graduatePr(pr.pr_id));
-    prActions.appendChild(btnGradPr);
-
-    cardBody.appendChild(prActions);
 
     // --- Step 5: Append child Work Order rows ---
     if (workOrders.length > 0) {
       const woList = document.createElement("div");
       woList.className = "wo-list";
       for (const wo of workOrders) {
-        woList.appendChild(buildWorkOrderRow(wo));
+        woList.appendChild(buildWorkOrderRow(wo, { historical: isHistorical }));
       }
       cardBody.appendChild(woList);
     }
@@ -986,10 +1266,14 @@
 
     const activeHeader = document.createElement("div");
     activeHeader.className = "dag-section-header";
+    const activeIcon =
+      activePrs.length > 0
+        ? iconSvg("progress_activity", 12, "animate-spin")
+        : iconSvg("check_circle", 12);
     activeHeader.innerHTML = `
       <div class="dag-section-title">
         <span>Active Development</span>
-        <span class="badge ${activePrs.length > 0 ? "badge-live" : "badge-muted"}">${activePrs.length} Active</span>
+        <span class="badge ${activePrs.length > 0 ? "badge-live" : "badge-muted"}">${activeIcon}<span>${activePrs.length} Active</span></span>
       </div>
     `;
     activeSection.appendChild(activeHeader);
@@ -1007,7 +1291,7 @@
     if (activePrs.length === 0) {
       const emptyActive = document.createElement("div");
       emptyActive.className = "empty-state";
-      emptyActive.textContent = "No active PRs in progress. All changes are graduated or merged.";
+      emptyActive.innerHTML = `${iconSvg("check_circle", 13)} <span>No active PRs in progress. All changes are graduated or merged.</span>`;
       activeSection.appendChild(emptyActive);
     } else {
       for (const pr of activePrs) {
@@ -1028,18 +1312,20 @@
       const histSection = document.createElement("div");
       histSection.className = "dag-section historical-section";
 
+      const isHistSectionCollapsed = Boolean(stateStore.historicalSectionCollapsed);
       const histHeader = document.createElement("div");
       histHeader.className = "dag-section-header clickable";
       histHeader.innerHTML = `
         <div class="dag-section-title">
-          <span class="section-collapse-icon" aria-hidden="true">&#9660;</span>
+          <span class="section-collapse-icon${isHistSectionCollapsed ? " is-collapsed" : ""}" aria-hidden="true">${iconSvg("chevron_right", 14)}</span>
           <span>Historical &amp; Merged</span>
           <span class="badge badge-muted">${historicalPrs.length} PR${historicalPrs.length === 1 ? "" : "s"}</span>
         </div>
       `;
 
       const histList = document.createElement("div");
-      histList.className = "historical-list";
+      histList.className =
+        "historical-list" + (isHistSectionCollapsed ? " collapsed" : "");
 
       // Completed programmes in history (collapsed by default)
       for (const prog of completedProgs) {
@@ -1054,9 +1340,10 @@
       histHeader.addEventListener("click", () => {
         histList.classList.toggle("collapsed");
         const isCollapsed = histList.classList.contains("collapsed");
+        stateStore.historicalSectionCollapsed = isCollapsed;
         const icon = histHeader.querySelector(".section-collapse-icon");
         if (icon) {
-          icon.innerHTML = isCollapsed ? "&#9654;" : "&#9660;";
+          icon.classList.toggle("is-collapsed", isCollapsed);
         }
       });
 
@@ -1075,6 +1362,11 @@
     if (!state || state.ok === false) {
       return;
     }
+    const serialized = JSON.stringify(state);
+    if (serialized === stateStore.lastRenderedStateJson) {
+      return;
+    }
+    stateStore.lastRenderedStateJson = serialized;
     stateStore.latestState = state;
     renderZone1Header(state);
     renderZone2Attention(state);
@@ -1127,7 +1419,7 @@
 
     es.addEventListener("state", (event) => {
       if (sseBadge) {
-        sseBadge.textContent = "● Live SSE";
+        sseBadge.innerHTML = `${statusDotHtml(true)}<span>Live SSE</span>`;
         sseBadge.classList.remove("disconnected");
       }
       try {
@@ -1140,7 +1432,7 @@
 
     es.onerror = () => {
       if (sseBadge) {
-        sseBadge.textContent = "○ Reconnecting…";
+        sseBadge.innerHTML = `${iconSvg("progress_activity", 11, "animate-spin")}<span>Reconnecting…</span>`;
         sseBadge.classList.add("disconnected");
       }
     };
@@ -1163,8 +1455,15 @@
       return;
     }
 
+    const normCandidate = candidate.replace(/^file:\/\//, "");
+    const normCurrent = String(stateStore.activeWorkspace || "").replace(/^file:\/\//, "");
+    if (normCandidate === normCurrent && stateStore.eventSource) {
+      return;
+    }
+
     // --- Step 2: Update stateStore and ensure option exists in workspace dropdown ---
     stateStore.activeWorkspace = candidate;
+    stateStore.lastRenderedStateJson = "";
     const selectEl = document.getElementById("workspace-select");
     if (selectEl) {
       const hasOption = Array.from(selectEl.options).some((o) => o.value === candidate);
@@ -1198,6 +1497,7 @@
       // --- Step 2: Populate the workspace selector dropdown ---
       if (selectEl) {
         selectEl.innerHTML = "";
+        selectEl.disabled = workspaces.length === 0;
         if (workspaces.length === 0) {
           const emptyOpt = document.createElement("option");
           emptyOpt.value = "";
@@ -1241,16 +1541,22 @@
 
     const btnMonitored = document.getElementById("btn-mode-monitored");
     if (btnMonitored) {
-      btnMonitored.addEventListener("click", () =>
-        updateModeOrModel({ mode: "monitored" })
-      );
+      btnMonitored.addEventListener("click", () => {
+        if (btnMonitored.classList.contains("active")) {
+          return;
+        }
+        updateModeOrModel({ mode: "monitored" });
+      });
     }
 
     const btnAutonomous = document.getElementById("btn-mode-autonomous");
     if (btnAutonomous) {
-      btnAutonomous.addEventListener("click", () =>
-        updateModeOrModel({ mode: "autonomous" })
-      );
+      btnAutonomous.addEventListener("click", () => {
+        if (btnAutonomous.classList.contains("active")) {
+          return;
+        }
+        updateModeOrModel({ mode: "autonomous" });
+      });
     }
 
     // --- Step 2: Bind Architect model and Workspace selector dropdowns ---

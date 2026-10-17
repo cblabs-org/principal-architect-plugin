@@ -1635,6 +1635,23 @@ def _cmd_wo_debug(args: argparse.Namespace, *, runner: common.Runner = common.ru
         print(f"Error: Work Order '{wo_id_arg}' not found in {ws_dir}", file=sys.stderr)
         return 1
 
+    if wo_doc.spec.status == schemas.WorkOrderStatus.COMPLETED:
+        print(
+            f"Error: Cannot debug {wo_doc.spec.wo_id}: Work Order is already COMPLETED.",
+            file=sys.stderr,
+        )
+        return 1
+
+    proj_md = wo_doc.path.parent.parent / "PROJECT.md"
+    if proj_md.is_file():
+        proj_check = schemas.load_project(proj_md)
+        if proj_check.spec.status == schemas.PRState.GRADUATED:
+            print(
+                f"Error: Cannot debug {wo_doc.spec.wo_id}: parent PR {proj_check.spec.charter.pr_id} is already GRADUATED.",
+                file=sys.stderr,
+            )
+            return 1
+
     # --- Step 1: Transition WORKORDER.md to BLOCKED and verify spec_hash ---
     wo_doc.spec.status = schemas.WorkOrderStatus.BLOCKED
     wo_doc.path.write_text(

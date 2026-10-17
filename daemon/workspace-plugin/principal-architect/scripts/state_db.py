@@ -227,8 +227,11 @@ class StateDB:
                 )
                 """
             )
-            # --- Step 3: Stamp PRAGMA user_version = 1 for schema version verification ---
-            self.conn.execute("PRAGMA user_version = 1;")
+            # --- Step 3: Stamp PRAGMA user_version = 1 only when not already set ---
+            cur_ver_row = self.conn.execute("PRAGMA user_version;").fetchone()
+            cur_ver = int(cur_ver_row[0]) if cur_ver_row is not None else 0
+            if cur_ver != SCHEMA_VERSION:
+                self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
 
     # -------------------------------------------------------------------------
     # repo_config accessors

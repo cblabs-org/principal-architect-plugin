@@ -55,6 +55,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -394,8 +397,53 @@ class LanguageServerClient:
             if isinstance(model, str) and model.strip()
             else select_architect_model(repo_root=workspace_root)
         )
-        # --- Step 2: Attempt Language Server StartConversation RPC and optional JIT pinning ---
+        # --- Step 2: Attempt agentapi CLI or Language Server StartConversation RPC ---
         if self.is_connected():
+            if self.transport is None and "PYTEST_CURRENT_TEST" not in os.environ:
+                agentapi_bin = shutil.which("agentapi")
+                if agentapi_bin:
+                    try:
+                        tier_flag = "pro"
+                        if resolved_model in ("flash_lite", "flash"):
+                            tier_flag = resolved_model
+                        cmd = [
+                            agentapi_bin,
+                            "new-conversation",
+                            f"--model={tier_flag}",
+                            f"--title={title}",
+                            prompt,
+                        ]
+                        proc = subprocess.run(
+                            cmd,
+                            capture_output=True,
+                            text=True,
+                            timeout=15.0,
+                            check=False,
+                        )
+                        if proc.returncode == 0 and proc.stdout:
+                            uuid_match = re.search(
+                                r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})",
+                                proc.stdout,
+                            )
+                            if uuid_match:
+                                conv_id = uuid_match.group(1)
+                                pinned_state = False
+                                if pin:
+                                    pin_res = self.set_pinned(conv_id, True)
+                                    pinned_state = bool(pin_res.get("pinned", False))
+                                return {
+                                    "connected": True,
+                                    "conversation_id": conv_id,
+                                    "pinned": pinned_state,
+                                    "title": title,
+                                    "role": role,
+                                    "model": resolved_model,
+                                    "bridge_prompt": prompt,
+                                    "fallback": None,
+                                }
+                    except (OSError, subprocess.SubprocessError):
+                        pass
+
             try:
                 payload = {
                     "title": title,
@@ -465,9 +513,34 @@ class LanguageServerClient:
         Returns:
             Dictionary with `connected`, `conversation_id`, `pinned`, and optional `fallback`.
         """
-        # --- Step 1: Attempt SetPinned RPC when connected and given a non-headless ID ---
+        # --- Step 1: Attempt SetPinned / UpdateConversationAnnotations RPC when connected ---
         conv_id = str(conversation_id).strip()
         if self.is_connected() and conv_id and not conv_id.startswith("headless-"):
+            if self.transport is None and "PYTEST_CURRENT_TEST" not in os.environ:
+                try:
+                    self._call_rpc(
+                        "exa.language_server_pb.LanguageServerService/UpdateConversationAnnotations",
+                        {
+                            "cascadeIds": [conv_id],
+                            "annotations": {"pinned": "true" if pinned else "false"},
+                            "mergeAnnotations": True,
+                        },
+                    )
+                    return {
+                        "connected": True,
+                        "conversation_id": conv_id,
+                        "pinned": bool(pinned),
+                    }
+                except (
+                    OSError,
+                    urllib.error.URLError,
+                    ValueError,
+                    RuntimeError,
+                    KeyError,
+                    TypeError,
+                ):
+                    pass
+
             try:
                 self._call_rpc(
                     "exa.language_server_pb.LanguageServerService/SetPinned",
@@ -507,9 +580,29 @@ class LanguageServerClient:
             Dictionary with `connected`, `conversation_id`, `delivered`, and (on fallback)
             `bridge_prompt` and `fallback`.
         """
-        # --- Step 1: Attempt SendMessage RPC when connected and given a non-headless ID ---
+        # --- Step 1: Attempt agentapi or SendMessage RPC when connected and non-headless ---
         conv_id = str(conversation_id).strip()
         if self.is_connected() and conv_id and not conv_id.startswith("headless-"):
+            if self.transport is None and "PYTEST_CURRENT_TEST" not in os.environ:
+                agentapi_bin = shutil.which("agentapi")
+                if agentapi_bin:
+                    try:
+                        proc = subprocess.run(
+                            [agentapi_bin, "send-message", conv_id, message],
+                            capture_output=True,
+                            text=True,
+                            timeout=15.0,
+                            check=False,
+                        )
+                        if proc.returncode == 0:
+                            return {
+                                "connected": True,
+                                "conversation_id": conv_id,
+                                "delivered": True,
+                            }
+                    except (OSError, subprocess.SubprocessError):
+                        pass
+
             try:
                 self._call_rpc(
                     "exa.language_server_pb.LanguageServerService/SendMessage",

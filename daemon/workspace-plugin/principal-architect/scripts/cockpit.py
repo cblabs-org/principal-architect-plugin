@@ -836,7 +836,6 @@ def _workspace_fingerprint(repo_root: Path, daemon_home: Path) -> tuple[Any, ...
     candidates: list[Path] = [
         ws_dir / ".state" / "state.db",
         ws_dir / ".state" / "state.db-wal",
-        ws_dir / ".state" / "state.db-shm",
         daemon_home / "state" / "registry.json",
     ]
     if ws_dir.is_dir():
@@ -1111,7 +1110,8 @@ class CockpitRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
             try:
-                init_frame = f"event: state\ndata: {json.dumps(initial_state)}\n\n".encode()
+                last_state_json = json.dumps(initial_state)
+                init_frame = f"event: state\ndata: {last_state_json}\n\n".encode()
                 self.wfile.write(init_frame)
                 self.wfile.flush()
                 if is_once:
@@ -1127,14 +1127,17 @@ class CockpitRequestHandler(BaseHTTPRequestHandler):
                     cur_fp = _workspace_fingerprint(repo_root, self.server.daemon_home)
                     now_mono = time.monotonic()
                     if cur_fp != last_fp:
-                        last_fp = cur_fp
                         updated_state = build_workspace_state(
                             repo_root, daemon_home=self.server.daemon_home
                         )
-                        frame = f"event: state\ndata: {json.dumps(updated_state)}\n\n".encode()
-                        self.wfile.write(frame)
-                        self.wfile.flush()
-                        last_keepalive = now_mono
+                        last_fp = _workspace_fingerprint(repo_root, self.server.daemon_home)
+                        updated_json = json.dumps(updated_state)
+                        if updated_json != last_state_json:
+                            last_state_json = updated_json
+                            frame = f"event: state\ndata: {updated_json}\n\n".encode()
+                            self.wfile.write(frame)
+                            self.wfile.flush()
+                            last_keepalive = now_mono
                     elif now_mono - last_keepalive >= 5.0:
                         self.wfile.write(b": keepalive\n\n")
                         self.wfile.flush()
@@ -1304,6 +1307,16 @@ class CockpitRequestHandler(BaseHTTPRequestHandler):
         _, proj_doc = vcs_sync._find_pr_dir_and_project(ws_dir, pr_id)
         if proj_doc is None:
             self._send_json(404, {"ok": False, "error": f"PR '{pr_id}' not found"})
+            return
+
+        if proj_doc.spec.status == schemas.PRState.GRADUATED:
+            self._send_json(
+                409,
+                {
+                    "ok": False,
+                    "error": f"Cannot approve plan for {proj_doc.spec.charter.pr_id}: PR is already GRADUATED",
+                },
+            )
             return
 
         canonical_pr_id = proj_doc.spec.charter.pr_id
@@ -1534,6 +1547,16 @@ class CockpitRequestHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"ok": False, "error": f"PR '{pr_id}' not found"})
             return
 
+        if proj_doc.spec.status in (schemas.PRState.GRADUATED, schemas.PRState.AUDIT_APPROVED):
+            self._send_json(
+                409,
+                {
+                    "ok": False,
+                    "error": f"Cannot start {proj_doc.spec.charter.pr_id}: PR status is {proj_doc.spec.status.value}",
+                },
+            )
+            return
+
         canonical_pr_id = proj_doc.spec.charter.pr_id
         rc, std_out, err_out = _run_pa_cli_captured(
             ["pr", "start", canonical_pr_id, "--path", str(repo_root)]
@@ -1614,6 +1637,36 @@ class CockpitRequestHandler(BaseHTTPRequestHandler):
         if wo_doc is None:
             self._send_json(404, {"ok": False, "error": f"Work Order '{wo_id}' not found"})
             return
+
+        if wo_doc.spec.status == schemas.WorkOrderStatus.COMPLETED:
+            self._send_json(
+                409,
+                {
+                    "ok": False,
+                    "error": f"Cannot debug {wo_doc.spec.wo_id}: Work Order is already COMPLETED",
+                },
+            )
+            return
+
+        if wo_doc.path is not None:
+            parent_proj_md = wo_doc.path.parent.parent / "PROJECT.md"
+            if parent_proj_md.is_file():
+                try:
+                    parent_proj = schemas.load_project(parent_proj_md)
+                    if parent_proj.spec.status == schemas.PRState.GRADUATED:
+                        self._send_json(
+                            409,
+                            {
+                                "ok": False,
+                                "error": (
+                                    f"Cannot debug {wo_doc.spec.wo_id}: parent PR "
+                                    f"{parent_proj.spec.charter.pr_id} is already GRADUATED"
+                                ),
+                            },
+                        )
+                        return
+                except Exception:  # noqa: BLE001, S110
+                    pass
 
         canonical_wo_id = wo_doc.spec.wo_id
         canonical_pr_id = wo_doc.spec.pr_id
@@ -1713,6 +1766,16 @@ class CockpitRequestHandler(BaseHTTPRequestHandler):
         _, proj_doc = vcs_sync._find_pr_dir_and_project(ws_dir, pr_id)
         if proj_doc is None:
             self._send_json(404, {"ok": False, "error": f"PR '{pr_id}' not found"})
+            return
+
+        if proj_doc.spec.status == schemas.PRState.GRADUATED:
+            self._send_json(
+                409,
+                {
+                    "ok": False,
+                    "error": f"Cannot graduate {proj_doc.spec.charter.pr_id}: PR is already GRADUATED",
+                },
+            )
             return
 
         canonical_pr_id = proj_doc.spec.charter.pr_id
