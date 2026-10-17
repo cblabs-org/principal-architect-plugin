@@ -1,15 +1,33 @@
-"""Dual-mode escalation engine, structural blocker signatures, and hook I/O helpers.
+"""Principal Architect Plugin (c) 2026 Matt McNeill
+https://github.com/matthewmcneill/principal-architect-plugin
+SPDX-License-Identifier: Apache-2.0
+Module: daemon/workspace-plugin/principal-architect/scripts/escalation.py
+
+Dual-mode escalation engine, structural blocker signatures, and hook I/O helpers
+for the Principal Architect Split-Authority governance layer.
 
 Implements SPEC §3.2, §7.2, and §7.3:
-- `decide(rule, mode, ctx)` across rules R1, R1b, R2, R3, R4, R5, R6 and modes
-  `monitored` vs `autonomous`.
+- `decide(rule, mode, ctx)` across rules `R1`, `R1b`, `R2`, `R3`, `R4`, `R5`, `R6`
+  and execution modes `monitored` vs `autonomous`.
 - `STRUCTURAL_SIGNATURES` and `is_structural_blocker(text)` for fast-fail detection.
-- `record_escalation(db, ...)` and `enqueue_attention(db, ...)` for StateDB persistence.
+- `record_escalation(db, ...)` and `enqueue_attention(db, ...)` for `StateDB` persistence.
 - `extract_workspace_paths`, `read_hook_input`, and `write_hook_output` for stdlib-only
   sub-millisecond hook entrypoints.
 
-Lazy Import Rule (Charter R1): This module MUST NOT import `pydantic`, `yaml`, or `schemas`
-at module top-level.
+Lazy Import Rule (Charter R1): This module MUST NOT import `pydantic`, `yaml`, or
+`schemas` at module top-level.
+
+Exported API Summary:
+- RULES: Ordered tuple of canonical Split-Authority governance rule IDs (`R1`..`R6`).
+- MODES: Ordered tuple of supported execution modes (`monitored`, `autonomous`).
+- STRUCTURAL_SIGNATURES: Lowercase substring signatures identifying structural/hook blockers.
+- is_structural_blocker: Check whether output text matches any known structural blocker signature.
+- decide: Evaluate a governance rule (`R1`..`R6`) under `monitored` or `autonomous` mode.
+- enqueue_attention: Insert a prioritized item into the `StateDB` `attention_queue` table.
+- record_escalation: Insert an escalation row in `StateDB` and optionally enqueue attention.
+- extract_workspace_paths: Extract deduplicated candidate workspace paths from hook JSON input.
+- read_hook_input: Read and parse one JSON object from `stdin` (or `stream`), returning `{}` on error.
+- write_hook_output: Serialize a hook response payload as a single JSON line to `stdout` (or `stream`).
 """
 
 from __future__ import annotations
@@ -22,9 +40,13 @@ from typing import Any, TextIO
 
 import state_db
 
+# Canonical Split-Authority mechanical governance rule identifiers (SPEC §7.2).
 RULES: tuple[str, ...] = ("R1", "R1b", "R2", "R3", "R4", "R5", "R6")
+
+# Supported repository execution modes controlling interactive "ask" vs autonomous escalation.
 MODES: tuple[str, ...] = ("monitored", "autonomous")
 
+# Lowercase error/output substrings that classify a failure as an environmental or hook blocker.
 STRUCTURAL_SIGNATURES: tuple[str, ...] = (
     "hardware is currently tied",
     "exclusive hardware",
@@ -42,7 +64,15 @@ STRUCTURAL_SIGNATURES: tuple[str, ...] = (
 
 
 def is_structural_blocker(text: str | None) -> bool:
-    """Return True if `text` contains any known structural/environmental blocker signature."""
+    """Return `True` if `text` contains any known structural or environmental blocker signature.
+
+    Args:
+        text: Combined stdout/stderr or hook failure message to inspect.
+
+    Returns:
+        `True` if a case-insensitive match against `STRUCTURAL_SIGNATURES` is found; `False`
+        otherwise.
+    """
     if not text:
         return False
     lowered = text.lower()
@@ -56,15 +86,27 @@ def decide(
 ) -> dict[str, Any]:
     """Evaluate a governance rule (`R1`..`R6`) under `monitored` or `autonomous` mode.
 
-    Returns a dictionary containing `permissionDecision`, `decision`, `reason`, `rule`,
-    `mode`, `increment_structural_failures`, `auto_approve_plan`, and `escalation`.
+    Args:
+        rule: Governance rule identifier (`"R1"`, `"R1b"`, `"R2"`, `"R3"`, `"R4"`, `"R5"`, `"R6"`).
+        mode: Active execution mode (`"monitored"` or `"autonomous"`).
+        ctx: Optional context dictionary supplying `path`, `pr_id`, `wo_id`, `head_sha`,
+            `command`, `requested_files`, `auto_approve_pr_plans`, and `plan_valid`.
+
+    Returns:
+        Dictionary containing `permissionDecision`, `decision`, `reason`, `rule`, `mode`,
+        `increment_structural_failures`, `auto_approve_plan`, and `escalation`.
+
+    Raises:
+        ValueError: If `rule` is not in `RULES` or `mode` is not in `MODES`.
     """
+    # --- Step 1: Validate rule identifier and normalize execution mode ---
     if rule not in RULES:
         raise ValueError(f"Unknown rule: {rule!r}")
     norm_mode = mode.strip().lower() if isinstance(mode, str) else ""
     if norm_mode not in MODES:
         raise ValueError(f"Invalid execution mode: {mode!r}")
 
+    # --- Step 2: Extract context attributes and normalize requested_files ---
     c: dict[str, Any] = dict(ctx) if ctx is not None else {}
     path = str(c.get("path", "<target>"))
     pr_id = str(c.get("pr_id") or "PR-??")
@@ -86,6 +128,7 @@ def decide(
     auto_approve = False
     escalation: dict[str, Any] | None = None
 
+    # --- Step 3: Evaluate Architect boundary rules R1 (inline edit) and R1b (Charter lock) ---
     if rule == "R1":
         if norm_mode == "monitored":
             permission_decision = "ask"
@@ -135,6 +178,7 @@ def decide(
                 ),
             }
 
+    # --- Step 4: Evaluate R2 (Part II Work Order plan approval gate before Worker dispatch) ---
     elif rule == "R2":
         if norm_mode == "monitored":
             permission_decision = "ask"
@@ -170,6 +214,7 @@ def decide(
                 ),
             }
 
+    # --- Step 5: Evaluate Worker & Auditor lockdown rules R3, R4, R5, and graduation gate R6 ---
     elif rule == "R3":
         if norm_mode == "monitored":
             permission_decision = "ask"
@@ -234,6 +279,7 @@ def decide(
                 "Cold-Firewall Audit verdict."
             )
 
+    # --- Step 6: Return structured governance decision payload ---
     return {
         "permissionDecision": permission_decision,
         "decision": permission_decision,
@@ -256,7 +302,20 @@ def enqueue_attention(
     wo_id: str | None = None,
     action_payload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Insert an item into `attention_queue` and return the stored row dictionary."""
+    """Insert an item into `attention_queue` and return the stored row dictionary.
+
+    Args:
+        db: Open `StateDB` instance for the repository workspace.
+        kind: Attention item category string (e.g. `"plan_approval"`).
+        title: Human-readable summary title for the attention item.
+        priority: Numeric priority (lower integer values sort higher; defaults to `10`).
+        pr_id: Optional associated Pull Request ID.
+        wo_id: Optional associated Work Order ID.
+        action_payload: Optional dictionary of structured action metadata.
+
+    Returns:
+        Dictionary of the newly inserted `attention_queue` row.
+    """
     return db.enqueue(
         kind=kind,
         title=title,
@@ -284,7 +343,29 @@ def record_escalation(
     attention_title: str | None = None,
     attention_priority: int = 20,
 ) -> dict[str, Any]:
-    """Insert an escalation row in `state.db` and optionally enqueue a linked attention item."""
+    """Insert an escalation row in `state.db` and optionally enqueue a linked attention item.
+
+    Args:
+        db: Open `StateDB` instance for the repository workspace.
+        level: Escalation routing level (e.g. `"WORKER_TO_PA"`, `"PA_TO_CHIEF"`).
+        source_role: Initiating role (`"engineer"`, `"pa"`).
+        target_role: Target role (`"pa"`, `"chief"`, `"human"`).
+        pr_id: Optional associated Pull Request ID.
+        wo_id: Optional associated Work Order ID.
+        blocker_type: Blocker classification (`"structural"`, `"boundary"`, `"charter"`, etc.).
+        reason_code: Symbolic reason code string.
+        requested_files: Optional sequence of requested repository-relative file paths.
+        summary: Concise description of the blocker.
+        enqueue_if_needed: Whether to also enqueue an `attention_queue` item when `target_role`
+            is not already `"human"`.
+        attention_kind: Optional custom `kind` for the linked `attention_queue` item.
+        attention_title: Optional custom `title` for the linked `attention_queue` item.
+        attention_priority: Priority integer for the linked `attention_queue` item (default `20`).
+
+    Returns:
+        Dictionary of the persisted `escalations` row.
+    """
+    # --- Step 1: Normalize requested_files and insert the escalation record into StateDB ---
     req_list = [str(f) for f in (requested_files or [])]
     row = db.insert_escalation(
         level=level,
@@ -297,6 +378,8 @@ def record_escalation(
         requested_files=req_list,
         summary=summary,
     )
+
+    # --- Step 2: Enqueue a linked human attention item if requested or targeted at human ---
     if enqueue_if_needed or target_role == "human":
         kind_val = attention_kind or f"{blocker_type}_escalation"
         title_val = attention_title or (
@@ -325,7 +408,18 @@ def record_escalation(
 
 
 def extract_workspace_paths(payload: Mapping[str, Any] | None) -> list[str]:
-    """Extract deduplicated candidate workspace paths from a hook JSON payload."""
+    """Extract deduplicated candidate workspace paths from a hook JSON payload.
+
+    Inspects `workspacePaths`, `workspaceUris`, `workspaceRoot`, and `cwd` in order,
+    falling back to `[os.getcwd()]` if no non-empty strings are present.
+
+    Args:
+        payload: Parsed hook stdin dictionary, or `None`.
+
+    Returns:
+        Non-empty list of deduplicated workspace path strings preserving discovery order.
+    """
+    # --- Step 1: Collect candidate workspace paths from list and scalar payload keys ---
     candidates: list[str] = []
     if isinstance(payload, Mapping):
         for list_key in ("workspacePaths", "workspaceUris"):
@@ -339,6 +433,7 @@ def extract_workspace_paths(payload: Mapping[str, Any] | None) -> list[str]:
             if isinstance(raw_val, str) and raw_val.strip():
                 candidates.append(raw_val.strip())
 
+    # --- Step 2: Deduplicate while preserving order, or fall back to os.getcwd() ---
     seen: set[str] = set()
     result: list[str] = []
     for path_str in candidates:
@@ -352,7 +447,18 @@ def extract_workspace_paths(payload: Mapping[str, Any] | None) -> list[str]:
 
 
 def read_hook_input(stream: TextIO | None = None) -> dict[str, Any]:
-    """Read and parse one JSON object from `stream` (or `sys.stdin`), returning `{}` on error."""
+    """Read and parse one JSON object from `stream` (or `sys.stdin`), returning `{}` on error.
+
+    Logs diagnostic warnings to `sys.stderr` if reading fails, JSON is malformed, or the
+    top-level JSON value is not an object (`dict`).
+
+    Args:
+        stream: Optional text input stream; defaults to `sys.stdin`.
+
+    Returns:
+        Parsed JSON object dictionary, or `{}` if input is empty or invalid.
+    """
+    # --- Step 1: Read raw text from stream or sys.stdin ---
     src = stream if stream is not None else sys.stdin
     try:
         raw = src.read()
@@ -363,6 +469,7 @@ def read_hook_input(stream: TextIO | None = None) -> dict[str, Any]:
     if not raw or not raw.strip():
         return {}
 
+    # --- Step 2: Parse JSON and verify the root value is a dictionary ---
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -380,7 +487,15 @@ def read_hook_input(stream: TextIO | None = None) -> dict[str, Any]:
 
 
 def write_hook_output(payload: Mapping[str, Any], stream: TextIO | None = None) -> int:
-    """Serialize `payload` as a single JSON line to `stream` (or `sys.stdout`) and return `0`."""
+    """Serialize `payload` as a single JSON line to `stream` (or `sys.stdout`) and return `0`.
+
+    Args:
+        payload: Hook response mapping to serialize as JSON.
+        stream: Optional text output stream; defaults to `sys.stdout`.
+
+    Returns:
+        Process exit code `0`.
+    """
     dst = stream if stream is not None else sys.stdout
     try:
         dst.write(json.dumps(dict(payload), ensure_ascii=False) + "\n")

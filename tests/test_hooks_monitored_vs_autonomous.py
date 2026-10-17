@@ -1,4 +1,49 @@
-"""Unit and integration tests for dual-mode hooks (`monitored` vs `autonomous`) and escalation engine."""
+"""Principal Architect Plugin (c) 2026 Matt McNeill
+https://github.com/matthewmcneill/principal-architect-plugin
+SPDX-License-Identifier: Apache-2.0
+
+Module: tests/test_hooks_monitored_vs_autonomous.py
+
+Responsibility:
+    Comprehensive unit and integration tests for the dual-mode (`monitored` vs
+    `autonomous`) mechanical enforcement hooks (`escalation.py`, `pre_tool_gate.py`,
+    `post_tool_receipt.py`, `stop_gate.py`, `pre_invocation.py`) and the `pa wo verify`
+    CLI command (`SPEC.md` §§7–8).
+
+Test Suite Coverage Summary:
+    1. Dual-Mode Escalation Decision Engine (`escalation.py`):
+       - `test_escalation_import_purity`, `test_decide_invalid_rule_or_mode`: Verify
+         stdlib-only import purity and input validation.
+       - `test_decide_r1_monitored_vs_autonomous` through
+         `test_decide_r4_r5_r6_monitored_vs_autonomous`: Verify Rules R1, R1b, R2, R3,
+         R4, R5, and R6 decision matrices across `monitored` and `autonomous` modes.
+       - `test_structural_blocker_signatures`,
+         `test_record_escalation_and_enqueue_attention`,
+         `test_hook_io_and_extract_workspace_paths`, `test_hooks_json_schema`: Verify
+         structural blocker detection, SQLite escalation persistence, and `hooks.json`.
+    2. `PreToolUse` Mechanical Gate (`pre_tool_gate.py`):
+       - `test_pre_tool_gate_unenrolled_fast_exit_and_import_purity`: Verify `< 1 ms`
+         unenrolled fast-exit and zero `pydantic`/`yaml` import overhead.
+       - `test_path_resolution_pattern_matching_and_simulate_edit`: Verify repo-relative
+         path normalization, glob matching, and in-memory file edit simulation.
+       - `test_pre_tool_gate_r1_and_r1b_architect_gates`,
+         `test_pre_tool_gate_r2_plan_approval_gate`,
+         `test_pre_tool_gate_r3_r4_worker_boundary_and_traversal`,
+         `test_pre_tool_gate_r5_auditor_and_r6_graduation`: Verify role-based file locks,
+         symlink/`..` traversal defenses, git/gh lockdown, and graduation audit gates.
+    3. `PostToolUse` Receipt Stamping & `pa wo verify` (`post_tool_receipt.py`):
+       - `test_post_tool_receipt_unenrolled_fast_exit_and_import_purity`: Verify `< 1 ms`
+         unenrolled fast-exit.
+       - `test_compute_tree_hash_determinism_and_exclusions`,
+         `test_post_tool_receipt_lifecycle_stamping_invalidation_and_attempts`: Verify
+         deterministic SHA-256 tree hashing, receipt invalidation on edits, and retry counters.
+       - `test_pa_wo_verify_end_to_end`: Verify scope hygiene, `spec_hash` verification,
+         command execution, and trailer-stamped commits.
+    4. `Stop` Gate & `PreInvocation` Context Injector (`stop_gate.py`, `pre_invocation.py`):
+       - Verify Worker completion gates (valid receipt, clean git tree, completed checkboxes),
+         circuit-breaker escalation on max attempts or structural blockers, Principal
+         Architect active-PR continuation nudges, and `PreInvocation` context banners.
+"""
 
 from __future__ import annotations
 

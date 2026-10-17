@@ -1,4 +1,57 @@
-"""Comprehensive tests for Split-Authority Pydantic v2 models, document parser/renderer, and normative hashes."""
+"""Principal Architect Plugin (c) 2026 Matt McNeill
+https://github.com/matthewmcneill/principal-architect-plugin
+SPDX-License-Identifier: Apache-2.0
+
+Module: tests/test_schemas.py
+
+Responsibility:
+    Comprehensive unit and dogfood tests for the Split-Authority Pydantic v2 schema
+    models (`PROGRAM.md`, `PROJECT.md`, `WORKORDER.md`, `AUDIT-round-K.md`),
+    frontmatter + Markdown section parser/renderer, template files, and normative
+    SHA-256 cryptographic hashes (`charter_hash` and `spec_hash`).
+
+Test Suite Coverage Summary:
+    1. Runtime & Manifest Smoke Checks:
+       - `test_dependencies_importable`: Verify Pydantic v2 and PyYAML availability.
+       - `test_daemon_manifests_valid`: Validate `daemon/plugin.json` and workspace
+         `plugin.json` metadata.
+       - `test_module_docstring_mentions_normative_spec`: Confirm `schemas.py`
+         declares `SPEC.md` §6 normative.
+       - `test_string_enums`: Verify `PRState`, `WorkOrderStatus`, and
+         `ComplexityTier` enum values.
+    2. Pydantic v2 Model Validation (Accept & Reject):
+       - `test_pr_node_spec_accept_and_reject`: Validate `PRNodeSpec` regexes, bounds,
+         and `extra="forbid"`.
+       - `test_program_spec_accept_and_reject`: Validate `ProgramSpec` schema version
+         and status constraints.
+       - `test_pr_charter_wo_summary_and_project_spec`: Validate `PRCharterSpec`,
+         `WOSummaryRow`, and `ProjectSpec`.
+       - `test_escalation_completion_and_workorder_spec`: Validate `EscalationRequest`,
+         `CompletionReport`, and `WorkOrderSpec`.
+       - `test_audit_finding_and_report_accept_and_reject`: Validate `AuditFinding`
+         and `AuditReport` bounds.
+    3. Document Parser, Renderer, Round-Trip & Typed Loaders:
+       - `test_parse_and_dump_document_round_trip_with_preamble_and_unknown_sections`:
+         Verify lossless round-tripping of BOM, preambles, comments, and custom H2s.
+       - `test_parse_document_errors`: Verify `ValueError` on missing or non-mapping
+         YAML frontmatter.
+       - `test_typed_loaders_and_missing_required_sections`: Verify `load_program`,
+         `load_project`, `load_workorder`, and `load_audit` required-section checks.
+    4. Normative Hashing & Part II/III Invariance:
+       - `test_charter_hash_determinism_tamper_and_part2_invariance`: Verify
+         `compute_charter_hash` and `verify_charter_hash` invariance across Part II/III
+         edits and tamper detection on Part I.
+       - `test_spec_hash_determinism_tamper_and_completion_invariance`: Verify
+         `compute_spec_hash` and `verify_spec_hash` invariance across completion updates
+         and tamper detection on `allowed_files` or Part I sections.
+       - `test_canonical_json_and_norm_section_helpers`: Verify canonical JSON key
+         sorting and Markdown section whitespace normalization.
+    5. Repository Dogfood & Template Rendering:
+       - `test_dogfood_committed_programme_project_and_workorders`: Validate committed
+         `PROGRAM.md`, `PROJECT.md`, and `WORKORDER.md` artifacts in this repository.
+       - `test_templates_exist_and_render_successfully`: Render all 7 `.md.tpl`
+         templates and validate with typed loaders.
+"""
 
 from __future__ import annotations
 

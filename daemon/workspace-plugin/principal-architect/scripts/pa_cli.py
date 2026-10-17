@@ -1,14 +1,88 @@
 #!/usr/bin/env python3
-"""Principal Architect Plugin (`pa`) CLI entrypoint and subcommand dispatcher.
+"""Principal Architect Plugin (c) 2026 Matt McNeill
+https://github.com/matthewmcneill/principal-architect-plugin
+SPDX-License-Identifier: Apache-2.0
+Module: daemon/workspace-plugin/principal-architect/scripts/pa_cli.py
 
-Implements `pa enroll`, `pa unenroll`, `pa status [--json]`, `pa sync`, `pa mode`,
-`pa programme <init|charter>`, `pa pr <start|claim|approve-plan|open-or-sync|post-audit|sync-audit|graduate|restack>`,
-`pa wo <verify|debug|resolve>`, `pa issue <create>`, and `pa escalate`, plus the
-`COMMAND_MODULES` extension list consumed by downstream PR modules.
+Principal Architect Plugin (`pa`) CLI entrypoint and control-plane subcommand dispatcher.
+Orchestrates the three-tier Split-Authority lifecycle across Tier 1 Chief Architect
+(`pa programme init`, `pa programme charter`), Tier 2 Principal Architect (`pa pr start`,
+`pa pr claim`, `pa pr approve-plan`, `pa pr open-or-sync`, `pa pr post-audit`,
+`pa pr sync-audit`, `pa pr graduate`, `pa pr restack`), Tier 3 Execution Worker and
+Interactive Debugger (`pa wo verify`, `pa wo debug`, `pa wo resolve`), and repository
+administration (`pa enroll`, `pa migrate`, `pa unenroll`, `pa status`, `pa sync`,
+`pa mode`, `pa issue create`, `pa escalate`).
 
 Lazy Import Rule (Charter R1 & R6): This module MUST NOT import `pydantic`, `yaml`,
 `schemas`, `vcs_sync`, `models`, or `memory_grad` at module top-level so fast paths
 (`pa --help`, `pa mode`) remain sub-millisecond and stdlib-only.
+
+Exported API Summary
+--------------------
+Constants:
+  - `_SCRIPTS_DIR`: Absolute directory path containing plugin control-plane scripts.
+  - `COMMAND_MODULES`: Extension module names registered dynamically by `build_parser()`.
+  - `DEFAULT_WORKER_RULE_EXCLUDES`: Default rule globs excluded for Tier 3 workers.
+  - `_GIT_LOG_TRAILER_RE`: Regex matching NUL-delimited `git log` SHA and PA trailers.
+
+Functions:
+  - `_dedup_preserve_order(items) -> list[str]`: Deduplicate non-empty strings in order.
+  - `_ensure_line_in_file(file_path, line_to_ensure) -> None`: Idempotently append a line.
+  - `detect_vcs_mode(repo_root, *, runner=common.run) -> Literal["github", "local_git"]`:
+    Auto-detect repository VCS mode (`github` vs `local_git`).
+  - `detect_memory_mode(repo_root) -> Literal["external", "builtin"]`:
+    Auto-detect repository memory mode (`external` vs `builtin`).
+  - `_move_path_git_or_fs(repo_root, src, dst, *, runner=common.run) -> None`:
+    Move a path via `git mv` when tracked, falling back to `shutil.move`.
+  - `_merge_legacy_into_new_workspace(repo_root, legacy_ws, new_ws, *, runner) -> list[str]`:
+    Migrate or merge legacy `.agents/skills/principal-architect-workspace` into the new workspace.
+  - `_cleanup_legacy_skill_dir(repo_root, *, runner=common.run) -> bool`:
+    Remove legacy `.agents/skills/principal-architect` directory or submodule.
+  - `_rewrite_legacy_workspace_paths(new_ws) -> int`:
+    Rewrite stale legacy workspace path references in Markdown specs and recompute hashes.
+  - `_bridge_repo_memory(repo_root, new_ws, *, runner=common.run) -> dict[str, Any]`:
+    Register PA memory in `.agents/memory/config.json` and run `repo-memory` seed/index.
+  - `_cmd_migrate(args, *, runner=common.run) -> int`: Handler for `pa migrate`.
+  - `_cmd_enroll(args, *, runner=common.run) -> int`: Handler for `pa enroll`.
+  - `_cmd_unenroll(args, *, runner=common.run) -> int`: Handler for `pa unenroll`.
+  - `_scan_git_trailers(repo_root, *, runner=common.run) -> dict[str, tuple[str, str | None]]`:
+    Scan local Git history for `PA-WorkOrder` and `PA-Verified-Hash` commit trailers.
+  - `_status_glyph(status) -> str`: Map a status string to a human-readable terminal glyph.
+  - `_cmd_status(args, *, runner=common.run) -> int`: Handler for `pa status [--json]`.
+  - `_cmd_mode(args, *, runner=common.run) -> int`: Handler for `pa mode`.
+  - `_parse_porcelain_paths(stdout) -> list[str]`: Parse paths from `git status --porcelain`.
+  - `_is_ephemeral_runtime_path(rel_posix) -> bool`: Check if a path is an ignored runtime file.
+  - `_collect_existing_allowed_files(real_root, allowed_files, forbidden_files, ...) -> list[str]`:
+    Enumerate existing repository files matching `allowed_files` and not `forbidden_files`.
+  - `_cmd_wo_verify(args, *, runner=common.run) -> int`: Handler for `pa wo verify`.
+  - `_cmd_wo_debug(args, *, runner=common.run) -> int`: Handler for `pa wo debug`.
+  - `_cmd_wo_resolve(args, *, runner=common.run) -> int`: Handler for `pa wo resolve`.
+  - `_is_pattern_within_allowed_modules(pattern, allowed_modules, matches_any_fn) -> bool`:
+    Validate that a Work Order `allowed_files` pattern falls within `charter.allowed_modules`.
+  - `_cmd_pr_approve_plan(args, *, runner=common.run) -> int`: Handler for `pa pr approve-plan`.
+  - `_cmd_escalate(args, *, runner=common.run) -> int`: Handler for `pa escalate`.
+  - `_resolve_repo_root_and_ws(path_str, *, runner=common.run) -> tuple[Path, Path] | int`:
+    Resolve `(real_root, ws_dir)` from a CLI path argument or return exit code `2`.
+  - `_normalize_pr_id(raw_pr_id) -> str`: Normalize a PR identifier to `PR-NN[a-z]`.
+  - `_normalize_pr_slug(pr_id_canonical, raw_slug) -> str`: Normalize a PR directory slug.
+  - `_cmd_sync(args, *, runner=common.run) -> int`: Handler for `pa sync`.
+  - `_cmd_programme_init(args, *, runner=common.run) -> int`: Handler for `pa programme init`.
+  - `_scaffold_or_update_project_charter(ws_dir, *, pr_id_raw, ...) -> tuple[Path, Path, Any, str]`:
+    Create or update `PROJECT.md` Part I Charter, stamp `charter_hash`, and sync `PROGRAM.md`.
+  - `_cmd_programme_charter(args, *, runner=common.run) -> int`: Handler for `pa programme charter`.
+  - `_cmd_pr_start(args, *, runner=common.run) -> int`: Handler for `pa pr start`.
+  - `_cmd_pr_claim(args, *, runner=common.run) -> int`: Handler for `pa pr claim`.
+  - `_cmd_pr_open_or_sync(args, *, runner=common.run) -> int`: Handler for `pa pr open-or-sync`.
+  - `_cmd_pr_post_audit(args, *, runner=common.run) -> int`: Handler for `pa pr post-audit`.
+  - `_cmd_pr_sync_audit(args, *, runner=common.run) -> int`: Handler for `pa pr sync-audit`.
+  - `_sha_matches(sha_a, sha_b) -> bool`: Compare two Git commit SHAs (supporting short prefixes).
+  - `_head_matches_audited_sha(real_root, pr_dir, current_head_sha, audited_sha, ...) -> bool`:
+    Check whether `current_head_sha` (or `HEAD~1` for audit commits) matches `audited_sha`.
+  - `_cmd_pr_graduate(args, *, runner=common.run) -> int`: Handler for `pa pr graduate`.
+  - `_cmd_pr_restack(args, *, runner=common.run) -> int`: Handler for `pa pr restack`.
+  - `_cmd_issue_create(args, *, runner=common.run) -> int`: Handler for `pa issue create`.
+  - `build_parser() -> argparse.ArgumentParser`: Build the root `pa` CLI argument parser.
+  - `main(argv=None, *, runner=common.run) -> int`: Main CLI entrypoint.
 """
 
 from __future__ import annotations
@@ -26,6 +100,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+# Absolute directory containing the Principal Architect control-plane scripts.
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
@@ -33,8 +108,10 @@ if _SCRIPTS_DIR not in sys.path:
 import common
 import state_db
 
+# Registry of optional extension module names dynamically imported by `build_parser()`.
 COMMAND_MODULES: list[str] = []
 
+# Default workspace rule patterns excluded for Tier 3 workers to prevent planning loops.
 DEFAULT_WORKER_RULE_EXCLUDES: tuple[str, ...] = (
     "01-plan-before-execute.md",
     "bug-fixer-*",
@@ -42,7 +119,14 @@ DEFAULT_WORKER_RULE_EXCLUDES: tuple[str, ...] = (
 
 
 def _dedup_preserve_order(items: Sequence[str]) -> list[str]:
-    """Deduplicate non-empty stripped strings while preserving first-seen order."""
+    """Deduplicate non-empty stripped strings while preserving first-seen order.
+
+    Args:
+        items: Input sequence of raw strings.
+
+    Returns:
+        Deduplicated list of non-empty stripped strings.
+    """
     seen: set[str] = set()
     result: list[str] = []
     for raw in items:
@@ -54,7 +138,12 @@ def _dedup_preserve_order(items: Sequence[str]) -> list[str]:
 
 
 def _ensure_line_in_file(file_path: Path, line_to_ensure: str) -> None:
-    """Ensure `line_to_ensure` is present as a line in `file_path` without duplicating it."""
+    """Ensure `line_to_ensure` is present as a line in `file_path` without duplicating it.
+
+    Args:
+        file_path: Target file `Path` (created along with parent directories if missing).
+        line_to_ensure: Single line string to append if not already present.
+    """
     file_path.parent.mkdir(parents=True, exist_ok=True)
     target = line_to_ensure.strip()
     existing_text = ""
@@ -76,7 +165,17 @@ def detect_vcs_mode(
     *,
     runner: common.Runner = common.run,
 ) -> Literal["github", "local_git"]:
-    """Auto-detect VCS mode (`github` if origin is GitHub and `gh auth status` exits 0, else `local_git`)."""
+    """Auto-detect VCS mode (`github` if origin is GitHub and `gh auth status` succeeds).
+
+    Args:
+        repo_root: Target git repository root path.
+        runner: Subprocess runner callable (defaults to `common.run`).
+
+    Returns:
+        `"github"` when `origin` points to `github.com` and `gh auth status` exits 0;
+        otherwise `"local_git"`.
+    """
+    # --- Step 1: Inspect the `origin` remote URL ---
     root = Path(os.path.realpath(repo_root))
     try:
         res_remote = runner(["git", "remote", "get-url", "origin"], cwd=root)
@@ -86,6 +185,7 @@ def detect_vcs_mode(
     if res_remote.returncode != 0 or "github.com" not in res_remote.stdout.lower():
         return "local_git"
 
+    # --- Step 2: Verify GitHub CLI authentication status ---
     gh_bin = os.environ.get("PA_GH_BIN", "gh").strip() or "gh"
     try:
         res_gh = runner([gh_bin, "auth", "status"], cwd=root)
@@ -98,15 +198,23 @@ def detect_vcs_mode(
 
 
 def detect_memory_mode(repo_root: str | Path) -> Literal["external", "builtin"]:
-    """Auto-detect memory mode (`external` if repo-memory-plugin is present/enrolled, else `builtin`)."""
+    """Auto-detect memory mode (`external` if `repo-memory` is enrolled, else `builtin`).
+
+    Args:
+        repo_root: Target git repository root path.
+
+    Returns:
+        `"external"` if `.memory/`, `.agents/plugins.json`, or the global `repo-memory-daemon`
+        registry indicates `repo-memory` enrollment; otherwise `"builtin"`.
+    """
     real_root = os.path.realpath(str(repo_root))
     root = Path(real_root)
 
-    # 1. Direct .memory directory in the repository
+    # --- Step 1: Check for a direct `.memory` directory in the repository ---
     if (root / ".memory").exists():
         return "external"
 
-    # 2. <repo>/.agents/plugins.json entry referencing repo-memory
+    # --- Step 2: Check `<repo>/.agents/plugins.json` for a repo-memory entry ---
     plugins_file = root / ".agents" / "plugins.json"
     if plugins_file.is_file():
         try:
@@ -120,10 +228,16 @@ def detect_memory_mode(repo_root: str | Path) -> Literal["external", "builtin"]:
         except (OSError, json.JSONDecodeError):
             pass
 
-    # 3. Global repo-memory-daemon registry listing this repository
+    # --- Step 3: Check the global repo-memory-daemon registry ---
     user_home = Path(os.path.realpath(Path.home()))
     rm_registry = (
-        user_home / ".gemini" / "config" / "plugins" / "repo-memory-daemon" / "state" / "registry.json"
+        user_home
+        / ".gemini"
+        / "config"
+        / "plugins"
+        / "repo-memory-daemon"
+        / "state"
+        / "registry.json"
     )
     if rm_registry.is_file():
         try:
@@ -143,7 +257,11 @@ def detect_memory_mode(repo_root: str | Path) -> Literal["external", "builtin"]:
                         continue
                     if os.path.realpath(str(k)) == real_root:
                         return "external"
-                    if isinstance(v, dict) and "path" in v and os.path.realpath(str(v["path"])) == real_root:
+                    if (
+                        isinstance(v, dict)
+                        and "path" in v
+                        and os.path.realpath(str(v["path"])) == real_root
+                    ):
                         return "external"
             elif isinstance(rdata, list):
                 for item in rdata:
@@ -163,10 +281,24 @@ def _move_path_git_or_fs(
     *,
     runner: common.Runner = common.run,
 ) -> None:
-    """Move `src` to `dst`, preferring `git mv` when `src` is tracked by git."""
+    """Move `src` to `dst`, preferring `git mv` when `src` is tracked by Git.
+
+    Preserves Git rename history when migrating tracked `.agents/skills/` specifications into
+    `.agents/plugins/principal-architect-workspace/`, while seamlessly falling back to
+    `shutil.move` for untracked files or partial worktrees.
+
+    Args:
+        repo_root: Repository root `Path`.
+        src: Source path inside `repo_root`.
+        dst: Destination path inside `repo_root`.
+        runner: Subprocess runner callable.
+    """
+    # --- Step 1: Ensure destination parent directory exists and compute repo-relative paths ---
     dst.parent.mkdir(parents=True, exist_ok=True)
     rel_src = src.relative_to(repo_root)
     rel_dst = dst.relative_to(repo_root)
+
+    # --- Step 2: Use `git mv` if tracked in the index; otherwise fall back to filesystem move ---
     ls_res = runner(
         ["git", "ls-files", "--error-unmatch", str(rel_src)],
         cwd=repo_root,
@@ -189,7 +321,18 @@ def _merge_legacy_into_new_workspace(
     *,
     runner: common.Runner = common.run,
 ) -> list[str]:
-    """Move or merge `.agents/skills/principal-architect-workspace` into `.agents/plugins/principal-architect-workspace`."""
+    """Move or merge `.agents/skills/principal-architect-workspace` into the new workspace path.
+
+    Args:
+        repo_root: Repository root `Path`.
+        legacy_ws: Legacy `.agents/skills/principal-architect-workspace` directory `Path`.
+        new_ws: Canonical `.agents/plugins/principal-architect-workspace` directory `Path`.
+        runner: Subprocess runner callable.
+
+    Returns:
+        List of repository-relative POSIX paths moved during migration.
+    """
+    # --- Step 1: Fast-path whole-directory move when destination does not exist yet ---
     moved: list[str] = []
     if not legacy_ws.exists():
         return moved
@@ -199,6 +342,7 @@ def _merge_legacy_into_new_workspace(
         moved.append(common.NEW_WORKSPACE_REL.as_posix())
         return moved
 
+    # --- Step 2: Merge individual files and subdirectories into existing destination ---
     for item in sorted(legacy_ws.iterdir()):
         if item.name == ".state":
             shutil.rmtree(item, ignore_errors=True)
@@ -234,7 +378,15 @@ def _cleanup_legacy_skill_dir(
     *,
     runner: common.Runner = common.run,
 ) -> bool:
-    """Remove legacy `.agents/skills/principal-architect` directory/submodule if present."""
+    """Remove legacy `.agents/skills/principal-architect` directory or submodule if present.
+
+    Args:
+        repo_root: Repository root `Path`.
+        runner: Subprocess runner callable.
+
+    Returns:
+        `True` if the legacy skill path existed and was removed; `False` otherwise.
+    """
     legacy_skill = repo_root / ".agents" / "skills" / "principal-architect"
     if not legacy_skill.exists() and not legacy_skill.is_symlink():
         return False
@@ -255,12 +407,20 @@ def _cleanup_legacy_skill_dir(
 
 
 def _rewrite_legacy_workspace_paths(new_ws: Path) -> int:
-    """Rewrite stale `.agents/skills/principal-architect-workspace` references in `.md` files."""
+    """Rewrite stale `.agents/skills/principal-architect-workspace` references in `.md` files.
+
+    Args:
+        new_ws: Canonical `.agents/plugins/principal-architect-workspace` directory `Path`.
+
+    Returns:
+        Count of Markdown files updated and re-hashed.
+    """
     if not new_ws.is_dir():
         return 0
 
     import schemas
 
+    # --- Step 1: Scan workspace Markdown files and replace legacy path references ---
     old_str = common.LEGACY_WORKSPACE_REL.as_posix()
     new_str = common.NEW_WORKSPACE_REL.as_posix()
     updated = 0
@@ -278,7 +438,7 @@ def _rewrite_legacy_workspace_paths(new_ws: Path) -> int:
         new_text = text.replace(old_str, new_str)
         md_file.write_text(new_text, encoding="utf-8")
 
-        # Recompute charter_hash or spec_hash if a locked PROJECT.md or WORKORDER.md was rewritten
+        # --- Step 2: Recompute charter_hash or spec_hash on locked specs ---
         try:
             if md_file.name == "PROJECT.md":
                 pdoc = schemas.load_project(md_file)
@@ -313,7 +473,17 @@ def _bridge_repo_memory(
     *,
     runner: common.Runner = common.run,
 ) -> dict[str, Any]:
-    """Ensure PA memory is registered in `.agents/memory/config.json` and run `repo-memory` seed/index."""
+    """Register PA memory in `.agents/memory/config.json` and run `repo-memory` seed/index.
+
+    Args:
+        repo_root: Repository root `Path`.
+        new_ws: Canonical `.agents/plugins/principal-architect-workspace` directory `Path`.
+        runner: Subprocess runner callable.
+
+    Returns:
+        Dictionary summarizing `config_updated`, `commands_run`, and `seeded` status.
+    """
+    # --- Step 1: Update `doc_seeds` in `.agents/memory/config.json` ---
     config_updated = False
     rm_cfg_path = repo_root / ".agents" / "memory" / "config.json"
     new_mem_rel = f"{common.NEW_WORKSPACE_REL.as_posix()}/memory"
@@ -338,6 +508,7 @@ def _bridge_repo_memory(
         except (OSError, json.JSONDecodeError):
             pass
 
+    # --- Step 2: Execute `repo-memory seed`, `seed-docs`, and `index` if installed ---
     rm_bin = (
         os.environ.get("PA_REPO_MEMORY_BIN")
         or shutil.which("repo-memory")
@@ -366,9 +537,18 @@ def _bridge_repo_memory(
 
 
 def _cmd_migrate(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
-    """Migrate legacy `.agents/skills/principal-architect-workspace`, sync state.db, and bridge `repo-memory`."""
+    """Migrate legacy workspace paths, synchronize `state.db`, and bridge `repo-memory`.
+
+    Args:
+        args: Parsed CLI arguments (`path`, `cleanup_legacy_skill`, `seed_repo_memory`, `as_json`).
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on success, `2` if target path or git repository is invalid).
+    """
     import vcs_sync
 
+    # --- Step 1: Validate target repository root ---
     raw_target = Path(args.path).expanduser()
     if not raw_target.exists():
         print(f"Error: Target path does not exist: {args.path}", file=sys.stderr)
@@ -383,6 +563,7 @@ def _cmd_migrate(args: argparse.Namespace, *, runner: common.Runner = common.run
     legacy_ws = real_root / common.LEGACY_WORKSPACE_REL
     new_ws = real_root / common.NEW_WORKSPACE_REL
 
+    # --- Step 2: Merge legacy workspace files, clean up legacy skill, and rewrite paths ---
     moved_paths = _merge_legacy_into_new_workspace(real_root, legacy_ws, new_ws, runner=runner)
     removed_legacy_skill = False
     if getattr(args, "cleanup_legacy_skill", True):
@@ -390,7 +571,7 @@ def _cmd_migrate(args: argparse.Namespace, *, runner: common.Runner = common.run
 
     rewritten_files = _rewrite_legacy_workspace_paths(new_ws)
 
-    # Ensure workspace and state.db exist and run VCS/trailer/audit sync
+    # --- Step 3: Synchronize VCS state and optionally bridge repo-memory ---
     new_ws.mkdir(parents=True, exist_ok=True)
     (new_ws / ".state").mkdir(parents=True, exist_ok=True)
     bus = vcs_sync.get_vcs_bus(real_root, runner=runner)
@@ -408,6 +589,7 @@ def _cmd_migrate(args: argparse.Namespace, *, runner: common.Runner = common.run
     if should_seed_rm:
         rm_summary = _bridge_repo_memory(real_root, new_ws, runner=runner)
 
+    # --- Step 4: Format and emit migration summary ---
     result = {
         "repo_root": str(real_root),
         "workspace_dir": str(new_ws),
@@ -421,6 +603,7 @@ def _cmd_migrate(args: argparse.Namespace, *, runner: common.Runner = common.run
     if getattr(args, "as_json", False):
         print(json.dumps(result, indent=2))
     else:
+        cmds_joined = ", ".join(rm_summary["commands_run"]) or "skipped"
         print(
             f"Migrated repository: {real_root}\n"
             f"  workspace_dir:            {new_ws}\n"
@@ -430,13 +613,21 @@ def _cmd_migrate(args: argparse.Namespace, *, runner: common.Runner = common.run
             f"  synced_wos:               {sync_summary.get('synced_wos', 0)}\n"
             f"  synced_receipts:          {sync_summary.get('synced_receipts', 0)}\n"
             f"  synced_audits:            {sync_summary.get('synced_audits', 0)}\n"
-            f"  repo_memory_seeded:       {rm_summary['seeded']} ({', '.join(rm_summary['commands_run']) or 'skipped'})"
+            f"  repo_memory_seeded:       {rm_summary['seeded']} ({cmds_joined})"
         )
     return 0
 
 
 def _cmd_enroll(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
-    """Execute the normative 9-step `pa enroll` sequence (SPEC §4.3, Charter §2.3)."""
+    """Execute the normative 9-step `pa enroll` sequence (SPEC §4.3, Charter §2.3).
+
+    Args:
+        args: Parsed CLI arguments for `pa enroll`.
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on success, `2` on invalid path, failed `git init`, or migration conflict).
+    """
     raw_target = Path(args.path).expanduser()
     if not raw_target.exists():
         print(f"Error: Target path does not exist: {args.path}", file=sys.stderr)
@@ -446,7 +637,7 @@ def _cmd_enroll(args: argparse.Namespace, *, runner: common.Runner = common.run)
     if target.is_file():
         target = target.parent
 
-    # Step 1: Resolve git root or initialize a local git repository
+    # --- Step 1: Resolve git root or initialize a local git repository ---
     repo_root = common.find_repo_root(target, runner=runner)
     if repo_root is None:
         try:
@@ -462,7 +653,7 @@ def _cmd_enroll(args: argparse.Namespace, *, runner: common.Runner = common.run)
             return 2
         repo_root = Path(os.path.realpath(target))
 
-    # Step 2: Legacy migration check (Charter R8)
+    # --- Step 2: Check and perform legacy workspace migration (Charter R8) ---
     legacy_ws = repo_root / common.LEGACY_WORKSPACE_REL
     new_ws = repo_root / common.NEW_WORKSPACE_REL
     force_migrate = bool(getattr(args, "migrate", False))
@@ -484,13 +675,12 @@ def _cmd_enroll(args: argparse.Namespace, *, runner: common.Runner = common.run)
         _cleanup_legacy_skill_dir(repo_root, runner=runner)
         _rewrite_legacy_workspace_paths(new_ws)
 
-    # Step 3 & 6: Ensure workspace and .state directories exist; open StateDB
+    # --- Step 3: Ensure workspace and .state directories exist and resolve memory_mode ---
     new_ws.mkdir(parents=True, exist_ok=True)
     state_dir = new_ws / ".state"
     state_dir.mkdir(parents=True, exist_ok=True)
 
     with state_db.StateDB(state_dir / "state.db") as db:
-        # Step 3 (cont.): Resolve memory_mode & scaffold builtin memory files if missing
         if args.memory_mode in ("external", "builtin"):
             memory_mode: Literal["external", "builtin"] = args.memory_mode
         else:
@@ -512,13 +702,13 @@ def _cmd_enroll(args: argparse.Namespace, *, runner: common.Runner = common.run)
                         encoding="utf-8",
                     )
 
-        # Step 4: Resolve vcs_mode
+        # --- Step 4: Resolve vcs_mode ---
         if args.vcs_mode in ("github", "local_git"):
             vcs_mode: Literal["github", "local_git"] = args.vcs_mode
         else:
             vcs_mode = detect_vcs_mode(repo_root, runner=runner)
 
-        # Step 5: Resolve extra_skills and exclude_rules (preserving stored values on idempotent re-run)
+        # --- Step 5: Write .state/pa-skills.json and .state/pa-worker-rules.json ---
         if args.extra_skill is not None:
             extra_skills = _dedup_preserve_order(args.extra_skill)
         else:
@@ -577,7 +767,7 @@ def _cmd_enroll(args: argparse.Namespace, *, runner: common.Runner = common.run)
 
         _ensure_line_in_file(new_ws / ".gitignore", ".state/")
 
-        # Step 6: Persist configuration in StateDB
+        # --- Step 6: Persist configuration in StateDB ---
         req_exec = getattr(args, "execution_mode", None)
         existing_exec = db.get_config("execution_mode")
         if req_exec in ("monitored", "autonomous"):
@@ -596,7 +786,7 @@ def _cmd_enroll(args: argparse.Namespace, *, runner: common.Runner = common.run)
         if req_auto_approve is not None:
             db.set_config("auto_approve_pr_plans", "true" if req_auto_approve else "false")
 
-    # Step 7: Write/merge <repo>/.agents/plugins.json and add to .git/info/exclude
+    # --- Step 7: Write/merge <repo>/.agents/plugins.json and update .git/info/exclude ---
     wp_path = str(common.daemon_home() / "workspace-plugin")
     plugins_file = repo_root / ".agents" / "plugins.json"
     plugins_file.parent.mkdir(parents=True, exist_ok=True)
@@ -631,13 +821,13 @@ def _cmd_enroll(args: argparse.Namespace, *, runner: common.Runner = common.run)
     if git_dir.is_dir():
         _ensure_line_in_file(git_dir / "info" / "exclude", ".agents/plugins.json")
 
-    # Step 8: Register repository in global Registry
+    # --- Step 8: Register repository in global Registry ---
     state_db.Registry().register(repo_root, workspace_dir=new_ws)
 
     if (had_legacy or force_migrate) and memory_mode == "external":
         _bridge_repo_memory(repo_root, new_ws, runner=runner)
 
-    # Step 9: Print one-screen summary to stderr and exit 0
+    # --- Step 9: Print one-screen summary to stderr and exit 0 ---
     print(
         f"Enrolled repository: {repo_root}\n"
         f"  workspace_dir:  {new_ws}\n"
@@ -650,7 +840,16 @@ def _cmd_enroll(args: argparse.Namespace, *, runner: common.Runner = common.run)
 
 
 def _cmd_unenroll(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
-    """Remove the workspace plugin entry and unregister the repository (Charter R9)."""
+    """Remove the workspace plugin entry and unregister the repository (Charter R9).
+
+    Args:
+        args: Parsed CLI arguments (`path`).
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code `0`.
+    """
+    # --- Step 1: Resolve repository root and remove workspace-plugin from plugins.json ---
     raw_target = Path(args.path).expanduser()
     repo_root = common.find_repo_root(raw_target, runner=runner) or Path(
         os.path.realpath(raw_target)
@@ -681,11 +880,13 @@ def _cmd_unenroll(args: argparse.Namespace, *, runner: common.Runner = common.ru
         except (OSError, json.JSONDecodeError):
             pass
 
+    # --- Step 2: Unregister repository from global Registry ---
     state_db.Registry().unregister(repo_root)
     print(f"Unenrolled repository: {repo_root}", file=sys.stderr)
     return 0
 
 
+# Compiled regex parsing NUL-delimited `git log` records: `<sha>\x00<wo_id>\x00<verified_hash>`.
 _GIT_LOG_TRAILER_RE = re.compile(
     r"([0-9a-fA-F]{7,40})\x00([^\x00]*)\x00([^\x00\r\n]*)"
 )
@@ -696,25 +897,36 @@ def _scan_git_trailers(
     *,
     runner: common.Runner = common.run,
 ) -> dict[str, tuple[str, str | None]]:
-    """Scan local git commit trailers for `PA-WorkOrder` and `PA-Verified-Hash`.
+    """Scan local Git commit trailers for `PA-WorkOrder` and `PA-Verified-Hash`.
 
-    Returns a mapping `wo_id -> (commit_sha, verified_hash)` for the latest matching commit.
+    Args:
+        repo_root: Target git repository root `Path`.
+        runner: Subprocess runner callable.
+
+    Returns:
+        Mapping `wo_id -> (commit_sha, verified_hash)` for the latest matching commit.
     """
+    # --- Step 1: Query git log using NUL-delimited trailer format ---
+    # `git log --format` uses `%x00` (ASCII NUL) to separate the commit SHA, the extracted
+    # `PA-WorkOrder` trailer value, and the `PA-Verified-Hash` trailer value within each
+    # commit line (companion `vcs_sync` queries also use `%x1e` record separators when
+    # full multi-line commit bodies are included). Because Git SHAs and trailer values
+    # cannot contain NUL bytes, `_GIT_LOG_TRAILER_RE` can unambiguously extract all three
+    # fields even when commits lack one or both trailers.
+    fmt_arg = (
+        "--format=%H%x00"
+        "%(trailers:key=PA-WorkOrder,valueonly=true)%x00"
+        "%(trailers:key=PA-Verified-Hash,valueonly=true)"
+    )
     try:
-        res = runner(
-            [
-                "git",
-                "log",
-                "--format=%H%x00%(trailers:key=PA-WorkOrder,valueonly=true)%x00%(trailers:key=PA-Verified-Hash,valueonly=true)",
-            ],
-            cwd=repo_root,
-        )
+        res = runner(["git", "log", fmt_arg], cwd=repo_root)
     except (OSError, subprocess.SubprocessError):
         return {}
 
     if res.returncode != 0 or not res.stdout:
         return {}
 
+    # --- Step 2: Extract first-seen (most recent) trailer tuple per Work Order ID ---
     trailers: dict[str, tuple[str, str | None]] = {}
     for match in _GIT_LOG_TRAILER_RE.finditer(res.stdout):
         sha = match.group(1).strip()
@@ -731,7 +943,14 @@ def _scan_git_trailers(
 
 
 def _status_glyph(status: str) -> str:
-    """Return a human-readable status glyph (used ONLY in non-JSON human output)."""
+    """Return a human-readable status glyph (used ONLY in non-JSON human output).
+
+    Args:
+        status: Lifecycle status string (e.g., `"COMPLETED"`, `"IN_PROGRESS"`, `"BLOCKED"`).
+
+    Returns:
+        Single-character/emoji glyph representing the status.
+    """
     mapping = {
         "COMPLETED": "✅",
         "GRADUATED": "✅",
@@ -752,9 +971,18 @@ def _status_glyph(status: str) -> str:
 
 
 def _cmd_status(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
-    """Reconcile committed specs, git trailers, and state.db; output human tree or `--json`."""
+    """Reconcile committed specs, Git trailers, and `state.db`; output human tree or `--json`.
+
+    Args:
+        args: Parsed CLI arguments (`path`, `as_json`).
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on success, `2` if target path or git repository is invalid).
+    """
     import schemas  # Lazy import per Charter R1
 
+    # --- Step 1: Resolve repository root, StateDB config, and git trailers ---
     raw_target = Path(args.path).expanduser()
     if not raw_target.exists():
         print(f"Error: Path does not exist: {args.path}", file=sys.stderr)
@@ -785,6 +1013,7 @@ def _cmd_status(args: argparse.Namespace, *, runner: common.Runner = common.run)
     programmes: list[dict[str, Any]] = []
     prs: list[dict[str, Any]] = []
 
+    # --- Step 2: Load Programme and Pull Request specifications from workspace ---
     if ws_dir.is_dir():
         for prog_dir in sorted(ws_dir.glob("programme-*")):
             prog_md = prog_dir / "PROGRAM.md"
@@ -801,6 +1030,7 @@ def _cmd_status(args: argparse.Namespace, *, runner: common.Runner = common.run)
                 }
             )
 
+        # --- Step 3: Reconcile each PR's Work Orders and Audit reports ---
         for pr_dir in sorted(ws_dir.glob("pr-*")):
             proj_md = pr_dir / "PROJECT.md"
             if not proj_md.is_file():
@@ -929,6 +1159,7 @@ def _cmd_status(args: argparse.Namespace, *, runner: common.Runner = common.run)
                 pr_entry["latest_audit"] = latest_audit
             prs.append(pr_entry)
 
+    # --- Step 4: Emit JSON payload or formatted human status tree ---
     payload: dict[str, Any] = {
         "env": {
             "vcs_mode": vcs_mode,
@@ -945,7 +1176,6 @@ def _cmd_status(args: argparse.Namespace, *, runner: common.Runner = common.run)
         print(json.dumps(payload, indent=2))
         return 0
 
-    # Human-readable tree output (glyphs allowed here)
     lines: list[str] = [
         f"Principal Architect Status — {repo_root.name}",
         f"Environment: vcs={vcs_mode} | memory={memory_mode} | mode={execution_mode}",
@@ -953,9 +1183,10 @@ def _cmd_status(args: argparse.Namespace, *, runner: common.Runner = common.run)
     if attention_queue:
         lines.append("\n🔔 Human Attention Needed:")
         for item in attention_queue:
-            lines.append(
-                f"  - [P{item.get('priority', 10)}] ({item.get('kind', 'info')}) {item.get('title', '')}"
-            )
+            p_num = item.get("priority", 10)
+            kind_str = item.get("kind", "info")
+            title_str = item.get("title", "")
+            lines.append(f"  - [P{p_num}] ({kind_str}) {title_str}")
 
     if programmes:
         lines.append("\nProgrammes:")
@@ -974,16 +1205,27 @@ def _cmd_status(args: argparse.Namespace, *, runner: common.Runner = common.run)
             for wo in pr["work_orders"]:
                 wg = _status_glyph(str(wo["status"]))
                 sha_sfx = f" ({str(wo['commit_sha'])[:7]})" if wo.get("commit_sha") else ""
-                lines.append(
-                    f"      {wg} {wo['id']} [{wo['complexity']}]: {wo['title']} — {wo['status']}{sha_sfx}"
+                wo_line = (
+                    f"      {wg} {wo['id']} [{wo['complexity']}]: "
+                    f"{wo['title']} — {wo['status']}{sha_sfx}"
                 )
+                lines.append(wo_line)
 
     print("\n".join(lines))
     return 0
 
 
 def _cmd_mode(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
-    """Get or set repository `execution_mode` (`monitored` | `autonomous`)."""
+    """Get or set repository `execution_mode` (`monitored` | `autonomous`).
+
+    Args:
+        args: Parsed CLI arguments (`path`, `mode_value`).
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on success, `1` on invalid mode string, `2` on invalid repo path).
+    """
+    # --- Step 1: Validate target repository and requested mode value ---
     raw_target = Path(args.path).expanduser()
     if not raw_target.exists():
         print(f"Error: Path does not exist: {args.path}", file=sys.stderr)
@@ -1002,6 +1244,7 @@ def _cmd_mode(args: argparse.Namespace, *, runner: common.Runner = common.run) -
         )
         return 1
 
+    # --- Step 2: Query or update execution_mode in StateDB ---
     ws_dir = common.workspace_dir(repo_root)
     db_file = ws_dir / ".state" / "state.db"
 
@@ -1021,7 +1264,14 @@ def _cmd_mode(args: argparse.Namespace, *, runner: common.Runner = common.run) -
 
 
 def _parse_porcelain_paths(stdout: str) -> list[str]:
-    """Parse dirty/untracked repo-relative POSIX paths from `git status --porcelain -uall`."""
+    """Parse dirty/untracked repo-relative POSIX paths from `git status --porcelain -uall`.
+
+    Args:
+        stdout: Raw stdout string produced by `git status --porcelain -uall`.
+
+    Returns:
+        Deduplicated list of repo-relative POSIX paths for modified, staged, or untracked files.
+    """
     paths: list[str] = []
     seen: set[str] = set()
     for line in stdout.splitlines():
@@ -1038,7 +1288,14 @@ def _parse_porcelain_paths(stdout: str) -> list[str]:
 
 
 def _is_ephemeral_runtime_path(rel_posix: str) -> bool:
-    """Return True if `rel_posix` is an ephemeral runtime file ignored by scope hygiene."""
+    """Return True if `rel_posix` is an ephemeral runtime file ignored by scope hygiene.
+
+    Args:
+        rel_posix: Repository-relative POSIX path string.
+
+    Returns:
+        `True` if the path is `.agents/plugins.json` or resides inside a `.state` directory.
+    """
     norm = rel_posix.strip().lstrip("./")
     if norm == ".agents/plugins.json":
         return True
@@ -1051,7 +1308,17 @@ def _collect_existing_allowed_files(
     forbidden_files: Sequence[str],
     matches_any_fn: Any,
 ) -> list[str]:
-    """Return sorted existing repo-relative POSIX paths matching `allowed_files` and not `forbidden_files`."""
+    """Return sorted existing repo-relative POSIX paths matching `allowed_files`.
+
+    Args:
+        real_root: Canonical repository root `Path`.
+        allowed_files: Allowed path/glob patterns from `WORKORDER.md`.
+        forbidden_files: Forbidden path/glob patterns from `WORKORDER.md`.
+        matches_any_fn: Pattern-matching callable (`pre_tool_gate.matches_any_pattern`).
+
+    Returns:
+        Sorted list of existing repo-relative POSIX file paths within `allowed_files`.
+    """
     collected: list[str] = []
     for dirpath, dirnames, filenames in os.walk(real_root):
         dirnames[:] = [d for d in dirnames if d not in (".git", ".state")]
@@ -1075,7 +1342,15 @@ def _collect_existing_allowed_files(
 
 
 def _cmd_wo_verify(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
-    """Verify Work Order scope hygiene, run `verification_command`, stamp receipt, and commit."""
+    """Verify Work Order scope hygiene, run `verification_command`, stamp receipt, and commit.
+
+    Args:
+        args: Parsed CLI arguments (`wo_id`, `path`).
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on verified commit, `1` on verification failure, `2` on repo error).
+    """
     import post_tool_receipt
     import pre_tool_gate
     import schemas
@@ -1111,7 +1386,7 @@ def _cmd_wo_verify(args: argparse.Namespace, *, runner: common.Runner = common.r
         print(f"Error: Work Order '{wo_id_arg}' not found in {ws_dir}", file=sys.stderr)
         return 1
 
-    # Step 1: Check spec_hash & git status --porcelain scope hygiene
+    # --- Step 1: Check spec_hash & git status --porcelain scope hygiene ---
     if wo_doc.spec.spec_hash and not schemas.verify_spec_hash(wo_doc.path):
         print(
             f"Error: WORKORDER.md Part I spec_hash verification failed for {wo_doc.spec.wo_id}.",
@@ -1151,7 +1426,7 @@ def _cmd_wo_verify(args: argparse.Namespace, *, runner: common.Runner = common.r
         )
         return 1
 
-    # Step 2: Execute verification_command
+    # --- Step 2: Execute verification_command ---
     ver_res = runner(
         ["/bin/sh", "-c", wo_doc.spec.verification_command],
         cwd=real_root,
@@ -1176,7 +1451,7 @@ def _cmd_wo_verify(args: argparse.Namespace, *, runner: common.Runner = common.r
         )
         return 1
 
-    # Step 3: Stamp cryptographic receipt in WORKORDER.md Part II (and PROJECT.md if present)
+    # --- Step 3: Stamp cryptographic receipt in WORKORDER.md Part II and PROJECT.md ---
     t_hash = post_tool_receipt.compute_tree_hash(real_root, wo_doc.spec.allowed_files)
     receipt_id = f"rcpt_{t_hash[:12]}"
     pre_head_res = runner(["git", "rev-parse", "HEAD"], cwd=real_root)
@@ -1272,7 +1547,7 @@ def _cmd_wo_verify(args: argparse.Namespace, *, runner: common.Runner = common.r
                 return 1
             proj_rel_posix = proj_md.resolve().relative_to(real_root).as_posix()
 
-    # Step 4: Commit allowed_files + WORKORDER.md (and PROJECT.md if updated) and record receipt
+    # --- Step 4: Stage files, commit with PA trailers, and upsert StateDB receipt ---
     paths_to_stage = _dedup_preserve_order(
         [
             *files_modified,
@@ -1292,10 +1567,8 @@ def _cmd_wo_verify(args: argparse.Namespace, *, runner: common.Runner = common.r
     )
     commit_res = runner(["git", "commit", "-m", commit_msg], cwd=real_root)
     if commit_res.returncode != 0:
-        print(
-            f"Error: git commit failed: {commit_res.stderr.strip() or commit_res.stdout.strip()}",
-            file=sys.stderr,
-        )
+        err_msg = commit_res.stderr.strip() or commit_res.stdout.strip()
+        print(f"Error: git commit failed: {err_msg}", file=sys.stderr)
         return 1
 
     head_res = runner(["git", "rev-parse", "HEAD"], cwd=real_root)
@@ -1318,8 +1591,9 @@ def _cmd_wo_verify(args: argparse.Namespace, *, runner: common.Runner = common.r
             receipt_id=receipt_id,
         )
 
+    short_sha = new_head_sha[:12] if new_head_sha else "HEAD"
     print(
-        f"Verified and committed {wo_doc.spec.wo_id} ({new_head_sha[:12] if new_head_sha else 'HEAD'})\n"
+        f"Verified and committed {wo_doc.spec.wo_id} ({short_sha})\n"
         f"  receipt_id: {receipt_id}\n"
         f"  tree_hash:  {t_hash}",
         file=sys.stderr,
@@ -1328,7 +1602,15 @@ def _cmd_wo_verify(args: argparse.Namespace, *, runner: common.Runner = common.r
 
 
 def _cmd_wo_debug(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
-    """Transition a Work Order to `BLOCKED`, spawn/prepare `pa-debugger`, and record escalation."""
+    """Transition a Work Order to `BLOCKED`, spawn/prepare `pa-debugger`, and record escalation.
+
+    Args:
+        args: Parsed CLI arguments (`wo_id`, `path`, `reason`).
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on success, `1` if Work Order is missing/invalid, `2` on repo error).
+    """
     import escalation
     import models
     import pre_tool_gate
@@ -1353,7 +1635,7 @@ def _cmd_wo_debug(args: argparse.Namespace, *, runner: common.Runner = common.ru
         print(f"Error: Work Order '{wo_id_arg}' not found in {ws_dir}", file=sys.stderr)
         return 1
 
-    # 1. Transition WORKORDER.md to BLOCKED and verify spec_hash remains intact
+    # --- Step 1: Transition WORKORDER.md to BLOCKED and verify spec_hash ---
     wo_doc.spec.status = schemas.WorkOrderStatus.BLOCKED
     wo_doc.path.write_text(
         schemas.dump_document(wo_doc.spec, wo_doc.sections),
@@ -1387,7 +1669,7 @@ def _cmd_wo_debug(args: argparse.Namespace, *, runner: common.Runner = common.ru
                 )
                 return 1
 
-    # 2. Gather failure context (open escalations, completion summary, git status --short)
+    # --- Step 2: Gather failure context (open escalations, completion summary, git status) ---
     db_file = ws_dir / ".state" / "state.db"
     db_file.parent.mkdir(parents=True, exist_ok=True)
     with state_db.StateDB(db_file) as db:
@@ -1438,7 +1720,7 @@ def _cmd_wo_debug(args: argparse.Namespace, *, runner: common.Runner = common.ru
         f"3. Run `pa wo resolve {wo_doc.spec.wo_id} --summary \"<concise root cause and fix>\"`.\n"
     )
 
-    # 3. Start (and JIT-pin) debugger conversation or fall back to headless bridge prompt
+    # --- Step 3: Start (and JIT-pin) debugger conversation or fall back to bridge prompt ---
     ls_client = models.LanguageServerClient()
     ls_res = ls_client.start_conversation(
         title=f"🔬 [Debug {wo_doc.spec.wo_id}] {wo_doc.spec.title}",
@@ -1449,7 +1731,7 @@ def _cmd_wo_debug(args: argparse.Namespace, *, runner: common.Runner = common.ru
     )
     conv_id = str(ls_res["conversation_id"])
 
-    # 4. Record debugger session and escalation in state.db
+    # --- Step 4: Record debugger session and escalation in state.db ---
     with state_db.StateDB(db_file) as db:
         db.bind_session(
             conv_id,
@@ -1490,7 +1772,15 @@ def _cmd_wo_debug(args: argparse.Namespace, *, runner: common.Runner = common.ru
 
 
 def _cmd_wo_resolve(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
-    """Verify and resolve a blocked Work Order from `pa-debugger`, unpinning and notifying PA."""
+    """Verify and resolve a blocked Work Order from `pa-debugger`, unpinning and notifying PA.
+
+    Args:
+        args: Parsed CLI arguments (`wo_id`, `summary`, `path`).
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on success, `1` on missing summary/verification failure, `2` on repo error).
+    """
     import models
     import post_tool_receipt
     import pre_tool_gate
@@ -1519,7 +1809,7 @@ def _cmd_wo_resolve(args: argparse.Namespace, *, runner: common.Runner = common.
         print(f"Error: Work Order '{wo_id_arg}' not found in {ws_dir}", file=sys.stderr)
         return 1
 
-    # 1. Execute verification_command
+    # --- Step 1: Execute verification_command ---
     ver_res = runner(
         ["/bin/sh", "-c", wo_doc.spec.verification_command],
         cwd=real_root,
@@ -1544,7 +1834,7 @@ def _cmd_wo_resolve(args: argparse.Namespace, *, runner: common.Runner = common.
         )
         return 1
 
-    # 2. Compute tree_hash and receipt_id
+    # --- Step 2: Compute tree_hash and receipt_id ---
     t_hash = post_tool_receipt.compute_tree_hash(real_root, wo_doc.spec.allowed_files)
     receipt_id = f"rcpt_{t_hash[:12]}"
     head_res = runner(["git", "rev-parse", "HEAD"], cwd=real_root)
@@ -1561,7 +1851,7 @@ def _cmd_wo_resolve(args: argparse.Namespace, *, runner: common.Runner = common.
         pre_tool_gate.matches_any_pattern,
     )
 
-    # 3. Update WORKORDER.md to COMPLETED with summary in verification_summary & decisions_made
+    # --- Step 3: Update WORKORDER.md and PROJECT.md to COMPLETED ---
     prev_comp = wo_doc.spec.completion
     existing_attempt_num = prev_comp.attempt_num if prev_comp is not None else 1
     prev_decisions = list(prev_comp.decisions_made) if prev_comp else []
@@ -1615,7 +1905,7 @@ def _cmd_wo_resolve(args: argparse.Namespace, *, runner: common.Runner = common.
                 )
                 return 1
 
-    # 4. Upsert receipt, resolve escalations & attention items, unpin debugger, notify PA
+    # --- Step 4: Upsert receipt, resolve escalations/attention, unpin debugger, notify PA ---
     db_file = ws_dir / ".state" / "state.db"
     db_file.parent.mkdir(parents=True, exist_ok=True)
     ls_client = models.LanguageServerClient()
@@ -1696,7 +1986,16 @@ def _is_pattern_within_allowed_modules(
     allowed_modules: Sequence[str],
     matches_any_fn: Any,
 ) -> bool:
-    """Return True if Work Order `allowed_files` pattern falls within `charter.allowed_modules`."""
+    """Return True if Work Order `allowed_files` pattern falls within `charter.allowed_modules`.
+
+    Args:
+        pattern: Candidate `allowed_files` path or glob pattern from `WORKORDER.md`.
+        allowed_modules: Allowed module prefixes/globs from `PROJECT.md` Part I Charter.
+        matches_any_fn: Pattern-matching callable (`pre_tool_gate.matches_any_pattern`).
+
+    Returns:
+        `True` if `pattern` (or its directory base) matches at least one `allowed_modules` entry.
+    """
     norm = pattern.strip().lstrip("./")
     if not norm:
         return False
@@ -1708,10 +2007,19 @@ def _is_pattern_within_allowed_modules(
 
 
 def _cmd_pr_approve_plan(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
-    """Validate `PROJECT.md` and `wo*/WORKORDER.md` specs, stamp `spec_hash`, and approve PR plan."""
+    """Validate `PROJECT.md` and `wo*/WORKORDER.md` specs, stamp `spec_hash`, and approve PR plan.
+
+    Args:
+        args: Parsed CLI arguments (`pr_id`, `path`).
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on approval, `1` on validation/scope failure, `2` on invalid repo path).
+    """
     import pre_tool_gate
     import schemas
 
+    # --- Step 1: Locate and validate PROJECT.md and charter_hash ---
     raw_target = Path(args.path).expanduser()
     if not raw_target.exists():
         print(f"Error: Path does not exist: {args.path}", file=sys.stderr)
@@ -1775,6 +2083,7 @@ def _cmd_pr_approve_plan(args: argparse.Namespace, *, runner: common.Runner = co
         )
         return 1
 
+    # --- Step 2: Load all wo*/WORKORDER.md files and verify allowed_modules subset ---
     wo_paths = sorted(pr_dir.glob("wo*/WORKORDER.md"))
     if not wo_paths:
         print(
@@ -1822,11 +2131,13 @@ def _cmd_pr_approve_plan(args: argparse.Namespace, *, runner: common.Runner = co
     for row in proj_doc.spec.work_orders:
         if row.id.upper() not in loaded_by_id:
             print(
-                f"Error: Work Order '{row.id}' listed in PROJECT.md has no matching WORKORDER.md in {pr_dir}",
+                f"Error: Work Order '{row.id}' listed in PROJECT.md "
+                f"has no matching WORKORDER.md in {pr_dir}",
                 file=sys.stderr,
             )
             return 1
 
+    # --- Step 3: Stamp spec_hash on each WORKORDER.md and set PROJECT.md status: APPROVED ---
     for wo_md, wo_doc in loaded_wos:
         h = schemas.compute_spec_hash(wo_doc)
         wo_doc.spec.spec_hash = h
@@ -1860,6 +2171,7 @@ def _cmd_pr_approve_plan(args: argparse.Namespace, *, runner: common.Runner = co
         )
         return 1
 
+    # --- Step 4: Resolve open plan_approval items in StateDB ---
     db_file = ws_dir / ".state" / "state.db"
     if db_file.is_file():
         with state_db.StateDB(db_file) as db:
@@ -1878,9 +2190,18 @@ def _cmd_pr_approve_plan(args: argparse.Namespace, *, runner: common.Runner = co
 
 
 def _cmd_escalate(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
-    """Record an upward escalation in `state.db` (`escalations` and optional `attention_queue`)."""
+    """Record an upward escalation in `state.db` (`escalations` and optional `attention_queue`).
+
+    Args:
+        args: Parsed CLI arguments for `pa escalate`.
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on recorded escalation, `1` on missing summary, `2` on invalid repo path).
+    """
     import escalation
 
+    # --- Step 1: Validate target repository and resolve escalation level and roles ---
     raw_target = Path(args.path).expanduser()
     if not raw_target.exists():
         print(f"Error: Path does not exist: {args.path}", file=sys.stderr)
@@ -1909,6 +2230,7 @@ def _cmd_escalate(args: argparse.Namespace, *, runner: common.Runner = common.ru
         print("Error: --summary is required for pa escalate", file=sys.stderr)
         return 1
 
+    # --- Step 2: Persist escalation and optional attention_queue item in StateDB ---
     ws_dir = common.workspace_dir(repo_root)
     db_file = ws_dir / ".state" / "state.db"
     with state_db.StateDB(db_file) as db:
@@ -1942,7 +2264,15 @@ def _resolve_repo_root_and_ws(
     *,
     runner: common.Runner = common.run,
 ) -> tuple[Path, Path] | int:
-    """Resolve `(real_root, ws_dir)` from `path_str`, or print error and return exit code `2`."""
+    """Resolve `(real_root, ws_dir)` from `path_str`, or print error and return exit code `2`.
+
+    Args:
+        path_str: Filesystem path string pointing inside the target git repository.
+        runner: Subprocess runner callable.
+
+    Returns:
+        A 2-tuple `(real_root, ws_dir)` of `Path` objects, or integer `2` on error.
+    """
     raw_target = Path(path_str or ".").expanduser()
     if not raw_target.exists():
         print(f"Error: Path does not exist: {path_str}", file=sys.stderr)
@@ -1959,7 +2289,14 @@ def _resolve_repo_root_and_ws(
 
 
 def _normalize_pr_id(raw_pr_id: str) -> str:
-    """Normalize a PR ID like `'pr-01'` or `'PR-01A'` to `'PR-01'` / `'PR-01a'`."""
+    """Normalize a PR ID like `'pr-01'` or `'PR-01A'` to `'PR-01'` / `'PR-01a'`.
+
+    Args:
+        raw_pr_id: Raw PR identifier or directory slug string.
+
+    Returns:
+        Canonical PR ID string (e.g., `"PR-01"` or `"PR-01a"`).
+    """
     cleaned = raw_pr_id.strip()
     m = re.match(r"^pr-(\d+)([a-z]?)(?:-[a-z0-9-]+)?$", cleaned, re.IGNORECASE)
     if m:
@@ -1968,7 +2305,15 @@ def _normalize_pr_id(raw_pr_id: str) -> str:
 
 
 def _normalize_pr_slug(pr_id_canonical: str, raw_slug: str | None) -> str:
-    """Normalize a PR slug so it matches `^pr-\\d+[a-z]?-[a-z0-9-]+$`."""
+    """Normalize a PR slug so it matches `^pr-\\d+[a-z]?-[a-z0-9-]+$`.
+
+    Args:
+        pr_id_canonical: Canonical PR ID (e.g., `"PR-01"`).
+        raw_slug: Optional user-supplied folder slug.
+
+    Returns:
+        Normalized folder slug prefixed with `pr-NN[a-z]-`.
+    """
     pr_prefix = pr_id_canonical.lower()
     if raw_slug is not None and raw_slug.strip():
         s = re.sub(r"[^a-z0-9-]+", "-", raw_slug.strip().lower()).strip("-")
@@ -1983,7 +2328,15 @@ def _normalize_pr_slug(pr_id_canonical: str, raw_slug: str | None) -> str:
 
 
 def _cmd_sync(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
-    """Synchronize VCS commit trailers, audit reports, and specs into `.state/state.db`."""
+    """Synchronize VCS commit trailers, audit reports, and specs into `.state/state.db`.
+
+    Args:
+        args: Parsed CLI arguments (`path`, `path_opt`).
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on success, `2` on invalid repository path).
+    """
     import vcs_sync
 
     target_path = getattr(args, "path_opt", None) or getattr(args, "path", None) or "."
@@ -1999,10 +2352,19 @@ def _cmd_sync(args: argparse.Namespace, *, runner: common.Runner = common.run) -
 
 
 def _cmd_programme_init(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
-    """Scaffold `<ws_dir>/programme-<slug>/PROGRAM.md` and bind the Tier 1 Chief conversation."""
+    """Scaffold `<ws_dir>/programme-<slug>/PROGRAM.md` and bind the Tier 1 Chief conversation.
+
+    Args:
+        args: Parsed CLI arguments (`slug`, `title`, `base_branch`, `path`).
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on success, `1` on invalid slug/title, `2` on invalid repo path).
+    """
     import models
     import schemas
 
+    # --- Step 1: Validate repository root, programme slug, and title ---
     resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
     if isinstance(resolved, int):
         return resolved
@@ -2019,6 +2381,7 @@ def _cmd_programme_init(args: argparse.Namespace, *, runner: common.Runner = com
         print("Error: --title is required for pa programme init", file=sys.stderr)
         return 1
 
+    # --- Step 2: Scaffold or update `<ws_dir>/programme-<slug>/PROGRAM.md` ---
     base_branch = str(args.base_branch or "main").strip() or "main"
     programme_id = f"prog-{clean_slug}"
     prog_dir = ws_dir / f"programme-{clean_slug}"
@@ -2046,6 +2409,7 @@ def _cmd_programme_init(args: argparse.Namespace, *, runner: common.Runner = com
         )
         prog_doc = schemas.load_program(prog_md)
 
+    # --- Step 3: Start and bind the Tier 1 Chief Architect conversation ---
     prog_rel = prog_md.resolve().relative_to(real_root).as_posix()
     chief_prompt = (
         f"PA_ROLE: chief\n"
@@ -2097,10 +2461,32 @@ def _scaffold_or_update_project_charter(
     required_skills_arg: Sequence[str] | None = None,
     programme_id_arg: str | None = None,
 ) -> tuple[Path, Path, Any, str]:
-    """Create or update `<ws_dir>/<slug>/PROJECT.md` Part I Charter and stamp `charter_hash`."""
+    """Create or update `<ws_dir>/<slug>/PROJECT.md` Part I Charter and stamp `charter_hash`.
+
+    Args:
+        ws_dir: Active Principal Architect workspace directory `Path`.
+        pr_id_raw: Raw Pull Request identifier (e.g., `"PR-01"` or `"pr-01"`).
+        slug_arg: Optional PR folder slug override.
+        title_arg: Optional PR title override.
+        branch_arg: Optional PR head branch override.
+        base_branch_arg: Optional PR base branch override.
+        allowed_modules_arg: Optional sequence of allowed module path/glob strings.
+        verification_floor_arg: Optional sequence of verification floor shell commands.
+        depends_on_arg: Optional sequence of upstream PR IDs.
+        required_skills_arg: Optional sequence of required skill names.
+        programme_id_arg: Optional parent programme ID override.
+
+    Returns:
+        A 4-tuple `(pr_dir, proj_md, proj_doc, charter_hash)`.
+
+    Raises:
+        ValueError: If `pr_id_raw` does not match the canonical `PR-NN[a-z]` format.
+        RuntimeError: If `charter_hash` verification fails after writing `PROJECT.md`.
+    """
     import schemas
     import vcs_sync
 
+    # --- Step 1: Normalize PR ID and resolve defaults from any existing PROJECT.md ---
     pr_id_canonical = _normalize_pr_id(pr_id_raw)
     if not re.fullmatch(r"^PR-\d+[a-z]?$", pr_id_canonical):
         raise ValueError(f"Invalid PR ID '{pr_id_raw}' (expected format 'PR-01')")
@@ -2202,7 +2588,12 @@ def _scaffold_or_update_project_charter(
         if programme_id is None:
             programme_id = "prog-default"
 
-    pr_dir = existing_dir if (existing_doc is not None and existing_dir.is_dir()) else (ws_dir / slug)
+    # --- Step 2: Scaffold PROJECT.md from template if missing and lock Part I Charter ---
+    pr_dir = (
+        existing_dir
+        if (existing_doc is not None and existing_dir.is_dir())
+        else (ws_dir / slug)
+    )
     pr_dir.mkdir(parents=True, exist_ok=True)
     proj_md = pr_dir / "PROJECT.md"
 
@@ -2245,7 +2636,7 @@ def _scaffold_or_update_project_charter(
     if not schemas.verify_charter_hash(proj_md):
         raise RuntimeError(f"Failed to verify stamped charter_hash on {proj_md}")
 
-    # Upsert PRNodeSpec in any matching PROGRAM.md
+    # --- Step 3: Upsert corresponding PRNodeSpec in any matching PROGRAM.md ---
     for prog_md in sorted(ws_dir.glob("programme-*/PROGRAM.md")):
         try:
             prog_doc = schemas.load_program(prog_md)
@@ -2303,9 +2694,18 @@ def _cmd_programme_charter(
     *,
     runner: common.Runner = common.run,
 ) -> int:
-    """Author or update Part I (`PR Charter`) of `PROJECT.md`, lock `charter_hash`, and update `PROGRAM.md`."""
+    """Author or update Part I (`PR Charter`) of `PROJECT.md` and lock `charter_hash`.
+
+    Args:
+        args: Parsed CLI arguments for `pa programme charter`.
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on success, `1` on charter/VCS error, `2` on invalid repo path).
+    """
     import vcs_sync
 
+    # --- Step 1: Scaffold or update PROJECT.md Part I Charter ---
     resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
     if isinstance(resolved, int):
         return resolved
@@ -2329,6 +2729,7 @@ def _cmd_programme_charter(
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    # --- Step 2: Optionally checkout branch and open draft PR ---
     ch = proj_doc.spec.charter
     draft_res: dict[str, Any] | None = None
     if getattr(args, "open_draft", False):
@@ -2354,11 +2755,20 @@ def _cmd_programme_charter(
 
 
 def _cmd_pr_start(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
-    """Create/checkout stacked PR branch, verify/scaffold `PROJECT.md`, and start/pin Tier 2 PA session."""
+    """Create/checkout stacked PR branch, verify `PROJECT.md`, and start/pin Tier 2 PA session.
+
+    Args:
+        args: Parsed CLI arguments for `pa pr start`.
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on success, `1` on charter/branch error, `2` on invalid repo path).
+    """
     import models
     import schemas
     import vcs_sync
 
+    # --- Step 1: Locate or scaffold PROJECT.md and verify charter_hash ---
     resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
     if isinstance(resolved, int):
         return resolved
@@ -2390,7 +2800,13 @@ def _cmd_pr_start(args: argparse.Namespace, *, runner: common.Runner = common.ru
                 file=sys.stderr,
             )
             return 1
-    elif args.title or args.branch or args.base_branch or args.allowed_module or args.verification_command:
+    elif (
+        args.title
+        or args.branch
+        or args.base_branch
+        or args.allowed_module
+        or args.verification_command
+    ):
         try:
             pr_dir, _, proj_doc, _ = _scaffold_or_update_project_charter(
                 ws_dir,
@@ -2409,11 +2825,13 @@ def _cmd_pr_start(args: argparse.Namespace, *, runner: common.Runner = common.ru
     proj_md = pr_dir / "PROJECT.md"
     if proj_doc.spec.charter.charter_locked and not schemas.verify_charter_hash(proj_md):
         print(
-            f"Error: PROJECT.md Part I charter_hash verification failed for {proj_doc.spec.charter.pr_id}.",
+            f"Error: PROJECT.md Part I charter_hash verification failed "
+            f"for {proj_doc.spec.charter.pr_id}.",
             file=sys.stderr,
         )
         return 1
 
+    # --- Step 2: Create or checkout the stacked PR branch ---
     ch = proj_doc.spec.charter
     pr_id_canonical = ch.pr_id
     bus = vcs_sync.get_vcs_bus(real_root, runner=runner)
@@ -2423,6 +2841,7 @@ def _cmd_pr_start(args: argparse.Namespace, *, runner: common.Runner = common.ru
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    # --- Step 3: Start (and JIT-pin) Tier 2 Principal Architect session ---
     proj_rel = proj_md.resolve().relative_to(real_root).as_posix()
     pa_prompt = (
         f"PA_ROLE: pa\n"
@@ -2465,10 +2884,19 @@ def _cmd_pr_start(args: argparse.Namespace, *, runner: common.Runner = common.ru
 
 
 def _cmd_pr_claim(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
-    """Multi-machine/multi-harness PR pickup: sync state, checkout PR branch, and output PA continuation prompt."""
+    """Sync state, checkout PR branch, and output Tier 2 PA continuation prompt.
+
+    Args:
+        args: Parsed CLI arguments (`pr_id`, `path`).
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on success, `1` if PR not found or checkout fails, `2` on repo error).
+    """
     import schemas
     import vcs_sync
 
+    # --- Step 1: Sync VCS state and locate PROJECT.md ---
     resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
     if isinstance(resolved, int):
         return resolved
@@ -2482,6 +2910,7 @@ def _cmd_pr_claim(args: argparse.Namespace, *, runner: common.Runner = common.ru
         print(f"Error: PROJECT.md for '{args.pr_id}' not found in {ws_dir}", file=sys.stderr)
         return 1
 
+    # --- Step 2: Checkout PR branch, re-sync trailers, and build continuation prompt ---
     ch = proj_doc.spec.charter
     try:
         bus.create_or_checkout_branch(ch.branch, ch.base_branch)
@@ -2530,7 +2959,15 @@ def _cmd_pr_open_or_sync(
     *,
     runner: common.Runner = common.run,
 ) -> int:
-    """Transition `<pr_id>` to `STAGED_FOR_AUDIT` and open/update GitHub PR when in `github` mode."""
+    """Transition `<pr_id>` to `STAGED_FOR_AUDIT` and open/update GitHub PR in `github` mode.
+
+    Args:
+        args: Parsed CLI arguments (`pr_id`, `draft`, `path`).
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on success, `1` on missing receipts/PR error, `2` on repo error).
+    """
     import vcs_sync
 
     resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
@@ -2554,7 +2991,15 @@ def _cmd_pr_post_audit(
     *,
     runner: common.Runner = common.run,
 ) -> int:
-    """Validate and record `<audit.md>` into `AUDIT-round-<K>.md` (and `gh pr review --comment` in `github` mode)."""
+    """Validate and record `<audit.md>` into `AUDIT-round-<K>.md` and optional GitHub review.
+
+    Args:
+        args: Parsed CLI arguments (`pr_id`, `file`, `no_commit`, `path`).
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on success, `1` on validation or VCS failure, `2` on repo error).
+    """
     import vcs_sync
 
     resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
@@ -2587,7 +3032,15 @@ def _cmd_pr_sync_audit(
     *,
     runner: common.Runner = common.run,
 ) -> int:
-    """Sync the latest Cold-Firewall `AuditReport` for `<pr_id>` into `.state/state.db`."""
+    """Sync the latest Cold-Firewall `AuditReport` for `<pr_id>` into `.state/state.db`.
+
+    Args:
+        args: Parsed CLI arguments (`pr_id`, `path`).
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` when an audit report is synced, `1` if missing/error, `2` on repo error).
+    """
     import vcs_sync
 
     resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
@@ -2614,7 +3067,15 @@ def _cmd_pr_sync_audit(
 
 
 def _sha_matches(sha_a: str, sha_b: str) -> bool:
-    """Return True if two Git commit SHAs match (supporting >=7-char short SHA prefixes)."""
+    """Return True if two Git commit SHAs match (supporting >=7-char short SHA prefixes).
+
+    Args:
+        sha_a: First hex commit SHA string.
+        sha_b: Second hex commit SHA string.
+
+    Returns:
+        `True` if both SHAs are at least 7 characters and one is a prefix of the other.
+    """
     a = sha_a.strip().lower()
     b = sha_b.strip().lower()
     if len(a) < 7 or len(b) < 7:
@@ -2630,10 +3091,30 @@ def _head_matches_audited_sha(
     *,
     runner: common.Runner,
 ) -> bool:
-    """Verify `audited_sha` matches `current_head_sha` (or `HEAD~1` when `HEAD` is the audit commit itself)."""
+    """Verify `audited_sha` matches `current_head_sha` (or `HEAD~1` when `HEAD` is audit commit).
+
+    In `local_git` mode (and default `pa pr post-audit` runs), recording the Cold-Firewall
+    `AuditReport` creates a new commit on top of the very `HEAD` SHA (`audited_sha`) that the
+    auditor evaluated. To prevent that audit-recording commit from invalidating its own
+    `head_sha` match during `pa pr graduate` (Rule R6), this function accepts `HEAD~1 ==
+    audited_sha` if and only if the diff between `HEAD~1` and `HEAD` touches exclusively
+    `AUDIT-round-<K>.md` and/or `PROJECT.md` inside `pr_dir`.
+
+    Args:
+        real_root: Canonical repository root `Path`.
+        pr_dir: Pull Request workspace directory `Path`.
+        current_head_sha: Current `git rev-parse HEAD` commit SHA.
+        audited_sha: `head_sha` recorded inside the latest `AuditReport`.
+        runner: Subprocess runner callable.
+
+    Returns:
+        `True` if `current_head_sha` matches `audited_sha` directly or via an audit-only commit.
+    """
+    # --- Step 1: Check direct SHA match against current HEAD ---
     if _sha_matches(current_head_sha, audited_sha):
         return True
 
+    # --- Step 2: Check if HEAD~1 matches audited_sha and HEAD only touched audit/project docs ---
     parent_res = runner(["git", "rev-parse", "HEAD~1"], cwd=real_root)
     if parent_res.returncode != 0 or not parent_res.stdout.strip():
         return False
@@ -2664,11 +3145,20 @@ def _cmd_pr_graduate(
     *,
     runner: common.Runner = common.run,
 ) -> int:
-    """Verify Rule R6 (`APPROVED` audit on current `HEAD` + `verification_floor`) and graduate `<pr_id>`."""
+    """Verify Rule R6 (`APPROVED` audit on current `HEAD` + `verification_floor`) and graduate PR.
+
+    Args:
+        args: Parsed CLI arguments (`pr_id`, `skip_floor`, `completed_date`, `path`).
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on graduation, `1` on audit/floor gate failure, `2` on repo error).
+    """
     import memory_grad
     import models
     import vcs_sync
 
+    # --- Step 1: Resolve PR specification and verify APPROVED Cold-Firewall Audit on HEAD ---
     resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
     if isinstance(resolved, int):
         return resolved
@@ -2710,6 +3200,7 @@ def _cmd_pr_graduate(
         )
         return 1
 
+    # --- Step 2: Execute charter.verification_floor commands unless --skip-floor ---
     if not getattr(args, "skip_floor", False):
         for floor_cmd in proj_doc.spec.charter.verification_floor:
             cmd_str = str(floor_cmd).strip()
@@ -2736,12 +3227,14 @@ def _cmd_pr_graduate(
                 )
                 return 1
 
+    # --- Step 3: Graduate PR memory and update PROJECT.md / PROGRAM.md ---
     grad_res = memory_grad.graduate(
         real_root,
         pr_id_canonical,
         completed_date=getattr(args, "completed_date", None),
     )
 
+    # --- Step 4: Unpin PA session, notify Chief session, and commit graduated artifacts ---
     db_file = ws_dir / ".state" / "state.db"
     db_file.parent.mkdir(parents=True, exist_ok=True)
     ls_client = models.LanguageServerClient()
@@ -2818,7 +3311,15 @@ def _cmd_pr_restack(
     *,
     runner: common.Runner = common.run,
 ) -> int:
-    """Rebase stacked PR branches (`git rebase --update-refs`) and retarget GitHub PR bases."""
+    """Rebase stacked PR branches (`git rebase --update-refs`) and retarget GitHub PR bases.
+
+    Args:
+        args: Parsed CLI arguments (`pr_id`, `pr_id_pos`, `onto`, `path`).
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on success, `1` on rebase/VCS failure, `2` on repo error).
+    """
     import vcs_sync
 
     resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
@@ -2843,7 +3344,15 @@ def _cmd_issue_create(
     *,
     runner: common.Runner = common.run,
 ) -> int:
-    """Record a deferred out-of-scope finding in `DEFERRED_BACKLOG.md` (and `gh issue create --label pa:deferred` in `github` mode)."""
+    """Record a deferred out-of-scope finding in `DEFERRED_BACKLOG.md` or GitHub Issues.
+
+    Args:
+        args: Parsed CLI arguments (`title`, `summary`, `pr_id`, `wo_id`, `file_path`, `label`).
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` on success, `1` on missing title or VCS failure, `2` on repo error).
+    """
     import vcs_sync
 
     resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
@@ -2875,14 +3384,18 @@ def _cmd_issue_create(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Construct the root `pa` ArgumentParser and register all `COMMAND_MODULES`."""
+    """Construct the root `pa` ArgumentParser and register all `COMMAND_MODULES`.
+
+    Returns:
+        Configured `argparse.ArgumentParser` instance for the `pa` CLI.
+    """
     parser = argparse.ArgumentParser(
         prog="pa",
         description="Principal Architect Plugin CLI control plane.",
     )
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
 
-    # 1. pa enroll
+    # --- Step 1: Register repository enrollment and migration commands ---
     p_enroll = subparsers.add_parser(
         "enroll",
         help="Enroll a repository into principal-architect-plugin.",
@@ -2941,14 +3454,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_enroll.add_argument(
         "--migrate",
         action="store_true",
-        help="Merge/migrate legacy .agents/skills/principal-architect-workspace, rewrite stale paths, clean up legacy skill, and seed repo-memory.",
+        help=(
+            "Merge/migrate legacy .agents/skills/principal-architect-workspace, "
+            "rewrite stale paths, clean up legacy skill, and seed repo-memory."
+        ),
     )
     p_enroll.set_defaults(_handler=_cmd_enroll)
 
-    # 1b. pa migrate
     p_migrate = subparsers.add_parser(
         "migrate",
-        help="Migrate legacy .agents/skills/principal-architect-workspace, sync state.db, and bridge repo-memory.",
+        help=(
+            "Migrate legacy .agents/skills/principal-architect-workspace, "
+            "sync state.db, and bridge repo-memory."
+        ),
     )
     p_migrate.add_argument(
         "path",
@@ -2984,7 +3502,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_migrate.set_defaults(_handler=_cmd_migrate)
 
-    # 2. pa unenroll
     p_unenroll = subparsers.add_parser(
         "unenroll",
         help="Unenroll a repository from principal-architect-plugin.",
@@ -2997,7 +3514,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_unenroll.set_defaults(_handler=_cmd_unenroll)
 
-    # 3. pa status
+    # --- Step 2: Register workspace inspection and mode commands (status, sync, mode) ---
     p_status = subparsers.add_parser(
         "status",
         help="Reconcile and display Programme, PR, and Work Order status.",
@@ -3016,7 +3533,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_status.set_defaults(_handler=_cmd_status)
 
-    # 4. pa sync
     p_sync = subparsers.add_parser(
         "sync",
         help="Synchronize VCS commit trailers, audit reports, and specs into .state/state.db.",
@@ -3035,7 +3551,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_sync.set_defaults(_handler=_cmd_sync)
 
-    # 5. pa mode
     p_mode = subparsers.add_parser(
         "mode",
         help="Get or set the repository execution mode (monitored or autonomous).",
@@ -3054,7 +3569,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_mode.set_defaults(_handler=_cmd_mode)
 
-    # 6. pa programme <subcommand>
+    # --- Step 3: Register Tier 1 Programme subcommands (programme init, charter) ---
     p_programme = subparsers.add_parser(
         "programme",
         help="Programme lifecycle commands (init, charter).",
@@ -3162,7 +3677,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_prog_charter.set_defaults(_handler=_cmd_programme_charter)
 
-    # 7. pa wo <subcommand>
+    # --- Step 4: Register Tier 3 Work Order subcommands (wo verify, debug, resolve) ---
     p_wo = subparsers.add_parser(
         "wo",
         help="Work Order lifecycle commands.",
@@ -3171,7 +3686,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_wo_verify = wo_subparsers.add_parser(
         "verify",
-        help="Verify Work Order scope hygiene, run verification_command, stamp receipt, and commit.",
+        help=(
+            "Verify Work Order scope hygiene, run verification_command, "
+            "stamp receipt, and commit."
+        ),
     )
     p_wo_verify.add_argument(
         "wo_id",
@@ -3206,7 +3724,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_wo_resolve = wo_subparsers.add_parser(
         "resolve",
-        help="Verify and resolve a blocked Work Order from pa-debugger, unpinning and notifying PA.",
+        help=(
+            "Verify and resolve a blocked Work Order from pa-debugger, "
+            "unpinning and notifying PA."
+        ),
     )
     p_wo_resolve.add_argument(
         "wo_id",
@@ -3224,7 +3745,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_wo_resolve.set_defaults(_handler=_cmd_wo_resolve)
 
-    # 8. pa pr <subcommand>
+    # --- Step 5: Register Tier 2 Pull Request subcommands (pr start, claim, approve-plan, ...) ---
     p_pr = subparsers.add_parser(
         "pr",
         help="Pull Request lifecycle commands.",
@@ -3233,7 +3754,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_pr_start = pr_subparsers.add_parser(
         "start",
-        help="Create/checkout stacked branch, verify/scaffold PROJECT.md, and start/pin PA session.",
+        help=(
+            "Create/checkout stacked branch, verify/scaffold PROJECT.md, "
+            "and start/pin PA session."
+        ),
     )
     p_pr_start.add_argument(
         "pr_id",
@@ -3297,7 +3821,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_pr_approve = pr_subparsers.add_parser(
         "approve-plan",
-        help="Validate PROJECT.md and wo*/WORKORDER.md specs, stamp spec_hash, and set status: APPROVED.",
+        help=(
+            "Validate PROJECT.md and wo*/WORKORDER.md specs, "
+            "stamp spec_hash, and set status: APPROVED."
+        ),
     )
     p_pr_approve.add_argument(
         "pr_id",
@@ -3332,7 +3859,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_pr_post_audit = pr_subparsers.add_parser(
         "post-audit",
-        help="Validate and record Cold-Firewall Audit report (and post gh pr review --comment in github mode).",
+        help=(
+            "Validate and record Cold-Firewall Audit report "
+            "(and post gh pr review --comment in github mode)."
+        ),
     )
     p_pr_post_audit.add_argument(
         "pr_id",
@@ -3357,7 +3887,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_pr_sync_audit = pr_subparsers.add_parser(
         "sync-audit",
-        help="Sync latest AuditReport from AUDIT-round-K.md or GitHub PR review into .state/state.db.",
+        help=(
+            "Sync latest AuditReport from AUDIT-round-K.md "
+            "or GitHub PR review into .state/state.db."
+        ),
     )
     p_pr_sync_audit.add_argument(
         "pr_id",
@@ -3422,7 +3955,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_pr_restack.set_defaults(_handler=_cmd_pr_restack)
 
-    # 9. pa issue <subcommand>
+    # --- Step 6: Register deferred issue and escalation commands (issue create, escalate) ---
     p_issue = subparsers.add_parser(
         "issue",
         help="Deferred issue and out-of-scope finding commands.",
@@ -3475,7 +4008,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_issue_create.set_defaults(_handler=_cmd_issue_create)
 
-    # 10. pa escalate
     p_escalate = subparsers.add_parser(
         "escalate",
         help="Record an upward hierarchical escalation in state.db.",
@@ -3556,7 +4088,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_escalate.set_defaults(_handler=_cmd_escalate)
 
-    # Extension hook for downstream PR modules
+    # --- Step 7: Load and register any dynamic COMMAND_MODULES extensions ---
     for mod_name in COMMAND_MODULES:
         mod = importlib.import_module(mod_name)
         register_fn = getattr(mod, "register", None)
@@ -3571,7 +4103,16 @@ def main(
     *,
     runner: common.Runner = common.run,
 ) -> int:
-    """CLI entrypoint returning exit code (0 = success, 1 = usage/validation, 2 = environment)."""
+    """CLI entrypoint returning exit code (`0` = success, `1` = usage/validation, `2` = env).
+
+    Args:
+        argv: Optional sequence of command-line arguments (defaults to `sys.argv[1:]`).
+        runner: Subprocess runner callable (defaults to `common.run`).
+
+    Returns:
+        Process exit code (`0`, `1`, or `2`).
+    """
+    # --- Step 1: Build ArgumentParser and parse CLI arguments ---
     args_list = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
 
@@ -3586,11 +4127,11 @@ def main(
         parser.print_help(sys.stderr)
         return 1
 
+    # --- Step 2: Dispatch parsed subcommand to registered `_handler` or `func` ---
     handler = getattr(args, "_handler", None)
     if callable(handler):
         return int(handler(args, runner=runner))
 
-    # Fallback for COMMAND_MODULES setting `func`
     func = getattr(args, "func", None)
     if callable(func):
         try:

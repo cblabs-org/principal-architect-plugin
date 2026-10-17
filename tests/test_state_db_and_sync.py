@@ -1,4 +1,50 @@
-"""Comprehensive unit and integration tests for state DB, sync, and common foundations."""
+"""Principal Architect Plugin (c) 2026 Matt McNeill
+https://github.com/matthewmcneill/principal-architect-plugin
+SPDX-License-Identifier: Apache-2.0
+
+Module: tests/test_state_db_and_sync.py
+
+Responsibility:
+    Unit, integration, and dogfood tests for the zero-dependency stdlib foundation
+    (`common.py`), SQLite WAL state database and global repository registry
+    (`state_db.py`), and `pa_cli.py` enrollment, migration, mode, sync, and status
+    subcommands.
+
+Test Suite Coverage Summary:
+    1. Stdlib Foundations (`common.py`):
+       - `test_sqlite_available`, `test_common_import_purity`: Verify stdlib-only
+         imports (zero `pydantic`/`yaml` leakage) and SQLite WAL support.
+       - `test_find_repo_root`, `test_find_repo_root_fallback`,
+         `test_workspace_dir_resolution`, `test_workspace_dir_dogfood`: Verify Git
+         root discovery, `file://` URI handling, and workspace path precedence.
+       - `test_daemon_home`, `test_is_repo_enrolled`: Verify `PA_DAEMON_HOME`
+         resolution and `< 1 ms` enrollment checks.
+       - `test_read_transcript`, `test_latest_checkpoint_step`,
+         `test_render_template`, `test_templates_dir`, `test_fake_runner_scripting`:
+         Verify transcript JSONL parsing, Mustache template rendering, and `FakeRunner`.
+    2. SQLite WAL `StateDB` & Global `Registry` (`state_db.py`):
+       - `test_state_db_constants`, `test_state_db_table_schemas_and_pragmas`: Verify
+         WAL journal mode, `busy_timeout = 5000`, `user_version = 1`, and 5 table schemas.
+       - `test_state_db_repo_config`, `test_state_db_sessions`,
+         `test_state_db_verification_receipts`, `test_state_db_escalations`,
+         `test_state_db_attention_queue`: Verify CRUD, filtering, receipt invalidation,
+         and priority ordering across all 5 tables.
+       - `test_registry_operations`, `test_registry_missing_or_corrupt_file`: Verify
+         idempotent registration, lookup, unregistration, and corrupt-file recovery.
+    3. `pa` CLI Lifecycle, Enrollment, Migration & Dogfood (`pa_cli.py`):
+       - `test_pa_cli_lazy_import_purity`, `test_pa_cli_command_modules_extension`:
+         Verify lazy schema imports and dynamic subcommand registration.
+       - `test_enroll_explicit_2x2_matrix`, `test_enroll_autodetect_memory_and_vcs_modes`,
+         `test_enroll_manifests_idempotency_and_memory_preservation`: Verify `(external |
+         builtin) x (github | local_git)` enrollment and manifest generation.
+       - `test_enroll_legacy_migration_tracked_untracked_and_conflict`,
+         `test_enroll_non_git_directory_and_unenroll_via_wrappers`,
+         `test_pa_migrate_and_enroll_with_migrate_and_repo_memory_bridge`: Verify legacy
+         workspace migration, `enroll.sh`/`unenroll.sh` wrappers, and `repo-memory` seeding.
+       - `test_pa_mode_get_set_and_invalid`, `test_pa_status_synthetic_and_dogfood`,
+         `test_dogfood_self_enroll_sync_and_status_on_repo_workspace`: Verify `pa mode`,
+         `pa sync`, and `pa status --json` against synthetic and live dogfood workspaces.
+"""
 
 from __future__ import annotations
 

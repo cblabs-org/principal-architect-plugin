@@ -1,21 +1,116 @@
-"""Local-Git floor and GitHub multi-machine synchronization bus (`vcs_sync.py`).
+"""Principal Architect Plugin (c) 2026 Matt McNeill
+https://github.com/matthewmcneill/principal-architect-plugin
+SPDX-License-Identifier: Apache-2.0
+Module: daemon/workspace-plugin/principal-architect/scripts/vcs_sync.py
 
-Implements SPEC §8 & §11.3 and PR-03 Charter G1, R1, & R2:
-- `format_commit_with_trailers`, `read_commit_trailers` (and alias `read_trailers`) parsing
-  `PA-WorkOrder`, `PA-Verified-Hash`, and `PA-Audit-Verdict` trailers from `git log`.
-- `format_pa_audit_comment` and `parse_pa_audit_comment` handling the machine-parseable
-  `<!-- pa:audit ... -->` comment header and `**Audit Verdict:**` line.
-- `write_audit_round` validating `AuditReport` (`1 <= audit_round <= 5`), persisting
-  `<pr_dir>/AUDIT-round-<K>.md`, updating `PROJECT.md` status (`AUDIT_APPROVED` or
-  `CHANGES_REQUESTED`) without mutating Part I `charter_hash`, and committing with
-  trailer `PA-Audit-Verdict: <verdict> (<head_sha>)`.
-- `append_deferred_backlog` appending deferred items to `<workspace_dir>/DEFERRED_BACKLOG.md`.
-- `sync_state` rebuilding `.state/state.db` (`verification_receipts`, `escalations`,
-  `latest_audit:<PR-ID>`, `last_vcs_sync_at`) and reconciling `PROJECT.md` `work_orders`
-  summary rows from local git trailers and committed Split-Authority artifacts.
-- `create_or_checkout_branch`, `restack_branches` (`git rebase --update-refs`), `VcsBus`,
-  `LocalGitBus`, `GitHubBus` (`gh pr create/edit/view/diff`, `gh pr review --comment`,
-  `gh issue create --label pa:deferred`), and `get_vcs_bus`.
+Local-Git floor and GitHub multi-machine synchronization bus for the Split-Authority software
+delivery workflow.
+
+In the Three-Tier Split-Authority architecture, Git commits, branch stacks, and Pull Request audit
+artifacts serve as the durable cross-session and cross-machine source of truth while
+`<workspace_dir>/.state/state.db` acts as a gitignored local runtime cache. This module provides a
+dual-mode Version Control System synchronization bus (`VCSBus`):
+- `LocalGitBus` (`vcs_mode == "local_git"`): Operates 100% offline using local Git branches,
+  `git rebase --update-refs` stacked branch restacking, structured commit trailers
+  (`PA-WorkOrder`, `PA-Verified-Hash`, `PA-Audit-Verdict`), `<pr_dir>/AUDIT-round-<K>.md` files,
+  and `<workspace_dir>/DEFERRED_BACKLOG.md`.
+- `GitHubBus` (`vcs_mode == "github"`): Extends `LocalGitBus` to synchronize stacked PRs, machine-
+  parseable Cold-Firewall audit review comments (`gh pr review --comment`), and deferred engineering
+  issues (`gh issue create --label pa:deferred`) across machines via the `gh` CLI.
+
+Exported API Summary
+--------------------
+Constants:
+- `MAX_AUDIT_ROUNDS`: Hard ceiling on Cold-Firewall audit rounds per PR before mandatory human
+  escalation (`5`).
+
+Functions:
+- `format_commit_with_trailers(subject, body=None, trailers=None) -> str`: Format a Git commit
+  message with subject, optional body, and `Key: Value` trailers.
+- `read_commit_trailers(repo_root, *, rev_range=None, max_count=None, runner=common.run) ->
+  list[dict[str, Any]]`: Parse `PA-WorkOrder`, `PA-Verified-Hash`, and `PA-Audit-Verdict` trailers
+  from `git log`.
+- `read_trailers`: Alias for `read_commit_trailers`.
+- `format_pa_audit_comment(report, body_markdown=None) -> str`: Render an `AuditReport` with a
+  machine-parseable `<!-- pa:audit ... -->` header and `**Audit Verdict:**` summary line.
+- `parse_pa_audit_comment(text) -> dict[str, Any] | None`: Parse a `<!-- pa:audit ... -->` comment
+  block (and optional YAML frontmatter) into a structured dictionary.
+- `write_audit_round(repo_root, pr_id, audit_source, *, commit=True, runner=common.run) -> Path`:
+  Validate an `AuditReport`, write `<pr_dir>/AUDIT-round-<K>.md`, update `PROJECT.md` status
+  without mutating Part I `charter_hash`, and commit with a `PA-Audit-Verdict` trailer.
+- `append_deferred_backlog(repo_root, *, title, summary="", pr_id=None, wo_id=None,
+  labels=("pa:deferred",), file_path=None) -> Path`: Append an out-of-scope deferred finding to
+  `<workspace_dir>/DEFERRED_BACKLOG.md`.
+- `create_or_checkout_branch(repo_root, branch, base_branch="main", *, runner=common.run) -> str`:
+  Create `<branch>` from `<base_branch>` or check it out if it already exists, returning `HEAD` SHA.
+- `get_vcs_bus(repo_root, *, vcs_mode=None, runner=common.run) -> VCSBus`: Factory returning
+  `GitHubBus` or `LocalGitBus` according to explicit `vcs_mode` or `.state/state.db` config.
+- `sync_state(repo_root, *, runner=common.run) -> dict[str, Any]`: Rebuild `.state/state.db` and
+  reconcile `PROJECT.md` summary rows via the active `VCSBus`.
+- `restack_branches(repo_root, *, pr_id=None, onto_branch=None, runner=common.run) ->
+  dict[str, Any]`: Rebase stacked PR branches onto their base branches via the active `VCSBus`.
+
+Protocols & Classes:
+- `VCSBus` (and backwards-compatible alias `VcsBus`): Runtime-checkable protocol defining the
+  unified `local_git` and `github` VCS synchronization contract.
+- `LocalGitBus`: Offline Local-Git floor implementation of `VCSBus`.
+  - **Lifecycle / Constructors**:
+    - `__init__(repo_root, *, runner=common.run) -> None`: Bind bus to resolved repository root and
+      subprocess runner.
+  - **Own Public API**:
+    - `read_trailers`: Alias for `read_commit_trailers`.
+  - **VCSBus Protocol Implementation**:
+    - `create_or_checkout_branch(branch, base_branch="main") -> str`: Create or check out a local
+      branch and return its `HEAD` SHA.
+    - `read_commit_trailers(*, rev_range=None, max_count=None) -> list[dict[str, Any]]`: Read
+      `PA-*` trailers from local `git log`.
+    - `format_commit_with_trailers(subject, body=None, trailers=None) -> str`: Format a commit
+      message with `Key: Value` trailers.
+    - `write_audit_round(pr_id, audit_source, *, commit=True) -> Path`: Persist
+      `<pr_dir>/AUDIT-round-<K>.md`, update `PROJECT.md` status, and commit locally.
+    - `append_deferred_backlog(*, title, summary="", pr_id=None, wo_id=None,
+      labels=("pa:deferred",), file_path=None) -> Path`: Append a deferred item to
+      `<workspace_dir>/DEFERRED_BACKLOG.md`.
+    - `create_deferred_issue(*, title, summary="", pr_id=None, wo_id=None,
+      labels=("pa:deferred",), file_path=None) -> dict[str, Any]`: Record a deferred item in local
+      `DEFERRED_BACKLOG.md`.
+    - `open_or_sync_pr(pr_id, *, draft=False) -> dict[str, Any]`: Transition `<PR-ID>` to
+      `STAGED_FOR_AUDIT` and verify local branch against base.
+    - `view_pr(pr_id_or_number) -> dict[str, Any]`: Return PR metadata synthesized from local
+      `PROJECT.md` and `AUDIT-round-*.md` artifacts.
+    - `diff_pr(pr_id_or_number) -> str`: Return local `git diff <base_branch>...<branch>`.
+    - `post_audit(pr_id, audit_source, *, commit=True) -> dict[str, Any]`: Persist and commit
+      `AUDIT-round-<K>.md` locally and update `.state/state.db`.
+    - `sync_audit(pr_id) -> dict[str, Any] | None`: Sync the highest-numbered local
+      `AUDIT-round-<K>.md` into `.state/state.db`.
+    - `sync_state() -> dict[str, Any]`: Rebuild `.state/state.db` and reconcile `PROJECT.md`
+      Work Order rows from local Git trailers and specs.
+    - `restack_branches(*, pr_id=None, onto_branch=None) -> dict[str, Any]`: Rebase stacked PR
+      branches via `git rebase --update-refs`.
+- `GitHubBus(LocalGitBus)`: GitHub multi-machine synchronization bus (`vcs_mode == "github"`).
+  - **Lifecycle / Constructors**:
+    - `__init__(repo_root, *, runner=common.run) -> None`: Inherited from `LocalGitBus`.
+  - **Own Public API**:
+    - `read_trailers`: Inherited alias for `read_commit_trailers`.
+  - **VCSBus Protocol Implementation**:
+    - `open_or_sync_pr(pr_id, *, draft=False) -> dict[str, Any]`: Stage `<PR-ID>`, push branch to
+      `origin`, and create or update the GitHub PR via `gh pr create` / `gh pr edit`.
+    - `view_pr(pr_id_or_number) -> dict[str, Any]`: Inspect a GitHub PR via `gh pr view --json`.
+    - `diff_pr(pr_id_or_number) -> str`: Fetch PR diff via `gh pr diff`, falling back to local
+      `git diff`.
+    - `post_audit(pr_id, audit_source, *, commit=True) -> dict[str, Any]`: Write and commit
+      `AUDIT-round-<K>.md` locally and post review comment via `gh pr review --comment`.
+    - `sync_audit(pr_id) -> dict[str, Any] | None`: Ingest remote `<!-- pa:audit ... -->` PR
+      comments into `<pr_dir>/AUDIT-round-<K>.md` and `.state/state.db`.
+    - `create_deferred_issue(*, title, summary="", pr_id=None, wo_id=None,
+      labels=("pa:deferred",), file_path=None) -> dict[str, Any]`: Create a GitHub issue with
+      `--label pa:deferred` and record in `DEFERRED_BACKLOG.md`.
+    - `sync_state() -> dict[str, Any]`: Fetch `origin`, sync remote GitHub PR audits, and rebuild
+      `.state/state.db`.
+    - `restack_branches(*, pr_id=None, onto_branch=None) -> dict[str, Any]`: Rebase stacked PR
+      branches, force-push with lease, and retarget GitHub PR base branches.
+    - Inherits `create_or_checkout_branch`, `read_commit_trailers`, `format_commit_with_trailers`,
+      `write_audit_round`, and `append_deferred_backlog` from `LocalGitBus`.
 """
 
 from __future__ import annotations
@@ -29,6 +124,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
+# Absolute path to this script's directory so sibling modules can be imported directly.
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
@@ -39,33 +135,45 @@ import schemas
 import state_db
 import yaml
 
+# Maximum number of Cold-Firewall audit rounds permitted per PR before human escalation (SPEC §7.3).
 MAX_AUDIT_ROUNDS: int = 5
 
+# Regex parsing 'APPROVED (<head_sha>)' or 'CHANGES_REQUESTED (<head_sha>)' from PA-Audit-Verdict.
 _AUDIT_VERDICT_TRAILER_RE = re.compile(
     r"^\s*(APPROVED|CHANGES_REQUESTED)(?:\s*\(\s*([0-9a-fA-F]{7,40})\s*\))?\s*$",
     re.IGNORECASE,
 )
 
+# Regex capturing the interior key-value payload of a '<!-- pa:audit ... -->' HTML comment header.
 _PA_AUDIT_COMMENT_RE = re.compile(
     r"<!--\s*pa:audit\b(.*?)-->",
     re.DOTALL | re.IGNORECASE,
 )
 
+# Regex extracting 'key="val"', "key='val'", or 'key=val' pairs from a pa:audit comment header.
 _KV_PAIR_RE = re.compile(
     r"([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'>]+))"
 )
 
+# Regex matching the human-readable '**Audit Verdict:** APPROVED|CHANGES_REQUESTED' summary line.
 _VERDICT_LINE_RE = re.compile(
     r"\*\*Audit Verdict:\*\*\s*(APPROVED|CHANGES_REQUESTED)\b",
     re.IGNORECASE,
 )
 
+# Regex extracting the numeric PR ID from a GitHub pull request URL ('.../pull/123').
 _PR_URL_NUMBER_RE = re.compile(r"/pull/(\d+)(?:\b|/|$)")
+
+# Regex extracting a full GitHub issue URL ('https://.../issues/123') from gh CLI stdout.
 _ISSUE_URL_RE = re.compile(r"(https?://\S+/issues/\d+)")
 
 
 def _gh_bin() -> str:
-    """Return the `gh` executable path, respecting `PA_GH_BIN` environment override."""
+    """Return the `gh` executable path, respecting `PA_GH_BIN` environment override.
+
+    Returns:
+        Path or executable name for the GitHub CLI binary (defaults to `"gh"`).
+    """
     return os.environ.get("PA_GH_BIN", "").strip() or "gh"
 
 
@@ -75,8 +183,19 @@ def _git_commit_with_fallback(
     *,
     runner: common.Runner = common.run,
 ) -> subprocess.CompletedProcess[str]:
-    """Run `git commit -m <msg>`, falling back to explicit author config if unset."""
+    """Run `git commit -m <msg>`, falling back to explicit author config if unset.
+
+    Args:
+        real_root: Resolved Git repository root directory.
+        commit_msg: Formatted commit message string.
+        runner: Subprocess execution callable.
+
+    Returns:
+        Completed subprocess result from `git commit`.
+    """
+    # --- Step 1: Attempt standard git commit using ambient repository/global identity ---
     res = runner(["git", "commit", "-m", commit_msg], cwd=real_root)
+    # --- Step 2: Retry with ephemeral Principal Architect author config if identity is missing ---
     if res.returncode != 0:
         combined = f"{res.stderr or ''}\n{res.stdout or ''}".lower()
         if (
@@ -106,7 +225,21 @@ def format_commit_with_trailers(
     body: str | None = None,
     trailers: Mapping[str, str] | Sequence[tuple[str, str]] | None = None,
 ) -> str:
-    """Format a Git commit message with subject, optional body, and `Key: Value` trailers."""
+    """Format a Git commit message with subject, optional body, and `Key: Value` trailers.
+
+    Args:
+        subject: Single-line commit subject (must be non-empty).
+        body: Optional multi-line commit body paragraph.
+        trailers: Optional mapping or sequence of `(key, value)` trailer pairs.
+
+    Returns:
+        Formatted commit message with blank-line-separated paragraphs and trailing `Key: Value`
+        lines suitable for `git log --format=%(trailers:...)`.
+
+    Raises:
+        ValueError: If `subject` is empty or whitespace-only.
+    """
+    # --- Step 1: Validate subject and initialize message paragraphs ---
     subj = subject.strip()
     if not subj:
         raise ValueError("Commit subject must not be empty")
@@ -115,6 +248,7 @@ def format_commit_with_trailers(
     if body is not None and body.strip():
         parts.append(body.strip())
 
+    # --- Step 2: Format non-empty trailer pairs into a trailing block ---
     trailer_lines: list[str] = []
     if trailers is not None:
         items = trailers.items() if isinstance(trailers, Mapping) else trailers
@@ -131,7 +265,15 @@ def format_commit_with_trailers(
 
 
 def _parse_audit_verdict_trailer(raw_val: str) -> tuple[str | None, str | None]:
-    """Parse `PA-Audit-Verdict` trailer value `<VERDICT> (<head_sha>)` or `<VERDICT>`."""
+    """Parse `PA-Audit-Verdict` trailer value `<VERDICT> (<head_sha>)` or `<VERDICT>`.
+
+    Args:
+        raw_val: Raw trailer value extracted from `git log`.
+
+    Returns:
+        Tuple of `(verdict, head_sha)` where each element is `None` if absent.
+    """
+    # --- Step 1: Match canonical '<VERDICT> (<head_sha>)' pattern on the first line ---
     cleaned = raw_val.strip()
     if not cleaned:
         return None, None
@@ -141,6 +283,8 @@ def _parse_audit_verdict_trailer(raw_val: str) -> tuple[str | None, str | None]:
         verdict = m.group(1).upper()
         head_sha = m.group(2) if m.group(2) else None
         return verdict, head_sha
+
+    # --- Step 2: Fall back to whitespace token splitting ---
     tokens = first_line.split()
     verdict_tok = tokens[0].upper() if tokens else None
     sha_tok: str | None = None
@@ -158,8 +302,24 @@ def read_commit_trailers(
     max_count: int | None = None,
     runner: common.Runner = common.run,
 ) -> list[dict[str, Any]]:
-    """Read `PA-WorkOrder`, `PA-Verified-Hash`, and `PA-Audit-Verdict` trailers from `git log`."""
+    """Read `PA-WorkOrder`, `PA-Verified-Hash`, and `PA-Audit-Verdict` trailers from `git log`.
+
+    Args:
+        repo_root: Path to the Git repository root.
+        rev_range: Optional revision range (e.g. `"main..HEAD"`) passed to `git log`.
+        max_count: Optional maximum number of commits to inspect (`-n<max_count>`).
+        runner: Subprocess execution callable.
+
+    Returns:
+        List of commit dictionaries containing `sha`, `subject`, `wo_id`, `verified_hash`,
+        `audit_verdict`, and `audit_head_sha`.
+    """
+    # --- Step 1: Construct git log command with binary field/record delimiters ---
     real_root = Path(os.path.realpath(repo_root))
+    # Git commit subjects and %(trailers:...) expansions can contain spaces, colons, or embedded
+    # newlines when a commit repeats a trailer key. Using ASCII NUL (%x00) to separate the SHA,
+    # subject, and individual trailer values—and ASCII Record Separator (%x1e) to delimit commit
+    # records—allows unambiguous single-pass splitting without line-wrapping corruption.
     fmt = (
         "%H%x00%s%x00"
         "%(trailers:key=PA-WorkOrder,valueonly=true)%x00"
@@ -172,6 +332,7 @@ def read_commit_trailers(
     if rev_range is not None and str(rev_range).strip():
         cmd.append(str(rev_range).strip())
 
+    # --- Step 2: Execute git log and guard against empty or uninitialized repositories ---
     try:
         res = runner(cmd, cwd=real_root)
     except (OSError, subprocess.SubprocessError):
@@ -180,6 +341,7 @@ def read_commit_trailers(
     if res.returncode != 0 or not res.stdout:
         return []
 
+    # --- Step 3: Split %x1e records and %x00 fields into structured trailer dicts ---
     raw_out = res.stdout
     raw_records = raw_out.split("\x1e") if "\x1e" in raw_out else raw_out.splitlines()
 
@@ -218,11 +380,19 @@ def read_commit_trailers(
     return records
 
 
+# Backwards-compatible function alias for callers referencing vcs_sync.read_trailers.
 read_trailers = read_commit_trailers
 
 
 def _count_findings(findings: Sequence[schemas.AuditFinding]) -> tuple[int, int, int]:
-    """Return `(blocking, major, minor)` counts from a sequence of `AuditFinding` items."""
+    """Return `(blocking, major, minor)` counts from a sequence of `AuditFinding` items.
+
+    Args:
+        findings: Sequence of validated `AuditFinding` objects from an `AuditReport`.
+
+    Returns:
+        Tuple of `(blocking_count, major_count, minor_count)`.
+    """
     blocking = sum(1 for f in findings if f.id.upper().startswith("BLOCKING-"))
     major = sum(1 for f in findings if not f.id.upper().startswith("BLOCKING-"))
     minor = 0
@@ -233,7 +403,17 @@ def format_pa_audit_comment(
     report: schemas.AuditReport,
     body_markdown: str | None = None,
 ) -> str:
-    """Format a Cold-Firewall `AuditReport` with a machine-parseable `<!-- pa:audit ... -->` header."""
+    """Format a Cold-Firewall `AuditReport` with a machine-parseable `<!-- pa:audit ... -->` header.
+
+    Args:
+        report: Validated `AuditReport` instance.
+        body_markdown: Optional pre-rendered Markdown body; if provided, missing header or verdict
+            markers are prepended without overwriting existing sections.
+
+    Returns:
+        Complete Markdown string beginning with the `<!-- pa:audit ... -->` comment header.
+    """
+    # --- Step 1: Compute finding counts and build machine-parseable header + verdict line ---
     blocking, major, minor = _count_findings(report.findings)
     header_comment = (
         f"<!-- pa:audit pr_id={report.pr_id} round={report.audit_round} "
@@ -244,6 +424,7 @@ def format_pa_audit_comment(
         f"**Audit Verdict:** {report.verdict} ({blocking} blocking, {major} non-blocking)"
     )
 
+    # --- Step 2: Wrap existing Markdown body if provided ---
     if body_markdown is not None and body_markdown.strip():
         body_clean = body_markdown.strip()
         lines: list[str] = []
@@ -254,6 +435,7 @@ def format_pa_audit_comment(
         lines.append(body_clean)
         return "\n\n".join(lines) + "\n"
 
+    # --- Step 3: Synthesize default Section 1 (Scorecard) and Section 2 (Findings) Markdown ---
     findings_lines: list[str] = []
     if report.findings:
         for f in report.findings:
@@ -284,8 +466,15 @@ def format_pa_audit_comment(
 def parse_pa_audit_comment(text: str) -> dict[str, Any] | None:
     """Parse a `<!-- pa:audit ... -->` comment block (and optional frontmatter) into a dict.
 
-    Returns `None` if no valid `pa:audit` marker is present in `text`.
+    Args:
+        text: Raw PR comment body or `AUDIT-round-<K>.md` file content.
+
+    Returns:
+        Dictionary of parsed audit metadata (`pr_id`, `audit_round`, `round`, `head_sha`,
+        `verdict`, `blocking`, `major`, `minor`, `auditor_harness`, `github_pr`, `findings`), or
+        `None` if no valid `pa:audit` marker is present.
     """
+    # --- Step 1: Locate the <!-- pa:audit ... --> HTML comment block ---
     if not text or not text.strip():
         return None
 
@@ -293,6 +482,7 @@ def parse_pa_audit_comment(text: str) -> dict[str, Any] | None:
     if m is None:
         return None
 
+    # --- Step 2: Parse key=value attributes (with YAML fallback) from comment interior ---
     inner = m.group(1).strip()
     kv_data: dict[str, Any] = {}
 
@@ -313,6 +503,7 @@ def parse_pa_audit_comment(text: str) -> dict[str, Any] | None:
         except yaml.YAMLError:
             return None
 
+    # --- Step 3: Extract optional YAML frontmatter if text is a full AUDIT-round-<K>.md file ---
     fm_data: dict[str, Any] = {}
     if text.lstrip("\ufeff").startswith("---"):
         try:
@@ -322,6 +513,7 @@ def parse_pa_audit_comment(text: str) -> dict[str, Any] | None:
         except Exception:  # noqa: BLE001
             fm_data = {}
 
+    # --- Step 4: Merge and validate required audit fields and round bounds ---
     pr_id = str(kv_data.get("pr_id") or fm_data.get("pr_id") or "").strip()
     raw_round = (
         kv_data.get("round")
@@ -357,6 +549,7 @@ def parse_pa_audit_comment(text: str) -> dict[str, Any] | None:
     if not (1 <= audit_round <= MAX_AUDIT_ROUNDS):
         return None
 
+    # --- Step 5: Reconcile findings list and severity counts ---
     findings_raw = fm_data.get("findings")
     if not isinstance(findings_raw, list):
         findings_raw = kv_data.get("findings") if isinstance(kv_data.get("findings"), list) else []
@@ -390,7 +583,16 @@ def _find_pr_dir_and_project(
     ws_dir: Path,
     pr_id: str,
 ) -> tuple[Path, schemas.Document[schemas.ProjectSpec] | None]:
-    """Locate `<pr_dir>` and optional loaded `PROJECT.md` for `pr_id` under `ws_dir`."""
+    """Locate `<pr_dir>` and optional loaded `PROJECT.md` for `pr_id` under `ws_dir`.
+
+    Args:
+        ws_dir: Active Principal Architect workspace directory.
+        pr_id: PR identifier (`PR-01`), slug, branch name, or GitHub PR number string.
+
+    Returns:
+        Tuple of `(pr_dir_path, loaded_project_doc_or_none)`.
+    """
+    # --- Step 1: Scan pr-*/PROJECT.md files for matching PR ID, slug, branch, or github_pr ---
     pr_norm = pr_id.strip().upper()
     slug_norm = pr_id.strip().lower()
 
@@ -417,6 +619,7 @@ def _find_pr_dir_and_project(
         ):
             return pr_dir, proj_doc
 
+    # --- Step 2: Check pr-* directories without a valid PROJECT.md ---
     for cand_dir in sorted(ws_dir.glob("pr-*")):
         if cand_dir.is_dir():
             name_low = cand_dir.name.lower()
@@ -429,6 +632,7 @@ def _find_pr_dir_and_project(
                         return cand_dir, None
                 return cand_dir, None
 
+    # --- Step 3: Synthesize deterministic fallback directory path ---
     fallback_name = slug_norm if slug_norm.startswith("pr-") else f"pr-{slug_norm}"
     return ws_dir / fallback_name, None
 
@@ -442,7 +646,21 @@ def _coerce_audit_report_and_sections(
         | Mapping[str, Any]
     ),
 ) -> tuple[schemas.AuditReport, list[schemas.Section]]:
-    """Coerce `audit_source` into a validated `(AuditReport, sections)` pair."""
+    """Coerce `audit_source` into a validated `(AuditReport, sections)` pair.
+
+    Args:
+        audit_source: File path, raw Markdown/comment string, `AuditReport` model,
+            `Document[AuditReport]`, or dictionary mapping.
+
+    Returns:
+        Tuple of `(validated_audit_report, markdown_sections)`.
+
+    Raises:
+        FileNotFoundError: If `audit_source` is a path that does not exist on disk.
+        TypeError: If `audit_source` is of an unsupported type.
+        ValueError: If `audit_source` cannot be parsed into a valid `AuditReport`.
+    """
+    # --- Step 1: Handle pre-parsed Document, AuditReport, or Mapping inputs ---
     if isinstance(audit_source, schemas.Document):
         report = schemas.AuditReport.model_validate(audit_source.spec.model_dump())
         return report, list(audit_source.sections)
@@ -473,6 +691,7 @@ def _coerce_audit_report_and_sections(
         report = schemas.AuditReport.model_validate(data_filtered)
         return report, []
 
+    # --- Step 2: Load raw text from Path or string input ---
     raw_text: str | None = None
     if isinstance(audit_source, Path):
         if not audit_source.is_file():
@@ -491,6 +710,7 @@ def _coerce_audit_report_and_sections(
     else:
         raise TypeError(f"Unsupported audit_source type: {type(audit_source)!r}")
 
+    # --- Step 3: Parse YAML frontmatter document or <!-- pa:audit ... --> comment block ---
     if raw_text.lstrip("\ufeff").startswith("---"):
         fm_data, sections = schemas.parse_document(raw_text)
         report = schemas.AuditReport.model_validate(fm_data)
@@ -529,7 +749,23 @@ def write_audit_round(
     commit: bool = True,
     runner: common.Runner = common.run,
 ) -> Path:
-    """Validate `AuditReport`, write `<pr_dir>/AUDIT-round-<K>.md`, update `PROJECT.md`, and commit."""
+    """Validate `AuditReport`, write `<pr_dir>/AUDIT-round-<K>.md`, update `PROJECT.md`, and commit.
+
+    Args:
+        repo_root: Path to the Git repository root.
+        pr_id: Target PR identifier (`"PR-01"`).
+        audit_source: Audit report source (file path, Markdown string, dict, or `AuditReport`).
+        commit: Whether to stage and commit the written artifacts with a `PA-Audit-Verdict` trailer.
+        runner: Subprocess execution callable.
+
+    Returns:
+        Path to the written `<pr_dir>/AUDIT-round-<K>.md` file.
+
+    Raises:
+        ValueError: If `audit_round` is outside `1..MAX_AUDIT_ROUNDS` or `pr_id` mismatches.
+        RuntimeError: If `PROJECT.md` `charter_hash` verification or Git staging/commit fails.
+    """
+    # --- Step 1: Coerce and validate AuditReport against round bounds and target PR ID ---
     real_root = Path(os.path.realpath(repo_root))
     ws_dir = common.workspace_dir(real_root)
 
@@ -545,6 +781,7 @@ def write_audit_round(
             f"AuditReport pr_id '{report.pr_id}' does not match target PR '{pr_id}'"
         )
 
+    # --- Step 2: Format and write <pr_dir>/AUDIT-round-<K>.md ---
     pr_dir, proj_doc = _find_pr_dir_and_project(ws_dir, report.pr_id)
     pr_dir.mkdir(parents=True, exist_ok=True)
 
@@ -562,6 +799,7 @@ def write_audit_round(
 
     paths_to_stage: list[str] = [audit_path.resolve().relative_to(real_root).as_posix()]
 
+    # --- Step 3: Update PROJECT.md status without mutating Part I charter_hash ---
     proj_md = pr_dir / "PROJECT.md"
     if proj_doc is not None and proj_md.is_file():
         new_status = (
@@ -585,6 +823,7 @@ def write_audit_round(
                 )
             paths_to_stage.append(proj_md.resolve().relative_to(real_root).as_posix())
 
+    # --- Step 4: Commit staged artifacts with PA-Audit-Verdict trailer if requested ---
     if commit:
         add_res = runner(["git", "add", "--", *paths_to_stage], cwd=real_root)
         if add_res.returncode != 0:
@@ -600,6 +839,7 @@ def write_audit_round(
                 f"git commit failed: {commit_res.stderr.strip() or commit_res.stdout.strip()}"
             )
 
+    # --- Step 5: Cache latest audit metadata in .state/state.db if present ---
     db_file = ws_dir / ".state" / "state.db"
     if db_file.is_file():
         audit_meta = {
@@ -629,7 +869,24 @@ def append_deferred_backlog(
     labels: Sequence[str] = ("pa:deferred",),
     file_path: str | None = None,
 ) -> Path:
-    """Append a deferred out-of-scope finding to `<workspace_dir>/DEFERRED_BACKLOG.md`."""
+    """Append a deferred out-of-scope finding to `<workspace_dir>/DEFERRED_BACKLOG.md`.
+
+    Args:
+        repo_root: Path to the Git repository root.
+        title: Concise heading for the deferred item (must be non-empty).
+        summary: Optional description or remediation notes.
+        pr_id: Optional PR identifier where the item was discovered.
+        wo_id: Optional Work Order identifier where the item was discovered.
+        labels: Sequence of classification labels (defaults to `("pa:deferred",)`).
+        file_path: Optional repository-relative file path associated with the finding.
+
+    Returns:
+        Path to `<workspace_dir>/DEFERRED_BACKLOG.md`.
+
+    Raises:
+        ValueError: If `title` is empty or whitespace-only.
+    """
+    # --- Step 1: Validate title and resolve DEFERRED_BACKLOG.md path ---
     title_clean = title.strip()
     if not title_clean:
         raise ValueError("Deferred backlog title must not be empty")
@@ -639,6 +896,7 @@ def append_deferred_backlog(
     ws_dir.mkdir(parents=True, exist_ok=True)
     backlog_path = ws_dir / "DEFERRED_BACKLOG.md"
 
+    # --- Step 2: Format metadata bullet and summary section ---
     now_iso = state_db.utc_now_iso()
     labels_list = [str(lbl).strip() for lbl in labels if str(lbl).strip()] or ["pa:deferred"]
     labels_str = ", ".join(f"`{lbl}`" for lbl in labels_list)
@@ -661,6 +919,7 @@ def append_deferred_backlog(
         entry_lines.append(f"- **Summary:** {summary.strip()}")
     entry_block = "\n".join(entry_lines) + "\n"
 
+    # --- Step 3: Initialize or append to DEFERRED_BACKLOG.md ---
     if not backlog_path.is_file():
         header = (
             "# Deferred Backlog\n\n"
@@ -677,7 +936,14 @@ def append_deferred_backlog(
 
 
 def _infer_pr_id_from_wo_id(wo_id: str) -> str:
-    """Infer `PR-NN` from `WO-NN.M` (e.g. `WO-03.1` -> `PR-03`)."""
+    """Infer `PR-NN` from `WO-NN.M` (e.g. `WO-03.1` -> `PR-03`).
+
+    Args:
+        wo_id: Work Order identifier string.
+
+    Returns:
+        Inferred `PR-NN` identifier, or `"PR-00"` if `wo_id` does not match `WO-NN.M`.
+    """
     m = re.match(r"^WO-(\d+[a-z]?)\.\d+$", wo_id.strip(), re.IGNORECASE)
     if m:
         return f"PR-{m.group(1).upper()}"
@@ -689,7 +955,20 @@ def _local_sync_state(
     *,
     runner: common.Runner = common.run,
 ) -> dict[str, Any]:
-    """Rebuild `.state/state.db` and reconcile `PROJECT.md` rows from git trailers and specs."""
+    """Rebuild `.state/state.db` and reconcile `PROJECT.md` rows from git trailers and specs.
+
+    Args:
+        repo_root: Path to the Git repository root.
+        runner: Subprocess execution callable.
+
+    Returns:
+        Summary dictionary with `vcs_mode`, `synced_receipts`, `synced_audits`, `synced_wos`,
+        `trailers_found`, and `last_vcs_sync_at`.
+
+    Raises:
+        RuntimeError: If `PROJECT.md` `charter_hash` verification fails after row reconciliation.
+    """
+    # --- Step 1: Resolve workspace paths and index git commit trailers by WO-ID and PR-ID ---
     real_root = Path(os.path.realpath(repo_root))
     ws_dir = common.workspace_dir(real_root)
     state_dir = ws_dir / ".state"
@@ -717,6 +996,7 @@ def _local_sync_state(
     count_wos = 0
     processed_wo_ids: set[str] = set()
 
+    # --- Step 2: Open state.db and scan every pr-* directory in the workspace ---
     with state_db.StateDB(db_file) as db:
         vcs_mode = db.get_config("vcs_mode") or "local_git"
         db.set_config("vcs_mode", vcs_mode)
@@ -733,6 +1013,7 @@ def _local_sync_state(
                     except Exception:  # noqa: BLE001
                         proj_doc = None
 
+                # --- Step 3: Reconcile WORKORDER.md receipts and open escalations ---
                 wo_docs_by_id: dict[str, schemas.Document[schemas.WorkOrderSpec]] = {}
                 for wo_md in sorted(pr_dir.glob("wo*/WORKORDER.md")):
                     if not wo_md.is_file():
@@ -813,6 +1094,7 @@ def _local_sync_state(
                                 status="OPEN",
                             )
 
+                # --- Step 4: Reconcile PROJECT.md work_orders summary rows ---
                 if proj_doc is not None:
                     project_modified = False
                     for row in proj_doc.spec.work_orders:
@@ -871,7 +1153,7 @@ def _local_sync_state(
                                 f"PROJECT.md charter_hash check failed during sync_state: {proj_md}"
                             )
 
-                # Reconcile AUDIT-round-*.md files in this PR directory
+                # --- Step 5: Reconcile AUDIT-round-*.md files in this PR directory ---
                 audit_docs: list[schemas.Document[schemas.AuditReport]] = []
                 for audit_md in sorted(pr_dir.glob("AUDIT-round-*.md")):
                     if not audit_md.is_file():
@@ -899,7 +1181,7 @@ def _local_sync_state(
                     db.set_config(f"last_audit_{pr_id_upper}", meta_json)
                     count_audits += 1
 
-        # Reconcile any commit trailers for WOs without a local WORKORDER.md file
+        # --- Step 6: Reconcile commit trailers for WOs without a local WORKORDER.md file ---
         for wo_key, t_rec in wo_trailer_map.items():
             if wo_key in processed_wo_ids:
                 continue
@@ -943,13 +1225,26 @@ def create_or_checkout_branch(
 ) -> str:
     """Create `<branch>` from `<base_branch>` if it does not exist, or check it out if it does.
 
-    Returns the resulting `HEAD` commit SHA.
+    Args:
+        repo_root: Path to the Git repository root.
+        branch: Target branch name to create or check out.
+        base_branch: Base branch ref used when creating a new branch (default `"main"`).
+        runner: Subprocess execution callable.
+
+    Returns:
+        The resulting `HEAD` commit SHA after checkout.
+
+    Raises:
+        ValueError: If `branch` is empty or whitespace-only.
+        RuntimeError: If `git checkout` or `git rev-parse HEAD` fails.
     """
+    # --- Step 1: Validate branch arguments ---
     branch_clean = branch.strip()
     base_clean = base_branch.strip() or "main"
     if not branch_clean:
         raise ValueError("branch name must not be empty")
 
+    # --- Step 2: Check whether refs/heads/<branch> exists and check out accordingly ---
     real_root = Path(os.path.realpath(repo_root))
     ref_res = runner(
         ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch_clean}"],
@@ -969,6 +1264,7 @@ def create_or_checkout_branch(
             f"{co_res.stderr.strip() or co_res.stdout.strip()}"
         )
 
+    # --- Step 3: Resolve and return the checked-out HEAD SHA ---
     head_res = runner(["git", "rev-parse", "HEAD"], cwd=real_root)
     if head_res.returncode != 0 or not head_res.stdout.strip():
         raise RuntimeError(
@@ -985,7 +1281,19 @@ def _collect_restack_targets(
     onto_branch: str | None,
     runner: common.Runner,
 ) -> list[tuple[str, str, str]]:
-    """Return ordered `(pr_id, branch, base_branch)` tuples for `restack_branches`."""
+    """Return ordered `(pr_id, branch, base_branch)` tuples for `restack_branches`.
+
+    Args:
+        real_root: Resolved Git repository root directory.
+        ws_dir: Active Principal Architect workspace directory.
+        pr_id: Optional target PR ID or branch name filter.
+        onto_branch: Optional explicit target base branch override.
+        runner: Subprocess execution callable.
+
+    Returns:
+        Ordered list of `(pr_id, branch_name, onto_base_branch)` tuples to rebase.
+    """
+    # --- Step 1: Collect declared PR stack branches from PROGRAM.md and PROJECT.md files ---
     targets: list[tuple[str, str, str]] = []
     seen_branches: set[str] = set()
 
@@ -1014,7 +1322,7 @@ def _collect_restack_targets(
                 seen_branches.add(ch.branch)
                 targets.append((ch.pr_id, ch.branch, ch.base_branch))
 
-    # Also discover `feat/pr-*` branches from local git refs when invoked from `main`
+    # --- Step 2: Discover feat/pr-* branches from local git refs when invoked from main ---
     refs_res = runner(
         ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads/"],
         cwd=real_root,
@@ -1054,6 +1362,7 @@ def _collect_restack_targets(
                 seen_branches.add(br_name)
                 targets.append((inferred_pr_id, br_name, inferred_base))
 
+    # --- Step 3: Filter by explicit pr_id or verify existing local branch refs ---
     if pr_id is not None and pr_id.strip():
         needle = pr_id.strip()
         filtered = [
@@ -1088,6 +1397,7 @@ def _collect_restack_targets(
         if existing_targets:
             return existing_targets
 
+    # --- Step 4: Fall back to current checked-out branch if non-detached and non-base ---
     cur_res = runner(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=real_root)
     cur_branch = cur_res.stdout.strip() if cur_res.returncode == 0 else ""
     if cur_branch and cur_branch != "HEAD":
@@ -1105,7 +1415,21 @@ def _local_restack_branches(
     onto_branch: str | None = None,
     runner: common.Runner = common.run,
 ) -> dict[str, Any]:
-    """Rebase stacked PR branches onto their base branches via `git rebase --update-refs`."""
+    """Rebase stacked PR branches onto their base branches via `git rebase --update-refs`.
+
+    Args:
+        repo_root: Path to the Git repository root.
+        pr_id: Optional PR ID or branch name filter.
+        onto_branch: Optional target base branch override.
+        runner: Subprocess execution callable.
+
+    Returns:
+        Dictionary containing `restacked` branch names, per-branch `details`, and `commands`.
+
+    Raises:
+        RuntimeError: If `git rebase --update-refs` returns a non-zero exit code.
+    """
+    # --- Step 1: Discover ordered restack targets ---
     real_root = Path(os.path.realpath(repo_root))
     ws_dir = common.workspace_dir(real_root)
 
@@ -1114,6 +1438,7 @@ def _local_restack_branches(
     details: list[dict[str, Any]] = []
     commands: list[list[str]] = []
 
+    # --- Step 2: Execute git rebase --update-refs for each target branch ---
     for pid, branch, target_base in targets:
         cmd = ["git", "rebase", "--update-refs", target_base, branch]
         commands.append(cmd)
@@ -1146,7 +1471,16 @@ def _resolve_pr_target(
     ws_dir: Path,
     pr_id_or_number: str | int,
 ) -> tuple[str, Path | None, schemas.Document[schemas.ProjectSpec] | None]:
-    """Resolve `(target_arg, pr_dir, proj_doc)` from a PR ID, slug, branch, or GitHub PR number."""
+    """Resolve `(target_arg, pr_dir, proj_doc)` from a PR ID, slug, branch, or GitHub PR number.
+
+    Args:
+        ws_dir: Active Principal Architect workspace directory.
+        pr_id_or_number: PR identifier (`"PR-01"`), slug, branch name, or integer PR number.
+
+    Returns:
+        Tuple of `(gh_cli_target_str, pr_dir_or_none, project_doc_or_none)`.
+    """
+    # --- Step 1: Handle integer GitHub PR numbers ---
     if isinstance(pr_id_or_number, int) or str(pr_id_or_number).strip().isdigit():
         num_int = int(str(pr_id_or_number).strip())
         if ws_dir.is_dir():
@@ -1161,6 +1495,7 @@ def _resolve_pr_target(
                     return str(num_int), proj_md.parent, pdoc
         return str(num_int), None, None
 
+    # --- Step 2: Resolve string PR ID, slug, or branch against local PROJECT.md files ---
     raw_str = str(pr_id_or_number).strip()
     pr_dir, proj_doc = _find_pr_dir_and_project(ws_dir, raw_str)
     if proj_doc is not None:
@@ -1173,7 +1508,15 @@ def _resolve_pr_target(
 
 
 def _render_pr_body(proj_doc: schemas.Document[schemas.ProjectSpec]) -> str:
-    """Render a deterministic GitHub PR body from `PROJECT.md` Charter and Work Orders."""
+    """Render a deterministic GitHub PR body from `PROJECT.md` Charter and Work Orders.
+
+    Args:
+        proj_doc: Loaded `PROJECT.md` document.
+
+    Returns:
+        Formatted Markdown string summarizing the PR Charter and Work Order table.
+    """
+    # --- Step 1: Render PR header and Charter metadata bullets ---
     ch = proj_doc.spec.charter
     lines: list[str] = [
         f"## {ch.pr_id} — {ch.title}",
@@ -1187,6 +1530,7 @@ def _render_pr_body(proj_doc: schemas.Document[schemas.ProjectSpec]) -> str:
         "| WO-ID | Slug | Title | Complexity | Status | Attempts | Commit |",
         "|---|---|---|---|---|---|---|",
     ]
+    # --- Step 2: Populate Work Orders summary table ---
     if proj_doc.spec.work_orders:
         for row in proj_doc.spec.work_orders:
             sha_short = f"`{row.commit_sha[:7]}`" if row.commit_sha else "—"
@@ -1200,7 +1544,15 @@ def _render_pr_body(proj_doc: schemas.Document[schemas.ProjectSpec]) -> str:
 
 
 def _extract_pr_number_and_url(text: str) -> tuple[int | None, str | None]:
-    """Extract `(pr_number, pr_url)` from `gh pr create` or `gh pr view --json` output."""
+    """Extract `(pr_number, pr_url)` from `gh pr create` or `gh pr view --json` output.
+
+    Args:
+        text: Raw stdout string from `gh pr create`, `gh pr edit`, or `gh pr view`.
+
+    Returns:
+        Tuple of `(pr_number_or_none, pr_url_or_none)`.
+    """
+    # --- Step 1: Parse JSON output when gh was invoked with --json ---
     cleaned = text.strip()
     if not cleaned:
         return None, None
@@ -1217,6 +1569,7 @@ def _extract_pr_number_and_url(text: str) -> tuple[int | None, str | None]:
         except (ValueError, TypeError):
             pass
 
+    # --- Step 2: Scan plain-text lines for a '.../pull/<number>' URL ---
     for line in reversed(cleaned.splitlines()):
         line_s = line.strip()
         m = _PR_URL_NUMBER_RE.search(line_s)
@@ -1232,7 +1585,15 @@ def _extract_pr_number_and_url(text: str) -> tuple[int | None, str | None]:
 
 
 def _extract_issue_url(text: str) -> str | None:
-    """Extract an issue URL from `gh issue create` stdout."""
+    """Extract an issue URL from `gh issue create` stdout.
+
+    Args:
+        text: Raw stdout string from `gh issue create`.
+
+    Returns:
+        Extracted `http(s)://.../issues/<number>` URL string, or `None` if not found.
+    """
+    # --- Step 1: Check for JSON object with 'url' field ---
     cleaned = text.strip()
     if not cleaned:
         return None
@@ -1245,6 +1606,7 @@ def _extract_issue_url(text: str) -> str | None:
         except (ValueError, TypeError):
             pass
 
+    # --- Step 2: Match '.../issues/<number>' regex or trailing HTTP URL ---
     m = _ISSUE_URL_RE.search(cleaned)
     if m:
         return m.group(1)
@@ -1257,28 +1619,68 @@ def _extract_issue_url(text: str) -> str | None:
 
 
 @runtime_checkable
-class VcsBus(Protocol):
-    """Protocol for the Principal Architect VCS synchronization bus (`local_git` & `github`)."""
+class VCSBus(Protocol):
+    """Protocol for the Principal Architect VCS synchronization bus (`local_git` & `github`).
 
+    Attributes:
+        mode: Active VCS synchronization mode (`"local_git"` or `"github"`).
+        repo_root: Resolved path to the Git repository root.
+        runner: Subprocess execution callable used for `git` and `gh` invocations.
+    """
+
+    # Active VCS synchronization mode ('local_git' or 'github').
     mode: Literal["local_git", "github"]
+    # Resolved path to the Git repository root.
     repo_root: Path
+    # Subprocess execution callable used for git and gh commands.
     runner: common.Runner
 
-    def create_or_checkout_branch(self, branch: str, base_branch: str = "main") -> str: ...
+    def create_or_checkout_branch(self, branch: str, base_branch: str = "main") -> str:
+        """Create `<branch>` from `<base_branch>` or check it out if it already exists.
+
+        Args:
+            branch: Target branch name.
+            base_branch: Base branch ref used when creating `<branch>`.
+
+        Returns:
+            Resulting `HEAD` commit SHA.
+        """
+        ...
 
     def read_commit_trailers(
         self,
         *,
         rev_range: str | None = None,
         max_count: int | None = None,
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[dict[str, Any]]:
+        """Read `PA-*` commit trailers from `git log`.
+
+        Args:
+            rev_range: Optional Git revision range.
+            max_count: Optional maximum number of commits to inspect.
+
+        Returns:
+            List of parsed commit trailer dictionaries.
+        """
+        ...
 
     def format_commit_with_trailers(
         self,
         subject: str,
         body: str | None = None,
         trailers: Mapping[str, str] | Sequence[tuple[str, str]] | None = None,
-    ) -> str: ...
+    ) -> str:
+        """Format a Git commit message with `Key: Value` trailers.
+
+        Args:
+            subject: Commit subject line.
+            body: Optional commit body text.
+            trailers: Optional mapping or sequence of `(key, value)` trailer pairs.
+
+        Returns:
+            Formatted commit message string.
+        """
+        ...
 
     def write_audit_round(
         self,
@@ -1292,7 +1694,18 @@ class VcsBus(Protocol):
         ),
         *,
         commit: bool = True,
-    ) -> Path: ...
+    ) -> Path:
+        """Write `<pr_dir>/AUDIT-round-<K>.md`, update `PROJECT.md` status, and commit.
+
+        Args:
+            pr_id: Target PR identifier.
+            audit_source: Audit report source object, path, or Markdown string.
+            commit: Whether to commit the updated artifacts with a `PA-Audit-Verdict` trailer.
+
+        Returns:
+            Path to the written `AUDIT-round-<K>.md` file.
+        """
+        ...
 
     def append_deferred_backlog(
         self,
@@ -1303,7 +1716,21 @@ class VcsBus(Protocol):
         wo_id: str | None = None,
         labels: Sequence[str] = ("pa:deferred",),
         file_path: str | None = None,
-    ) -> Path: ...
+    ) -> Path:
+        """Append a deferred finding to `<workspace_dir>/DEFERRED_BACKLOG.md`.
+
+        Args:
+            title: Deferred item title.
+            summary: Optional description or remediation notes.
+            pr_id: Optional originating PR identifier.
+            wo_id: Optional originating Work Order identifier.
+            labels: Classification labels (defaults to `("pa:deferred",)`).
+            file_path: Optional repository-relative file path.
+
+        Returns:
+            Path to `<workspace_dir>/DEFERRED_BACKLOG.md`.
+        """
+        ...
 
     def create_deferred_issue(
         self,
@@ -1314,13 +1741,55 @@ class VcsBus(Protocol):
         wo_id: str | None = None,
         labels: Sequence[str] = ("pa:deferred",),
         file_path: str | None = None,
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, Any]:
+        """Record a deferred issue in `DEFERRED_BACKLOG.md` (and GitHub Issues in `github` mode).
 
-    def open_or_sync_pr(self, pr_id: str, *, draft: bool = False) -> dict[str, Any]: ...
+        Args:
+            title: Deferred issue title.
+            summary: Optional description or remediation notes.
+            pr_id: Optional originating PR identifier.
+            wo_id: Optional originating Work Order identifier.
+            labels: Classification labels (defaults to `("pa:deferred",)`).
+            file_path: Optional repository-relative file path.
 
-    def view_pr(self, pr_id_or_number: str | int) -> dict[str, Any]: ...
+        Returns:
+            Dictionary describing the recorded backlog path and optional `issue_url`.
+        """
+        ...
 
-    def diff_pr(self, pr_id_or_number: str | int) -> str: ...
+    def open_or_sync_pr(self, pr_id: str, *, draft: bool = False) -> dict[str, Any]:
+        """Stage `<PR-ID>` for Cold-Firewall audit and synchronize PR metadata.
+
+        Args:
+            pr_id: Target PR identifier.
+            draft: Whether to open a newly created GitHub PR as a draft.
+
+        Returns:
+            Dictionary summarizing PR branch, status, `github_pr`, and `head_sha`.
+        """
+        ...
+
+    def view_pr(self, pr_id_or_number: str | int) -> dict[str, Any]:
+        """Return PR metadata and review comments for `pr_id_or_number`.
+
+        Args:
+            pr_id_or_number: PR identifier, slug, branch name, or GitHub PR number.
+
+        Returns:
+            Dictionary of PR metadata (`number`, `url`, `state`, `title`, `body`, `reviews`, etc.).
+        """
+        ...
+
+    def diff_pr(self, pr_id_or_number: str | int) -> str:
+        """Return the cumulative PR diff for `pr_id_or_number`.
+
+        Args:
+            pr_id_or_number: PR identifier, slug, branch name, or GitHub PR number.
+
+        Returns:
+            Unified diff string between the PR's base branch and head branch.
+        """
+        ...
 
     def post_audit(
         self,
@@ -1334,23 +1803,70 @@ class VcsBus(Protocol):
         ),
         *,
         commit: bool = True,
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, Any]:
+        """Persist `AUDIT-round-<K>.md` locally (and post to GitHub PR in `github` mode).
 
-    def sync_audit(self, pr_id: str) -> dict[str, Any] | None: ...
+        Args:
+            pr_id: Target PR identifier.
+            audit_source: Audit report source object, path, or Markdown string.
+            commit: Whether to commit `AUDIT-round-<K>.md` and `PROJECT.md` locally.
 
-    def sync_state(self) -> dict[str, Any]: ...
+        Returns:
+            Dictionary summarizing the published audit round, verdict, and paths.
+        """
+        ...
+
+    def sync_audit(self, pr_id: str) -> dict[str, Any] | None:
+        """Synchronize the latest Cold-Firewall audit for `pr_id` into `.state/state.db`.
+
+        Args:
+            pr_id: Target PR identifier.
+
+        Returns:
+            Audit metadata dictionary, or `None` if no audit rounds exist for `pr_id`.
+        """
+        ...
+
+    def sync_state(self) -> dict[str, Any]:
+        """Rebuild `.state/state.db` and reconcile `PROJECT.md` summary rows.
+
+        Returns:
+            Dictionary summarizing synced receipts, audits, Work Orders, and timestamp.
+        """
+        ...
 
     def restack_branches(
         self,
         *,
         pr_id: str | None = None,
         onto_branch: str | None = None,
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, Any]:
+        """Rebase stacked PR branches onto their base branches via `git rebase --update-refs`.
+
+        Args:
+            pr_id: Optional target PR identifier or branch name filter.
+            onto_branch: Optional base branch override.
+
+        Returns:
+            Dictionary with `restacked` branches, per-branch `details`, and executed `commands`.
+        """
+        ...
+
+
+# Backwards-compatible protocol alias preserving existing imports of vcs_sync.VcsBus.
+VcsBus = VCSBus
 
 
 class LocalGitBus:
-    """Offline Local-Git floor implementation requiring zero GitHub or network access."""
+    """Offline Local-Git floor implementation requiring zero GitHub or network access.
 
+    Attributes:
+        mode: Literal mode identifier (`"local_git"`).
+        repo_root: Resolved path to the Git repository root.
+        runner: Subprocess execution callable used for `git` invocations.
+    """
+
+    # Active VCS synchronization mode ('local_git' floor).
     mode: Literal["local_git", "github"] = "local_git"
 
     def __init__(
@@ -1359,11 +1875,25 @@ class LocalGitBus:
         *,
         runner: common.Runner = common.run,
     ) -> None:
-        self.repo_root = Path(os.path.realpath(repo_root))
-        self.runner = runner
+        """Initialize the Local-Git synchronization bus for `repo_root`.
+
+        Args:
+            repo_root: Path to the target Git repository root.
+            runner: Subprocess execution callable (defaults to `common.run`).
+        """
+        self.repo_root = Path(os.path.realpath(repo_root))  # Canonical repository root path
+        self.runner = runner  # Subprocess runner for git operations
 
     def create_or_checkout_branch(self, branch: str, base_branch: str = "main") -> str:
-        """Create `<branch>` from `<base_branch>` or check it out if it already exists."""
+        """Create `<branch>` from `<base_branch>` or check it out if it already exists.
+
+        Args:
+            branch: Target branch name to create or check out.
+            base_branch: Base branch ref used when creating a new branch (default `"main"`).
+
+        Returns:
+            Resulting `HEAD` commit SHA.
+        """
         return create_or_checkout_branch(
             self.repo_root,
             branch,
@@ -1377,7 +1907,15 @@ class LocalGitBus:
         rev_range: str | None = None,
         max_count: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Read `PA-*` commit trailers from local `git log`."""
+        """Read `PA-*` commit trailers from local `git log`.
+
+        Args:
+            rev_range: Optional revision range (e.g. `"main..HEAD"`).
+            max_count: Optional maximum number of commits to inspect.
+
+        Returns:
+            List of parsed commit trailer dictionaries.
+        """
         return read_commit_trailers(
             self.repo_root,
             rev_range=rev_range,
@@ -1385,6 +1923,7 @@ class LocalGitBus:
             runner=self.runner,
         )
 
+    # Backwards-compatible method alias for read_commit_trailers.
     read_trailers = read_commit_trailers
 
     def format_commit_with_trailers(
@@ -1393,7 +1932,16 @@ class LocalGitBus:
         body: str | None = None,
         trailers: Mapping[str, str] | Sequence[tuple[str, str]] | None = None,
     ) -> str:
-        """Format a commit message with `Key: Value` trailers."""
+        """Format a commit message with `Key: Value` trailers.
+
+        Args:
+            subject: Single-line commit subject.
+            body: Optional commit body text.
+            trailers: Optional mapping or sequence of `(key, value)` trailer pairs.
+
+        Returns:
+            Formatted commit message string.
+        """
         return format_commit_with_trailers(subject, body=body, trailers=trailers)
 
     def write_audit_round(
@@ -1409,7 +1957,16 @@ class LocalGitBus:
         *,
         commit: bool = True,
     ) -> Path:
-        """Write `<pr_dir>/AUDIT-round-<K>.md`, update `PROJECT.md` status, and commit."""
+        """Write `<pr_dir>/AUDIT-round-<K>.md`, update `PROJECT.md` status, and commit.
+
+        Args:
+            pr_id: Target PR identifier.
+            audit_source: Audit report source object, path, or Markdown string.
+            commit: Whether to stage and commit the audit artifacts locally.
+
+        Returns:
+            Path to the written `<pr_dir>/AUDIT-round-<K>.md` file.
+        """
         return write_audit_round(
             self.repo_root,
             pr_id,
@@ -1428,7 +1985,19 @@ class LocalGitBus:
         labels: Sequence[str] = ("pa:deferred",),
         file_path: str | None = None,
     ) -> Path:
-        """Append a deferred finding to `<workspace_dir>/DEFERRED_BACKLOG.md`."""
+        """Append a deferred finding to `<workspace_dir>/DEFERRED_BACKLOG.md`.
+
+        Args:
+            title: Concise heading for the deferred item.
+            summary: Optional description or remediation notes.
+            pr_id: Optional PR identifier where the item was found.
+            wo_id: Optional Work Order identifier where the item was found.
+            labels: Classification labels (defaults to `("pa:deferred",)`).
+            file_path: Optional repository-relative file path.
+
+        Returns:
+            Path to `<workspace_dir>/DEFERRED_BACKLOG.md`.
+        """
         return append_deferred_backlog(
             self.repo_root,
             title=title,
@@ -1449,7 +2018,19 @@ class LocalGitBus:
         labels: Sequence[str] = ("pa:deferred",),
         file_path: str | None = None,
     ) -> dict[str, Any]:
-        """Record a deferred issue in local `DEFERRED_BACKLOG.md`."""
+        """Record a deferred issue in local `DEFERRED_BACKLOG.md`.
+
+        Args:
+            title: Concise heading for the deferred item.
+            summary: Optional description or remediation notes.
+            pr_id: Optional originating PR identifier.
+            wo_id: Optional originating Work Order identifier.
+            labels: Classification labels (defaults to `("pa:deferred",)`).
+            file_path: Optional repository-relative file path.
+
+        Returns:
+            Dictionary with `mode`, `backlog_path`, and `issue_url` (`None` in local mode).
+        """
         backlog_path = self.append_deferred_backlog(
             title=title,
             summary=summary,
@@ -1465,7 +2046,21 @@ class LocalGitBus:
         }
 
     def open_or_sync_pr(self, pr_id: str, *, draft: bool = False) -> dict[str, Any]:
-        """Transition `<PR-ID>` to `STAGED_FOR_AUDIT` and verify local branch against base."""
+        """Transition `<PR-ID>` to `STAGED_FOR_AUDIT` and verify local branch against base.
+
+        Args:
+            pr_id: Target PR identifier (`"PR-01"`).
+            draft: Ignored in `local_git` mode; accepted for protocol compatibility.
+
+        Returns:
+            Dictionary with `mode`, `pr_id`, `branch`, `base_branch`, `status`, `github_pr`, and
+            `head_sha`.
+
+        Raises:
+            ValueError: If `PROJECT.md` for `pr_id` cannot be found.
+            RuntimeError: If `base_branch` does not exist locally or `charter_hash` check fails.
+        """
+        # --- Step 1: Locate PROJECT.md and verify base_branch exists locally ---
         _ = draft
         ws_dir = common.workspace_dir(self.repo_root)
         pr_dir, proj_doc = _find_pr_dir_and_project(ws_dir, pr_id)
@@ -1484,6 +2079,7 @@ class LocalGitBus:
         if base_res.returncode != 0:
             raise RuntimeError(f"Base branch '{base_branch}' does not exist locally")
 
+        # --- Step 2: Transition PROJECT.md status to STAGED_FOR_AUDIT and commit if changed ---
         if proj_doc.spec.status != schemas.PRState.STAGED_FOR_AUDIT:
             proj_doc.spec.status = schemas.PRState.STAGED_FOR_AUDIT
             proj_md.write_text(
@@ -1507,6 +2103,7 @@ class LocalGitBus:
                     runner=self.runner,
                 )
 
+        # --- Step 3: Resolve HEAD SHA and return staged PR summary ---
         head_res = self.runner(["git", "rev-parse", "HEAD"], cwd=self.repo_root)
         head_sha = head_res.stdout.strip() if head_res.returncode == 0 else ""
 
@@ -1521,7 +2118,18 @@ class LocalGitBus:
         }
 
     def view_pr(self, pr_id_or_number: str | int) -> dict[str, Any]:
-        """Return PR metadata from local `PROJECT.md` and `AUDIT-round-*.md` files."""
+        """Return PR metadata from local `PROJECT.md` and `AUDIT-round-*.md` files.
+
+        Args:
+            pr_id_or_number: PR identifier, slug, branch name, or GitHub PR number.
+
+        Returns:
+            Dictionary mirroring the `gh pr view --json` schema using local artifacts.
+
+        Raises:
+            ValueError: If no matching `PROJECT.md` exists under `<workspace_dir>/`.
+        """
+        # --- Step 1: Resolve local PROJECT.md and current HEAD SHA ---
         ws_dir = common.workspace_dir(self.repo_root)
         target, pr_dir, proj_doc = _resolve_pr_target(ws_dir, pr_id_or_number)
         if proj_doc is None or pr_dir is None:
@@ -1529,6 +2137,8 @@ class LocalGitBus:
 
         head_res = self.runner(["git", "rev-parse", "HEAD"], cwd=self.repo_root)
         head_sha = head_res.stdout.strip() if head_res.returncode == 0 else ""
+
+        # --- Step 2: Collect local AUDIT-round-*.md bodies as synthetic review entries ---
         reviews: list[dict[str, Any]] = []
         for audit_md in sorted(pr_dir.glob("AUDIT-round-*.md")):
             if audit_md.is_file():
@@ -1549,7 +2159,15 @@ class LocalGitBus:
         }
 
     def diff_pr(self, pr_id_or_number: str | int) -> str:
-        """Return local `git diff <base_branch>...<branch>` for `pr_id_or_number`."""
+        """Return local `git diff <base_branch>...<branch>` for `pr_id_or_number`.
+
+        Args:
+            pr_id_or_number: PR identifier, slug, branch name, or GitHub PR number.
+
+        Returns:
+            Unified diff string from `git diff`.
+        """
+        # --- Step 1: Resolve base and head branch names from PROJECT.md (or default main..HEAD) ---
         ws_dir = common.workspace_dir(self.repo_root)
         _, _, proj_doc = _resolve_pr_target(ws_dir, pr_id_or_number)
         if proj_doc is not None:
@@ -1559,6 +2177,7 @@ class LocalGitBus:
             base_branch = "main"
             branch = "HEAD"
 
+        # --- Step 2: Run three-dot merge-base diff with two-dot fallback ---
         res = self.runner(
             ["git", "diff", f"{base_branch}...{branch}"],
             cwd=self.repo_root,
@@ -1584,7 +2203,17 @@ class LocalGitBus:
         *,
         commit: bool = True,
     ) -> dict[str, Any]:
-        """Persist `AUDIT-round-<K>.md` locally, commit with trailer, and update `state.db`."""
+        """Persist `AUDIT-round-<K>.md` locally, commit with trailer, and update `state.db`.
+
+        Args:
+            pr_id: Target PR identifier.
+            audit_source: Audit report source object, path, or Markdown string.
+            commit: Whether to commit the audit round and status update locally.
+
+        Returns:
+            Dictionary with `mode`, `pr_id`, `audit_round`, `verdict`, `head_sha`, `audit_path`,
+            and `github_pr`.
+        """
         audit_path = self.write_audit_round(pr_id, audit_source, commit=commit)
         audit_doc = schemas.load_audit(audit_path)
         report = audit_doc.spec
@@ -1599,7 +2228,15 @@ class LocalGitBus:
         }
 
     def sync_audit(self, pr_id: str) -> dict[str, Any] | None:
-        """Sync the latest `AUDIT-round-<K>.md` for `pr_id` into `.state/state.db`."""
+        """Sync the latest `AUDIT-round-<K>.md` for `pr_id` into `.state/state.db`.
+
+        Args:
+            pr_id: Target PR identifier.
+
+        Returns:
+            Audit metadata dictionary for the highest-numbered round, or `None` if none exist.
+        """
+        # --- Step 1: Locate PR directory and load all AUDIT-round-*.md documents ---
         ws_dir = common.workspace_dir(self.repo_root)
         pr_dir, proj_doc = _find_pr_dir_and_project(ws_dir, pr_id)
         if not pr_dir.is_dir():
@@ -1617,6 +2254,7 @@ class LocalGitBus:
         if not audit_docs:
             return None
 
+        # --- Step 2: Select the highest audit_round and reconcile PROJECT.md status ---
         audit_docs.sort(key=lambda d: d.spec.audit_round)
         top_doc = audit_docs[-1]
         report = top_doc.spec
@@ -1639,6 +2277,7 @@ class LocalGitBus:
                     encoding="utf-8",
                 )
 
+        # --- Step 3: Persist latest_audit:<PR-ID> metadata in .state/state.db ---
         audit_meta: dict[str, Any] = {
             "mode": self.mode,
             "pr_id": pr_id_upper,
@@ -1660,7 +2299,11 @@ class LocalGitBus:
         return audit_meta
 
     def sync_state(self) -> dict[str, Any]:
-        """Rebuild `.state/state.db` and reconcile `PROJECT.md` summary rows from local Git."""
+        """Rebuild `.state/state.db` and reconcile `PROJECT.md` summary rows from local Git.
+
+        Returns:
+            Dictionary summarizing synced receipts, audits, Work Orders, and timestamp.
+        """
         return _local_sync_state(self.repo_root, runner=self.runner)
 
     def restack_branches(
@@ -1669,7 +2312,15 @@ class LocalGitBus:
         pr_id: str | None = None,
         onto_branch: str | None = None,
     ) -> dict[str, Any]:
-        """Rebase stacked branches via `git rebase --update-refs`."""
+        """Rebase stacked branches via `git rebase --update-refs`.
+
+        Args:
+            pr_id: Optional target PR identifier or branch name filter.
+            onto_branch: Optional base branch override.
+
+        Returns:
+            Dictionary with `restacked` branches, per-branch `details`, and executed `commands`.
+        """
         return _local_restack_branches(
             self.repo_root,
             pr_id=pr_id,
@@ -1679,12 +2330,34 @@ class LocalGitBus:
 
 
 class GitHubBus(LocalGitBus):
-    """GitHub multi-machine synchronization bus (`vcs_mode == 'github'`)."""
+    """GitHub multi-machine synchronization bus (`vcs_mode == 'github'`).
 
+    Extends `LocalGitBus` so every operation maintains local Git/file artifacts first and then
+    synchronizes PRs, review comments, and deferred issues with GitHub via the `gh` CLI.
+
+    Attributes:
+        mode: Literal mode identifier (`"github"`).
+    """
+
+    # Active VCS synchronization mode ('github' multi-machine bus).
     mode: Literal["local_git", "github"] = "github"
 
     def open_or_sync_pr(self, pr_id: str, *, draft: bool = False) -> dict[str, Any]:
-        """Stage `<PR-ID>`, push branch to `origin`, and create or update the GitHub PR."""
+        """Stage `<PR-ID>`, push branch to `origin`, and create or update the GitHub PR.
+
+        Args:
+            pr_id: Target PR identifier (`"PR-01"`).
+            draft: Whether to pass `--draft` when creating a new GitHub PR.
+
+        Returns:
+            Dictionary with `mode`, `pr_id`, `branch`, `base_branch`, `status`, `github_pr`,
+            `pr_url`, and `head_sha`.
+
+        Raises:
+            ValueError: If `PROJECT.md` for `pr_id` cannot be found.
+            RuntimeError: If `gh pr create`, `gh pr edit`, or `charter_hash` verification fails.
+        """
+        # --- Step 1: Stage PR locally via LocalGitBus and load PROJECT.md ---
         local_info = super().open_or_sync_pr(pr_id, draft=draft)
         ws_dir = common.workspace_dir(self.repo_root)
         pr_dir, proj_doc = _find_pr_dir_and_project(ws_dir, pr_id)
@@ -1696,10 +2369,9 @@ class GitHubBus(LocalGitBus):
         base_branch = proj_doc.spec.charter.base_branch
         canonical_pr_id = proj_doc.spec.charter.pr_id
 
-        # 1. Push branch to origin
+        # --- Step 2: Push branch to origin and render deterministic PR title and body ---
         self.runner(["git", "push", "-u", "origin", branch], cwd=self.repo_root)
 
-        # 2. Build deterministic PR title and body
         title = f"{canonical_pr_id}: {proj_doc.spec.charter.title}"
         body = _render_pr_body(proj_doc)
 
@@ -1708,6 +2380,7 @@ class GitHubBus(LocalGitBus):
         pr_url: str | None = None
         pr_existed = pr_number is not None
 
+        # --- Step 3: Probe whether a GitHub PR already exists for this branch ---
         if not pr_existed:
             view_res = self.runner(
                 [
@@ -1727,6 +2400,7 @@ class GitHubBus(LocalGitBus):
                     pr_url = url_v
                     pr_existed = True
 
+        # --- Step 4: Create a new GitHub PR or edit the existing PR ---
         if not pr_existed:
             create_cmd: list[str] = [
                 gh,
@@ -1782,6 +2456,7 @@ class GitHubBus(LocalGitBus):
                 _, parsed_url = _extract_pr_number_and_url(edit_res.stdout)
                 pr_url = parsed_url
 
+        # --- Step 5: Persist github_pr in PROJECT.md, verify charter_hash, and push update ---
         if pr_number is not None and proj_doc.spec.github_pr != pr_number:
             proj_doc.spec.github_pr = pr_number
             proj_md.write_text(
@@ -1826,7 +2501,18 @@ class GitHubBus(LocalGitBus):
         }
 
     def view_pr(self, pr_id_or_number: str | int) -> dict[str, Any]:
-        """Inspect a GitHub PR via `gh pr view <target> --json ...`."""
+        """Inspect a GitHub PR via `gh pr view <target> --json ...`.
+
+        Args:
+            pr_id_or_number: PR identifier, slug, branch name, or GitHub PR number.
+
+        Returns:
+            Decoded JSON dictionary returned by `gh pr view`.
+
+        Raises:
+            RuntimeError: If `gh pr view` fails or returns malformed JSON.
+        """
+        # --- Step 1: Resolve target identifier and execute gh pr view --json ---
         ws_dir = common.workspace_dir(self.repo_root)
         target, _, _ = _resolve_pr_target(ws_dir, pr_id_or_number)
         gh = _gh_bin()
@@ -1843,6 +2529,7 @@ class GitHubBus(LocalGitBus):
             raise RuntimeError(
                 f"gh pr view failed for '{target}': {res.stderr.strip() or res.stdout.strip()}"
             )
+        # --- Step 2: Decode and validate JSON dictionary payload ---
         try:
             data = json.loads(res.stdout)
         except json.JSONDecodeError as exc:
@@ -1852,7 +2539,14 @@ class GitHubBus(LocalGitBus):
         return data
 
     def diff_pr(self, pr_id_or_number: str | int) -> str:
-        """Fetch PR diff via `gh pr diff <target>`, falling back to local `git diff`."""
+        """Fetch PR diff via `gh pr diff <target>`, falling back to local `git diff`.
+
+        Args:
+            pr_id_or_number: PR identifier, slug, branch name, or GitHub PR number.
+
+        Returns:
+            Unified diff string from `gh pr diff` or local `git diff`.
+        """
         ws_dir = common.workspace_dir(self.repo_root)
         target, _, _ = _resolve_pr_target(ws_dir, pr_id_or_number)
         gh = _gh_bin()
@@ -1874,11 +2568,23 @@ class GitHubBus(LocalGitBus):
         *,
         commit: bool = True,
     ) -> dict[str, Any]:
-        """Write and commit `AUDIT-round-<K>.md` locally and post via `gh pr review --comment`."""
+        """Write and commit `AUDIT-round-<K>.md` locally and post via `gh pr review --comment`.
+
+        Args:
+            pr_id: Target PR identifier.
+            audit_source: Audit report source object, path, or Markdown string.
+            commit: Whether to commit `AUDIT-round-<K>.md` and `PROJECT.md` locally.
+
+        Returns:
+            Dictionary with local audit metadata plus `body_file`, `review_posted`, and
+            `review_command`.
+        """
+        # --- Step 1: Persist and commit AUDIT-round-<K>.md locally via LocalGitBus ---
         local_res = super().post_audit(pr_id, audit_source, commit=commit)
         audit_doc = schemas.load_audit(local_res["audit_path"])
         report = audit_doc.spec
 
+        # --- Step 2: Render <!-- pa:audit ... --> review comment body to .state/ file ---
         existing_body = "\n".join(s.full_text() for s in audit_doc.sections).strip()
         comment_body = format_pa_audit_comment(
             report, existing_body if existing_body else None
@@ -1890,6 +2596,7 @@ class GitHubBus(LocalGitBus):
         body_file = state_dir / f"audit_comment_{report.pr_id.lower()}_r{report.audit_round}.md"
         body_file.write_text(comment_body, encoding="utf-8")
 
+        # --- Step 3: Post review via gh pr review --comment (safe for same-account authoring) ---
         if report.github_pr is not None:
             target = str(report.github_pr)
         else:
@@ -1921,7 +2628,15 @@ class GitHubBus(LocalGitBus):
         }
 
     def sync_audit(self, pr_id: str) -> dict[str, Any] | None:
-        """Ingest remote `<!-- pa:audit ... -->` PR comments into `AUDIT-round-<K>.md` & `state.db`."""
+        """Ingest remote `<!-- pa:audit ... -->` PR comments into `AUDIT-round-<K>.md` & `state.db`.
+
+        Args:
+            pr_id: Target PR identifier.
+
+        Returns:
+            Latest synced audit metadata dictionary, or `None` if no local or remote audits exist.
+        """
+        # --- Step 1: Query remote GitHub PR reviews and comments via gh pr view ---
         ws_dir = common.workspace_dir(self.repo_root)
         target, pr_dir, proj_doc = _resolve_pr_target(ws_dir, pr_id)
         canonical_pr_id = (
@@ -1946,13 +2661,14 @@ class GitHubBus(LocalGitBus):
             except json.JSONDecodeError:
                 payload = None
 
+            # --- Step 2: Parse <!-- pa:audit ... --> blocks and materialize missing local files ---
             if isinstance(payload, Mapping):
                 remote_num = (
                     int(payload["number"])
                     if isinstance(payload.get("number"), int)
                     else (proj_doc.spec.github_pr if proj_doc is not None else None)
                 )
-                items: list[ Any] = []
+                items: list[Any] = []
                 if isinstance(payload.get("reviews"), list):
                     items.extend(payload["reviews"])
                 if isinstance(payload.get("comments"), list):
@@ -2030,6 +2746,7 @@ class GitHubBus(LocalGitBus):
                             runner=self.runner,
                         )
 
+        # --- Step 3: Delegate final state.db reconciliation to LocalGitBus.sync_audit ---
         synced = super().sync_audit(pr_id)
         if synced is not None:
             synced["mode"] = "github"
@@ -2045,7 +2762,20 @@ class GitHubBus(LocalGitBus):
         labels: Sequence[str] = ("pa:deferred",),
         file_path: str | None = None,
     ) -> dict[str, Any]:
-        """Create a GitHub issue with `--label pa:deferred` and record in `DEFERRED_BACKLOG.md`."""
+        """Create a GitHub issue with `--label pa:deferred` and record in `DEFERRED_BACKLOG.md`.
+
+        Args:
+            title: Issue title.
+            summary: Optional issue description or remediation context.
+            pr_id: Optional originating PR identifier.
+            wo_id: Optional originating Work Order identifier.
+            labels: Classification labels (always includes `"pa:deferred"`).
+            file_path: Optional repository-relative file path.
+
+        Returns:
+            Dictionary with `mode`, `issue_url`, `backlog_path`, and executed `command`.
+        """
+        # --- Step 1: Normalize labels and assemble GitHub issue Markdown body ---
         normalized_labels: list[str] = ["pa:deferred"]
         for lbl in labels:
             lbl_s = str(lbl).strip()
@@ -2065,6 +2795,7 @@ class GitHubBus(LocalGitBus):
             body_lines.append(summary.strip())
         body = "\n".join(body_lines) if body_lines else title.strip()
 
+        # --- Step 2: Invoke gh issue create with --label pa:deferred ---
         gh = _gh_bin()
         cmd: list[str] = [
             gh,
@@ -2086,6 +2817,7 @@ class GitHubBus(LocalGitBus):
         except (OSError, subprocess.SubprocessError):
             issue_url = None
 
+        # --- Step 3: Append entry to local DEFERRED_BACKLOG.md ---
         backlog_path = self.append_deferred_backlog(
             title=title,
             summary=summary,
@@ -2102,7 +2834,12 @@ class GitHubBus(LocalGitBus):
         }
 
     def sync_state(self) -> dict[str, Any]:
-        """Fetch `origin`, sync remote GitHub PR audits, and rebuild `.state/state.db`."""
+        """Fetch `origin`, sync remote GitHub PR audits, and rebuild `.state/state.db`.
+
+        Returns:
+            Dictionary summarizing synced receipts, audits, Work Orders, and `vcs_mode`.
+        """
+        # --- Step 1: Fetch remote refs and ingest remote PR audit comments ---
         self.runner(["git", "fetch", "origin"], cwd=self.repo_root)
 
         ws_dir = common.workspace_dir(self.repo_root)
@@ -2116,6 +2853,7 @@ class GitHubBus(LocalGitBus):
                     continue
                 self.sync_audit(proj_doc.spec.charter.pr_id)
 
+        # --- Step 2: Rebuild local state.db and ensure vcs_mode == 'github' ---
         res = super().sync_state()
         res["vcs_mode"] = "github"
         db_file = ws_dir / ".state" / "state.db"
@@ -2130,11 +2868,21 @@ class GitHubBus(LocalGitBus):
         pr_id: str | None = None,
         onto_branch: str | None = None,
     ) -> dict[str, Any]:
-        """Rebase stacked PR branches, force-push with lease, and retarget GitHub PR bases."""
+        """Rebase stacked PR branches, force-push with lease, and retarget GitHub PR bases.
+
+        Args:
+            pr_id: Optional target PR identifier or branch name filter.
+            onto_branch: Optional base branch override.
+
+        Returns:
+            Dictionary with `restacked` branches, per-branch `details`, and executed `commands`.
+        """
+        # --- Step 1: Rebase local branch stack via LocalGitBus.restack_branches ---
         res = super().restack_branches(pr_id=pr_id, onto_branch=onto_branch)
         ws_dir = common.workspace_dir(self.repo_root)
         gh = _gh_bin()
 
+        # --- Step 2: Force-push each rebased branch with lease and update GitHub PR base ref ---
         for entry in res.get("details", []):
             branch = str(entry["branch"])
             onto = str(entry["onto_branch"])
@@ -2157,8 +2905,19 @@ def get_vcs_bus(
     *,
     vcs_mode: str | None = None,
     runner: common.Runner = common.run,
-) -> VcsBus:
-    """Return the configured `VcsBus` instance (`GitHubBus` or `LocalGitBus`)."""
+) -> VCSBus:
+    """Return the configured `VCSBus` instance (`GitHubBus` or `LocalGitBus`).
+
+    Args:
+        repo_root: Path to the Git repository root.
+        vcs_mode: Optional explicit mode (`"github"` or `"local_git"`); read from `.state/state.db`
+            when `None`.
+        runner: Subprocess execution callable.
+
+    Returns:
+        `GitHubBus` when `vcs_mode == "github"`, otherwise `LocalGitBus`.
+    """
+    # --- Step 1: Resolve vcs_mode from argument or .state/state.db ---
     real_root = Path(os.path.realpath(repo_root))
     resolved_mode = vcs_mode
     if not resolved_mode:
@@ -2170,6 +2929,7 @@ def get_vcs_bus(
         else:
             resolved_mode = "local_git"
 
+    # --- Step 2: Instantiate matching VCSBus implementation ---
     if str(resolved_mode).strip().lower() == "github":
         return GitHubBus(real_root, runner=runner)
     return LocalGitBus(real_root, runner=runner)
@@ -2180,7 +2940,15 @@ def sync_state(
     *,
     runner: common.Runner = common.run,
 ) -> dict[str, Any]:
-    """Rebuild `.state/state.db` and reconcile `PROJECT.md` rows via the active `VcsBus`."""
+    """Rebuild `.state/state.db` and reconcile `PROJECT.md` rows via the active `VCSBus`.
+
+    Args:
+        repo_root: Path to the Git repository root.
+        runner: Subprocess execution callable.
+
+    Returns:
+        Dictionary summarizing synced receipts, audits, Work Orders, and timestamp.
+    """
     return get_vcs_bus(repo_root, runner=runner).sync_state()
 
 
@@ -2191,7 +2959,17 @@ def restack_branches(
     onto_branch: str | None = None,
     runner: common.Runner = common.run,
 ) -> dict[str, Any]:
-    """Rebase stacked PR branches onto their base branches via the active `VcsBus`."""
+    """Rebase stacked PR branches onto their base branches via the active `VCSBus`.
+
+    Args:
+        repo_root: Path to the Git repository root.
+        pr_id: Optional target PR identifier or branch name filter.
+        onto_branch: Optional base branch override.
+        runner: Subprocess execution callable.
+
+    Returns:
+        Dictionary with `restacked` branches, per-branch `details`, and executed `commands`.
+    """
     return get_vcs_bus(repo_root, runner=runner).restack_branches(
         pr_id=pr_id,
         onto_branch=onto_branch,

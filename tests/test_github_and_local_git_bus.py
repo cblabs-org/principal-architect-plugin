@@ -1,7 +1,49 @@
-"""Unit and integration tests for `vcs_sync.py` (`LocalGitBus` and `GitHubBus`).
+"""Principal Architect Plugin (c) 2026 Matt McNeill
+https://github.com/matthewmcneill/principal-architect-plugin
+SPDX-License-Identifier: Apache-2.0
 
-Covers both the offline `LocalGitBus` floor against real temporary Git repositories (`tmp_repo`)
-and the `GitHubBus` multi-machine projection against a mocked `gh` runner (`fake_runner`).
+Module: tests/test_github_and_local_git_bus.py
+
+Responsibility:
+    Unit and integration tests for the dual-VCS state and audit bus (`vcs_sync.py`:
+    `LocalGitBus` and `GitHubBus`), dynamic model routing and Antigravity Language
+    Server RPC client (`models.py`), and the end-to-end `pa` CLI lifecycle commands
+    (`programme`, `pr`, `wo`, `escalate`, `sync`, `graduate`).
+
+Test Suite Coverage Summary:
+    1. Offline `LocalGitBus` Floor (`vcs_sync.py`):
+       - `test_vcs_bus_protocol_and_get_vcs_bus`,
+         `test_create_or_checkout_stacked_branches`: Verify `VcsBus` protocol
+         conformance and stacked branch creation (`main -> feat/pr-01 -> pr-01/wo1`).
+       - `test_format_and_read_commit_trailers`,
+         `test_format_and_parse_pa_audit_comment_roundtrip`,
+         `test_write_audit_round_and_charter_hash_preservation`: Verify `PA-WorkOrder`,
+         `PA-Verified-Hash`, and `PA-Audit-Verdict` trailers and `AUDIT-round-K.md`.
+       - `test_append_deferred_backlog`, `test_sync_state_rebuilds_deleted_state_db`,
+         `test_restack_branches_updates_stacked_branch_onto_new_main`,
+         `test_open_or_sync_pr_and_sync_audit`: Verify `DEFERRED_BACKLOG.md`, full
+         `state.db` reconstruction from Git history, and `git rebase --update-refs`.
+    2. `GitHubBus` Multi-Machine Projection (`vcs_sync.py` with `FakeRunner`):
+       - `test_get_vcs_bus_resolves_local_git_and_github_modes`,
+         `test_github_bus_open_or_sync_pr_creates_then_edits_pr`: Verify `gh pr create`
+         and `gh pr edit` workflows while preserving `charter_hash`.
+       - `test_github_bus_post_audit_always_uses_comment_never_approve_or_request_changes`,
+         `test_github_bus_sync_audit_and_sync_state_ingest_remote_pr_review`: Verify
+         same-account safe `gh pr review --comment` and remote audit ingestion.
+       - `test_github_bus_create_deferred_issue_and_fallback`,
+         `test_github_bus_restack_branches_pushes_with_lease_and_edits_pr_base`,
+         `test_github_bus_view_pr_and_diff_pr_with_local_fallback`: Verify `pa:deferred`
+         issue creation, `--force-with-lease` restacking, and local diff fallback.
+    3. Model Routing & Language Server Client (`models.py`):
+       - `test_models_step_up_and_route_all_complexities_and_attempts`,
+         `test_select_architect_model_preferences_catalog_and_state_db`: Verify
+         `flash_lite -> flash -> inherit` step-up routing (never downgrading to `pro`).
+       - `test_language_server_client_connected_and_headless_fallback`,
+         `test_pa_wo_debug_and_resolve_cli_end_to_end`: Verify `LanguageServerClient`
+         RPC calls, headless fallback prompts, `pa wo debug`, and `pa wo resolve`.
+    4. Full `pa` CLI Lifecycle (`pa_cli.py`):
+       - `test_pa_cli_local_git_end_to_end_lifecycle` and GitHub CLI lifecycle tests:
+         Verify end-to-end execution from `pa enroll` through `pa pr graduate`.
 """
 
 from __future__ import annotations

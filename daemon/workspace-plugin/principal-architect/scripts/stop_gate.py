@@ -1,22 +1,54 @@
 #!/usr/bin/env python3
-"""Stop governance gate enforcing the two-tier retry ceiling and completion invariants.
+"""Principal Architect Plugin (c) 2026 Matt McNeill
+https://github.com/matthewmcneill/principal-architect-plugin
+SPDX-License-Identifier: Apache-2.0
+Module: daemon/workspace-plugin/principal-architect/scripts/stop_gate.py
 
-Implements SPEC §7.4 and PR-02 Charter G5, R1, R2, R4, and R5:
-- `< 1 ms` fast-exit when the target workspace is not enrolled in Registry.
-- Lazy import rule (Charter G2 & R1): `pydantic`, `yaml`, and `schemas` are NEVER imported
-  at module top-level or on the unenrolled fast path.
-- Two-tier retry policy for `pa-engineer`:
+Stop governance gate enforcing the two-tier retry ceiling and completion invariants.
+Plays the session-completion verification role in the Split-Authority enforcement pipeline
+(SPEC §7.4 and PR-02 Charter G5, R1, R2, R4, and R5):
+- Executes a `< 1 ms` fast-exit when the target workspace is not enrolled in the Registry.
+- Enforces the lazy import rule (Charter G2 & R1): `pydantic`, `yaml`, and `schemas` are
+  never imported at module top-level or on the unenrolled fast path.
+- Enforces the two-tier retry policy for `pa-engineer`:
   * Fast-fail structural escalation (`structural_failures >= max_structural_failures` [2]
-    or `>= 3` consecutive `ERROR_MESSAGE` steps in `transcript.jsonl`) -> marks Work Order
-    `ESCALATED_TO_PA`, records escalation in `state.db`, and returns `{}` immediately.
-  * Productive attempt ceiling (`attempt_num >= max_attempts` [5]) -> marks Work Order
-    `BLOCKED`, records escalation in `state.db`, enqueues `pa-debugger` (`🔬 [Debug <WO-ID>]`),
-    and returns `{}`.
-- Case A (blocker/escalation report) and Case B (valid receipt matching `compute_tree_hash`,
-  clean git status with `<WO-ID>:` commit, and valid `CompletionReport` with intact `spec_hash`)
-  completion checks, incrementing `attempt_num` on every `"decision": "continue"` response
-  so `Stop` continuations are strictly bounded (Charter R5).
-- Auditor Stop gate requiring a valid `AuditReport` (`AUDIT-round-*.md`) for current `HEAD`.
+    or `>= 3` consecutive `ERROR_MESSAGE` steps in `transcript.jsonl`) marks the Work Order
+    `ESCALATED_TO_PA`, records the escalation in `state.db`, and returns `{}` immediately.
+  * Productive attempt ceiling (`attempt_num >= max_attempts` [5]) marks the Work Order
+    `BLOCKED`, records the escalation in `state.db`, enqueues `pa-debugger`
+    (`🔬 [Debug <WO-ID>]`), and returns `{}`.
+- Evaluates Case A (explicit blocker/escalation report) and Case B (valid receipt matching
+  `compute_tree_hash`, clean git status with `<WO-ID>:` commit, and valid `CompletionReport`
+  with intact `spec_hash`) completion invariants, incrementing `attempt_num` on every
+  `"decision": "continue"` response so `Stop` continuations are strictly bounded.
+- Enforces the Auditor Stop gate requiring a valid `AuditReport` (`AUDIT-round-*.md`) for
+  the current `HEAD` commit SHA.
+
+Exported API Summary:
+  Constants:
+    _SCRIPTS_DIR: Absolute directory path containing the hook script modules.
+  Public Functions:
+    evaluate_stop(payload, *, repo_root=None, runner=common.run) -> dict[str, Any]:
+        Evaluate a Stop hook event for pa-engineer and pa-auditor sessions.
+    main(argv=None) -> int:
+        CLI entrypoint reading a Stop JSON payload from stdin and writing the hook response.
+  Internal Helpers:
+    _has_consecutive_error_steps(steps, threshold=3) -> bool:
+        Check whether a transcript step sequence has at least threshold consecutive error steps.
+    _parse_porcelain_paths(stdout) -> list[str]:
+        Parse dirty or untracked repo-relative POSIX paths from git status porcelain output.
+    _is_ephemeral_runtime_path(rel_posix) -> bool:
+        Check whether a repo-relative POSIX path is an ephemeral runtime file ignored by git checks.
+    _check_git_clean_and_committed(
+        repo_root, wo_id, allowed_files, wo_rel_posix, *, runner=common.run
+    ) -> tuple[bool, list[str]]:
+        Verify that allowed_files and WORKORDER.md are clean in git and committed with `<WO-ID>:`.
+    _evaluate_engineer_stop(
+        *, payload, db, session, conv_id, real_root, ws_dir, runner
+    ) -> dict[str, Any]:
+        Evaluate Stop completion invariants and two-tier retry bounds for a pa-engineer session.
+    _evaluate_auditor_stop(*, db, session, conv_id, real_root, ws_dir, runner) -> dict[str, Any]:
+        Evaluate Stop completion invariants for a pa-auditor session.
 """
 
 from __future__ import annotations
@@ -28,6 +60,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+# Absolute path to the scripts directory, inserted into sys.path for sibling imports.
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
@@ -43,9 +76,20 @@ def _has_consecutive_error_steps(
     steps: Sequence[Mapping[str, Any]],
     threshold: int = 3,
 ) -> bool:
-    """Return True if `steps` contains a run of at least `threshold` consecutive error steps."""
+    """Return True if `steps` contains a run of at least `threshold` consecutive error steps.
+
+    Args:
+        steps: Sequence of parsed `transcript.jsonl` step dictionaries.
+        threshold: Minimum number of consecutive error steps required to trigger (`3` by default).
+
+    Returns:
+        `True` if at least `threshold` consecutive error steps are present, otherwise `False`.
+    """
+    # --- Step 1: Handle non-positive threshold edge case ---
     if threshold <= 0:
         return True
+
+    # --- Step 2: Scan transcript steps for consecutive error streaks ---
     run_len = 0
     for step in steps:
         if not isinstance(step, Mapping):
@@ -63,7 +107,14 @@ def _has_consecutive_error_steps(
 
 
 def _parse_porcelain_paths(stdout: str) -> list[str]:
-    """Parse dirty/untracked repo-relative POSIX paths from `git status --porcelain -uall`."""
+    """Parse dirty/untracked repo-relative POSIX paths from `git status --porcelain -uall`.
+
+    Args:
+        stdout: Raw stdout text from `git status --porcelain -uall`.
+
+    Returns:
+        Deduplicated list of repo-relative POSIX file paths in order of appearance.
+    """
     paths: list[str] = []
     seen: set[str] = set()
     for line in stdout.splitlines():
@@ -80,7 +131,14 @@ def _parse_porcelain_paths(stdout: str) -> list[str]:
 
 
 def _is_ephemeral_runtime_path(rel_posix: str) -> bool:
-    """Return True if `rel_posix` is an ephemeral runtime file ignored by git hygiene checks."""
+    """Return True if `rel_posix` is an ephemeral runtime file ignored by git hygiene checks.
+
+    Args:
+        rel_posix: Normalized repo-relative POSIX path.
+
+    Returns:
+        `True` if the path points to `.agents/plugins.json` or any `.state/` directory entry.
+    """
     norm = rel_posix.strip().lstrip("./")
     if norm == ".agents/plugins.json":
         return True
@@ -95,9 +153,21 @@ def _check_git_clean_and_committed(
     *,
     runner: common.Runner = common.run,
 ) -> tuple[bool, list[str]]:
-    """Verify `allowed_files` + `WORKORDER.md` are clean in git and committed with `<WO-ID>:`."""
+    """Verify `allowed_files` + `WORKORDER.md` are clean in git and committed with `<WO-ID>:`.
+
+    Args:
+        repo_root: Canonical path to the repository root.
+        wo_id: Work Order identifier (`WO-01`, etc.) expected in the commit subject prefix.
+        allowed_files: Sequence of allowed file patterns for the Work Order.
+        wo_rel_posix: Repo-relative POSIX path to the Work Order's `WORKORDER.md` file.
+        runner: Subprocess runner callable used to invoke git commands.
+
+    Returns:
+        A 2-tuple `(is_ok, problems)` where `is_ok` is `True` when `problems` is empty.
+    """
     problems: list[str] = []
 
+    # --- Step 1: Check git status for uncommitted changes in allowed_files or WORKORDER.md ---
     try:
         status_res = runner(["git", "status", "--porcelain", "-uall"], cwd=repo_root)
     except (OSError, subprocess.SubprocessError):
@@ -120,6 +190,7 @@ def _check_git_clean_and_committed(
         if dirty_relevant:
             problems.append("uncommitted files in allowed_files or WORKORDER.md")
 
+    # --- Step 2: Check recent git log subjects for `<WO-ID>:` commit prefix ---
     try:
         log_res = runner(["git", "log", "-n", "5", "--format=%s"], cwd=repo_root)
     except (OSError, subprocess.SubprocessError):
@@ -149,7 +220,17 @@ def evaluate_stop(
 
     Executes an immediate `< 1 ms` fast-exit returning `{}` when the workspace is not enrolled
     in the global PA Registry (or local `.state/state.db` when `repo_root` is explicitly passed).
+
+    Args:
+        payload: Decoded JSON hook input dictionary for the `Stop` event.
+        repo_root: Optional explicit repository root override for testing or CLI invocation.
+        runner: Subprocess runner callable used for git status/log/rev-parse checks.
+
+    Returns:
+        Hook response dictionary: `{}` to allow the agent to stop, or
+        `{"decision": "continue", "reason": "..."}` to resume the agent with remediation guidance.
     """
+    # --- Step 1: Fast-exit check for unenrolled workspaces (< 1 ms) ---
     resolved_root: Path | None = None
     if repo_root is None:
         workspace_paths = escalation.extract_workspace_paths(payload)
@@ -175,6 +256,7 @@ def evaluate_stop(
             return {}
         resolved_root = cand_root
 
+    # --- Step 2: Validate workspace state DB and normal termination reason ---
     real_root = Path(os.path.realpath(resolved_root))
     ws_dir = common.workspace_dir(real_root)
     db_file = ws_dir / ".state" / "state.db"
@@ -187,6 +269,7 @@ def evaluate_stop(
     if term_reason and term_reason != "NO_TOOL_CALL":
         return {}
 
+    # --- Step 3: Resolve bound session role and dispatch role-specific Stop evaluator ---
     with state_db.StateDB(db_file) as db:
         conv_id = str(
             payload.get("conversationId") or payload.get("conversation_id") or ""
@@ -233,6 +316,22 @@ def _evaluate_engineer_stop(
     ws_dir: Path,
     runner: common.Runner,
 ) -> dict[str, Any]:
+    """Evaluate `Stop` completion invariants and two-tier retry bounds for `pa-engineer`.
+
+    Args:
+        payload: Raw `Stop` hook input dictionary.
+        db: Open `StateDB` connection for the workspace.
+        session: Active session row mapping from `state.db`.
+        conv_id: Bound conversation UUID string.
+        real_root: Canonical path to the repository root.
+        ws_dir: Canonical path to the `principal-architect-workspace` workspace directory.
+        runner: Subprocess runner callable used for git hygiene verification.
+
+    Returns:
+        `{}` when completion or escalation terminates the session, or
+        `{"decision": "continue", "reason": "..."}` when retries remain.
+    """
+    # --- Step 1: Load bound WorkOrder document and session retry counters ---
     import schemas
 
     wo_id = str(session.get("wo_id") or "").strip()
@@ -252,7 +351,7 @@ def _evaluate_engineer_stop(
     steps = common.read_transcript(common._strip_file_uri(str(t_path))) if t_path else []
     has_3_errors = _has_consecutive_error_steps(steps, threshold=3)
 
-    # Step 4A: Fast-Fail Structural Escalation
+    # --- Step 2: Fast-fail structural escalation check (SPEC §7.4 Step 4A) ---
     if structural_failures >= max_structural or has_3_errors:
         wo_doc.spec.status = schemas.WorkOrderStatus.ESCALATED_TO_PA
         if wo_doc.spec.completion is None or wo_doc.spec.completion.status not in (
@@ -270,7 +369,8 @@ def _evaluate_engineer_stop(
                     requested_files=[],
                     summary=(
                         f"Fast-fail structural escalation on {resolved_wo_id} "
-                        f"(structural_failures={structural_failures}, consecutive_errors={has_3_errors})."
+                        f"(structural_failures={structural_failures}, "
+                        f"consecutive_errors={has_3_errors})."
                     ),
                 ),
             )
@@ -300,7 +400,7 @@ def _evaluate_engineer_stop(
         )
         return {}
 
-    # Step 4B: Case A — Explicit Blocker / Escalation
+    # --- Step 3: Case A check for explicit blocker or escalation report (SPEC §7.4 Step 4B) ---
     is_case_a = wo_doc.spec.status in (
         schemas.WorkOrderStatus.ESCALATED_TO_PA,
         schemas.WorkOrderStatus.BLOCKED,
@@ -343,16 +443,15 @@ def _evaluate_engineer_stop(
             return {
                 "decision": "continue",
                 "reason": (
-                    f"Work Order {resolved_wo_id} (attempt {attempt_num}/{max_attempts}) is marked "
-                    f"{wo_doc.spec.status.value} but lacks a valid CompletionReport/escalation_request "
-                    "explaining the blocker."
+                    f"Work Order {resolved_wo_id} (attempt {attempt_num}/{max_attempts}) is "
+                    f"marked {wo_doc.spec.status.value} but lacks a valid "
+                    "CompletionReport/escalation_request explaining the blocker."
                 ),
             }
 
-    # Step 4C: Case B — Normal Completion Invariants
+    # --- Step 4: Case B check for normal completion invariants (SPEC §7.4 Step 4C) ---
     missing_reasons: list[str] = []
 
-    # 1. Valid verification receipt matching current allowed_files tree_hash
     current_tree_hash = post_tool_receipt.compute_tree_hash(
         real_root, wo_doc.spec.allowed_files
     )
@@ -360,7 +459,6 @@ def _evaluate_engineer_stop(
     if receipt is None:
         missing_reasons.append("missing verification receipt")
 
-    # 2. Clean git status on allowed_files + WORKORDER.md and <WO-ID>: commit
     wo_rel_posix = (
         wo_doc.path.resolve().relative_to(real_root).as_posix()
         if wo_doc.path is not None
@@ -376,7 +474,6 @@ def _evaluate_engineer_stop(
     if not git_ok:
         missing_reasons.extend(git_problems)
 
-    # 3. Valid CompletionReport & intact Part I spec_hash
     comp = wo_doc.spec.completion
     comp_valid = (
         wo_doc.spec.status == schemas.WorkOrderStatus.COMPLETED
@@ -397,7 +494,7 @@ def _evaluate_engineer_stop(
     if not missing_reasons:
         return {}
 
-    # Productive Attempt Ceiling (attempt_num >= max_attempts [5])
+    # --- Step 5: Enforce productive attempt ceiling or issue bounded continuation ---
     if attempt_num >= max_attempts:
         wo_doc.spec.status = schemas.WorkOrderStatus.BLOCKED
         if (
@@ -434,7 +531,6 @@ def _evaluate_engineer_stop(
         )
         return {}
 
-    # Bounded continuation (attempt_num < max_attempts)
     db.update_session(conv_id, attempt_num=attempt_num + 1)
     reason_str = (
         f"Work Order {resolved_wo_id} (attempt {attempt_num}/{max_attempts}) cannot complete yet: "
@@ -453,6 +549,25 @@ def _evaluate_auditor_stop(
     ws_dir: Path,
     runner: common.Runner,
 ) -> dict[str, Any]:
+    """Evaluate `Stop` completion invariants for a `pa-auditor` session.
+
+    Verifies that a schema-valid `AUDIT-round-*.md` file matching the current `HEAD`
+    commit SHA has been published for the active PR, or issues a bounded continuation
+    up to 5 attempts.
+
+    Args:
+        db: Open `StateDB` connection for the workspace.
+        session: Active session row mapping from `state.db`.
+        conv_id: Bound conversation UUID string.
+        real_root: Canonical path to the repository root.
+        ws_dir: Canonical path to the `principal-architect-workspace` workspace directory.
+        runner: Subprocess runner callable used to query `git rev-parse HEAD`.
+
+    Returns:
+        `{}` if a matching `AuditReport` exists or the 5-attempt ceiling is reached,
+        otherwise `{"decision": "continue", "reason": "..."}`.
+    """
+    # --- Step 1: Check for an existing AuditReport matching the current HEAD SHA ---
     import schemas
 
     pr_id = str(session.get("pr_id") or "").strip()
@@ -471,6 +586,7 @@ def _evaluate_auditor_stop(
         ):
             return {}
 
+    # --- Step 2: Enforce 5-attempt auditor continuation ceiling or continue ---
     attempt_num = int(session.get("attempt_num") or 1)
     if attempt_num >= 5:
         escalation.record_escalation(
@@ -492,12 +608,22 @@ def _evaluate_auditor_stop(
     target_pr = pr_id or "<PR-ID>"
     return {
         "decision": "continue",
-        "reason": f"Publish your audit findings via `pa pr post-audit {target_pr} --file <path>` before finishing.",
+        "reason": (
+            f"Publish your audit findings via `pa pr post-audit {target_pr} --file <path>` "
+            "before finishing."
+        ),
     }
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """CLI entrypoint for `Stop` hook (`stop_gate.py`)."""
+    """CLI entrypoint for `Stop` hook (`stop_gate.py`).
+
+    Args:
+        argv: Optional command-line argument sequence (unused; hook reads JSON from stdin).
+
+    Returns:
+        Process exit code (`0` after writing the JSON hook response to stdout).
+    """
     _ = argv
     payload = escalation.read_hook_input()
     try:
