@@ -58,9 +58,15 @@ To uninstall the global daemon and remove the `pa` CLI symlink (idempotent):
 ./scripts/uninstall.sh
 ```
 
-### Tier 2: Per-Repository Opt-In Enrollment (`pa enroll` / `pa unenroll`)
+### Tier 2: Per-Repository Opt-In Enrollment (`/principal-architect-admin` or `pa enroll` / `pa unenroll`)
 
-Enroll an individual repository to activate the Principal Architect workspace plugin, hooks, and Cockpit visibility:
+Because `pa-daemon` bundles the lightweight global **`principal-architect-admin`** management skill (`daemon/skills/principal-architect-admin/SKILL.md`), you can enroll any repository directly from chat:
+
+```text
+/principal-architect-admin enroll this repo please
+```
+
+Or via the `pa` CLI:
 
 ```bash
 pa enroll /path/to/repo

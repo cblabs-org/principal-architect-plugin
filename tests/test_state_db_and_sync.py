@@ -1152,6 +1152,7 @@ def test_pa_status_synthetic_and_dogfood(
 
     # Dogfood test: run pa status --json against this repository root
     this_repo = Path(__file__).resolve().parent.parent
+    had_state_db_before = (common.workspace_dir(this_repo) / ".state" / "state.db").exists()
     assert pa_cli.main(["status", str(this_repo), "--json"]) == 0
     dogfood_raw = capsys.readouterr().out
     # Assert zero emoji characters in --json output
@@ -1176,8 +1177,8 @@ def test_pa_status_synthetic_and_dogfood(
     # Verify git trailer reconciliation populated verified_hash on completed WOs
     wo5 = next(w for w in pr01["work_orders"] if w["id"] == "WO-01.5")
     assert wo5["verified_hash"] == "f7e857f8de69f2abdd453e4df6b07e69cd7bde4f"
-    # Verify running pa status did NOT create .state/state.db in this unenrolled repo
-    assert not (common.workspace_dir(this_repo) / ".state" / "state.db").exists()
+    # Verify running pa status did NOT newly create .state/state.db if absent beforehand
+    assert (common.workspace_dir(this_repo) / ".state" / "state.db").exists() == had_state_db_before
 
 
 def test_dogfood_self_enroll_sync_and_status_on_repo_workspace(
@@ -1238,6 +1239,7 @@ def test_dogfood_self_enroll_sync_and_status_on_repo_workspace(
     for wo_md in wo_files:
         assert schemas.verify_spec_hash(wo_md) is True
 
+    had_state_db_before = (repo_ws / ".state" / "state.db").exists()
     assert pa_cli.main(["status", str(this_repo), "--json"]) == 0
     live_payload = json.loads(capsys.readouterr().out)
     assert [p["pr_id"] for p in live_payload["prs"]] == [
@@ -1247,6 +1249,6 @@ def test_dogfood_self_enroll_sync_and_status_on_repo_workspace(
         "PR-04",
         "PR-05",
     ]
-    assert (repo_ws / ".state" / "state.db").exists() is False
+    assert (repo_ws / ".state" / "state.db").exists() == had_state_db_before
 
 

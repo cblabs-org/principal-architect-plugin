@@ -825,6 +825,7 @@ def test_install_and_uninstall_scripts_isolated_tmp_path(
 
     # 2. Verify installed package layout, registry.json, and executable symlink
     assert (daemon_home / "plugin.json").is_file()
+    assert (daemon_home / "skills" / "principal-architect-admin" / "SKILL.md").is_file()
     assert (daemon_home / "sidecars" / "pa_cockpit" / "sidecar.json").is_file()
     assert (daemon_home / "sidecars" / "pa_cockpit" / "ui" / "index.html").is_file()
     assert (
