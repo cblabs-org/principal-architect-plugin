@@ -35,53 +35,95 @@ Every canonical Markdown artifact in `.agents/plugins/principal-architect-worksp
 
 ---
 
-## 2. Two-Tier Installation (`SPEC.md §4.1`)
+## 2. Installation, Enrollment & Upgrading (`SPEC.md §4.1` & [`docs/packaging-and-distribution.md`](docs/packaging-and-distribution.md))
 
-`principal-architect-plugin` uses a clean **Two-Tier Installation** model so unenrolled repositories experience zero hook overhead (`<1ms` fast-exit).
+`principal-architect-plugin` installs once globally on your machine (`~/.gemini/config/plugins/pa-daemon/`) with **zero global hook overhead** (`<1ms` fast-exit), and is then enabled selectively per repository via `/principal-architect-admin` or `pa enroll`.
 
-### Tier 1: Global Host Daemon (`scripts/install.sh` & `scripts/uninstall.sh`)
+### Prerequisites
 
-Install the self-contained `daemon/` package into `~/.gemini/config/plugins/pa-daemon` and symlink the `pa` CLI into `~/.local/bin/pa`:
+- **Python `>= 3.11`** with `pydantic>=2,<3` and `pyyaml>=6`:
+  ```bash
+  python3 -m pip install "pydantic>=2,<3" "pyyaml>=6"
+  ```
+- **Git** (and optionally the GitHub CLI `gh` if using `vcs_mode: github`).
+
+---
+
+### Step 1 — Install the Global Plugin (`pa-daemon`)
+
+Choose any of the three installation methods below:
+
+#### Option A: One-Line Release Installer (Recommended)
+
+Downloads the latest `pa-daemon.zip` release bundle from [GitHub Releases](https://github.com/matthewmcneill/principal-architect-plugin/releases), installs it in-place into `~/.gemini/config/plugins/pa-daemon/` (preserving any existing `state/registry.json`), strips macOS Gatekeeper quarantine attributes if present, and symlinks `pa` into `~/.local/bin/pa`:
 
 ```bash
-./scripts/install.sh
+curl -fsSL https://raw.githubusercontent.com/matthewmcneill/principal-architect-plugin/main/scripts/install-release.sh | bash
 ```
 
-- **Environment Overrides:** Both `scripts/install.sh` and `scripts/uninstall.sh` honour:
+#### Option B: Download & Unzip Plugin Archive (Zero CLI)
+
+1. Download **`pa-daemon.zip`** from [GitHub Releases](https://github.com/matthewmcneill/principal-architect-plugin/releases).
+2. Extract the `.zip` directly into `~/.gemini/config/plugins/` so it creates `~/.gemini/config/plugins/pa-daemon/`:
+   ```bash
+   mkdir -p ~/.gemini/config/plugins
+   unzip -qo pa-daemon.zip -d ~/.gemini/config/plugins/
+   ```
+   *(Optional: symlink `~/.gemini/config/plugins/pa-daemon/bin/pa` into `~/.local/bin/pa` if you also want the `pa` CLI on your terminal `$PATH`. On macOS, the bundled `bin/pa` and `bin/run-pa-hook.sh` wrappers automatically clear Browser/Finder `com.apple.quarantine` attributes on first run.)*
+3. Restart Antigravity so it discovers the newly added plugin directory and starts the **Principal Architect Cockpit** sidecar.
+
+#### Option C: Install from a Local Clone (`install.sh` / `make install`)
+
+```bash
+git clone https://github.com/matthewmcneill/principal-architect-plugin.git
+cd principal-architect-plugin
+make install   # or: ./scripts/install.sh
+```
+
+- **Environment Overrides:** `scripts/install.sh`, `scripts/install-release.sh`, and `scripts/uninstall.sh` honour:
   - `PA_DAEMON_HOME="${PA_DAEMON_HOME:-$HOME/.gemini/config/plugins/pa-daemon}"`
   - `PA_BIN_DIR="${PA_BIN_DIR:-$HOME/.local/bin}"`
-- **State Preservation Across Upgrades:** Re-running `./scripts/install.sh` automatically backs up and restores `<PA_DAEMON_HOME>/state/` (including `<PA_DAEMON_HOME>/state/registry.json`), preserving all enrolled repositories across upgrades.
+- **Build Distributable `.zip` Bundles Locally:** Run `make dist-zip` to generate `dist/pa-daemon.zip` and `dist/pa-daemon-v<VERSION>.zip`.
 
-To uninstall the global daemon and remove the `pa` CLI symlink (idempotent):
+---
 
-```bash
-./scripts/uninstall.sh
-```
+### Step 2 — Verify Installation (`pa doctor`)
 
-### Tier 2: Per-Repository Opt-In Enrollment (`/principal-architect-admin` or `pa enroll` / `pa unenroll`)
-
-Because `pa-daemon` bundles the lightweight global **`principal-architect-admin`** management skill (`daemon/skills/principal-architect-admin/SKILL.md`), you can enroll any repository directly from chat:
-
-```text
-/principal-architect-admin enroll this repo please
-```
-
-Or via the `pa` CLI:
+Verify that the CLI version, installed `pa-daemon` bundle, and Python dependencies (`pydantic` and `pyyaml`) are healthy:
 
 ```bash
-pa enroll /path/to/repo
-# or via the convenience wrapper:
-./scripts/enroll.sh /path/to/repo
+pa doctor
 ```
+
+---
+
+### Step 3 — Enroll a Repository (`/principal-architect-admin` or `pa enroll`)
+
+Open any Git repository in Antigravity and either:
+
+- **From Chat (Interactive — Recommended):**
+  ```text
+  /principal-architect-admin enroll this repo please
+  ```
+  The `principal-architect-admin` skill inspects the repository, explains the enrollment options (`monitored` vs `autonomous` execution mode, `external` vs `builtin` memory mode, `github` vs `local_git` VCS bus, and legacy workspace migration), and runs `pa enroll`, `pa sync`, and `pa status`.
+
+- **From the Terminal (CLI):**
+  ```bash
+  pa enroll /path/to/repo
+  # or via the convenience wrapper in a local clone:
+  ./scripts/enroll.sh /path/to/repo
+  ```
 
 Optional enrollment flags and execution mode configuration:
 
 ```bash
 pa enroll /path/to/repo \
+  --execution-mode monitored \
   --memory-mode auto \
   --vcs-mode auto \
   --extra-skill pio \
-  --exclude-rule "custom-rule-*"
+  --exclude-rule "custom-rule-*" \
+  --migrate
 
 # Set or query execution mode (monitored | autonomous)
 pa mode --path /path/to/repo monitored
@@ -90,18 +132,25 @@ pa mode --path /path/to/repo autonomous
 
 What `pa enroll` does deterministically:
 1. Resolves the target repository's Git root (running `git init` if not yet a Git repository).
-2. Migrates any legacy `.agents/skills/principal-architect-workspace/` directory to `.agents/plugins/principal-architect-workspace/` while preserving relative memory links.
+2. Migrates any legacy `.agents/skills/principal-architect-workspace/` directory to `.agents/plugins/principal-architect-workspace/` while preserving relative memory links and recomputing hashes.
 3. Auto-detects `memory_mode` (`external` if `cblabs-org/repo-memory-plugin` is present, else `builtin`) and `vcs_mode` (`github` if a GitHub `origin` remote and authenticated `gh` CLI exist, else `local_git`).
 4. Generates role-scoped capability manifests `.state/pa-skills.json` (mounting `<repo>/.agents/skills` + `--extra-skill`) and `.state/pa-worker-rules.json` (mounting `<repo>/.agents/rules` while excluding `01-plan-before-execute.md` and `bug-fixer-*` rules that cause autonomous Workers to stall).
 5. Initializes `.state/state.db` (SQLite WAL mode), writes `<repo>/.agents/plugins.json` (added to `.git/info/exclude`), and registers the repository in `<PA_DAEMON_HOME>/state/registry.json`.
 
-To unenroll a repository while keeping all committed artifacts in `.agents/plugins/principal-architect-workspace/`:
+---
 
-```bash
-pa unenroll /path/to/repo
-# or:
-./scripts/unenroll.sh /path/to/repo
-```
+### Step 4 — Upgrading, Unenrolling & Uninstalling
+
+- **Upgrading:** Re-running `make install` (`./scripts/install.sh`), re-running `install-release.sh`, or unzipping a newer `pa-daemon.zip` over `~/.gemini/config/plugins/pa-daemon/` updates all scripts, UI assets, agents, skills, and manifests in-place while preserving `<PA_DAEMON_HOME>/state/registry.json`. All enrolled repositories on your machine are upgraded atomically without re-enrolling.
+- **Unenrolling a Repository:** Remove the workspace plugin entry from `<repo>/.agents/plugins.json` while keeping all committed artifacts in `.agents/plugins/principal-architect-workspace/`:
+  ```bash
+  pa unenroll /path/to/repo
+  # or: ./scripts/unenroll.sh /path/to/repo
+  ```
+- **Uninstalling Globally:** Remove `~/.gemini/config/plugins/pa-daemon` and the `~/.local/bin/pa` symlink (idempotent):
+  ```bash
+  ./scripts/uninstall.sh   # or: make uninstall
+  ```
 
 ---
 
@@ -188,6 +237,7 @@ The global daemon bundles the **Principal Architect Cockpit** AuxPane sidecar (`
 | `pa migrate [path] [--seed-repo-memory \| --no-seed-repo-memory] [--no-cleanup-legacy-skill] [--json]` | Move or merge legacy `.agents/skills/principal-architect-workspace/` into `.agents/plugins/principal-architect-workspace/`, remove legacy `.agents/skills/principal-architect`, rewrite stale path references, backfill `.state/state.db` via `pa sync`, and seed `repo-memory` when `memory_mode=external`. |
 | `pa unenroll [path]` | Remove the workspace plugin entry from `.agents/plugins.json` and unregister from `daemon/state/registry.json`. |
 | `pa status [path] [--json]` | Reconcile committed specs, local git trailers, and `.state/state.db`; output human-readable tree or `--json`. |
+| `pa doctor [path] [--json]` | Check CLI vs. installed `pa-daemon` version drift, Python 3.11+ & `pydantic`/`pyyaml` dependencies, and enrolled repository health. |
 | `pa mode [monitored\|autonomous] [--path <repo>]` | Query or set the repository's `execution_mode` (`monitored` or `autonomous`). |
 | `pa sync [path]` | Reconcile git commit trailers (`PA-WorkOrder`, `PA-Verified-Hash`, `PA-Audit-Verdict`), `AUDIT-round-<K>.md` files, and GitHub PR state into `.state/state.db`. |
 | `pa programme init <slug> --title "..." [--base-branch main] [--path <repo>]` | Scaffold `programme-<slug>/PROGRAM.md` and bind the Tier 1 Chief Architect session. |
