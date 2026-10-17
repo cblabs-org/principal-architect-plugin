@@ -216,3 +216,11 @@ Provision `./.venv` and run the complete 6-suite verification floor and linter:
 
 ./.venv/bin/ruff check daemon tests
 ```
+
+---
+
+## 8. Release & Self-Enrollment Status (v0.1.0)
+
+- **Current Release:** `v0.1.0` (`2026-10-16`) — see [CHANGELOG.md](CHANGELOG.md) for the full release notes across `PR-01` through `PR-05`.
+- **Dogfood Self-Enrollment:** `principal-architect-plugin` dogfoods its own 3-tier operating model, Fractal Split-Authority contracts (`charter_hash` and `spec_hash`), Cold-Firewall audit artifacts (`AUDIT-round-1.md`), and cryptographic commit trailers (`PA-WorkOrder`, `PA-Verified-Hash`, `PA-Audit-Verdict`) directly inside [`.agents/plugins/principal-architect-workspace/`](.agents/plugins/principal-architect-workspace/) under programme `programme-principal-architect-plugin` (`PR-01`..`PR-05`).
+
