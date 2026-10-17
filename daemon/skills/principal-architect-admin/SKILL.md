@@ -49,55 +49,93 @@ python3 ~/.gemini/config/plugins/pa-daemon/workspace-plugin/principal-architect/
 
 ## Enrollment Procedure (`pa enroll`)
 
-Whenever the user asks to enroll a repository via `/principal-architect-admin` without explicitly specifying all flags on the command line, **always inspect the repository first and ask the user to confirm their enrollment options before running `pa enroll`**.
+Whenever the user asks to enroll a repository via `/principal-architect-admin` without explicitly specifying all flags on the command line (e.g., `/principal-architect-admin enroll this repo please`), **you MUST first inspect the repository, clearly explain each enrollment option and what was auto-detected, and ask the user to choose their setup via `ask_question` before running `pa enroll`**.
 
 ### Step 1 — Read-only repository inspection
 
 Determine the target repository root (defaults to the current workspace root if the user says *"enroll this repo"*) and inspect its current state:
 
 ```bash
-git rev-parse --show-toplevel
-git remote get-url origin 2>/dev/null || true
-ls -d .memory .agents/memory .agents/skills/principal-architect-workspace .agents/plugins/principal-architect-workspace .agents/skills .agents/rules 2>/dev/null || true
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true
+ls -d "$REPO_ROOT/.memory" \
+  "$REPO_ROOT/.agents/memory" \
+  "$REPO_ROOT/.agents/skills/principal-architect-workspace" \
+  "$REPO_ROOT/.agents/plugins/principal-architect-workspace" \
+  "$REPO_ROOT/.agents/skills" \
+  "$REPO_ROOT/.agents/rules" 2>/dev/null || true
 ```
 
 Note the auto-detected defaults:
 - **Detected `vcs_mode`**: `github` (if `origin` is a GitHub URL and `gh auth status` succeeds) else `local_git`.
 - **Detected `memory_mode`**: `external` (if `.memory/` or `repo-memory` is enrolled) else `builtin`.
-- **Legacy PA workspace present**: whether `.agents/skills/principal-architect-workspace` exists.
+- **Legacy PA workspace present**: whether `.agents/skills/principal-architect-workspace` exists (and how many PR/programme folders or memory files it contains).
 
-### Step 2 — Interactive Option Confirmation (`ask_question`)
+### Step 2 — Explain the Enrollment Options & Ask the User (`ask_question`)
 
-Use `ask_question` to confirm the user's preferred configuration before executing `pa enroll`:
+Before calling `pa enroll`, present a concise overview of the **enrollment options and their trade-offs** (highlighting what was auto-detected in Step 1) and invoke `ask_question` so the user can choose their setup:
 
-1. **Execution Mode (`--execution-mode` & `--auto-approve-pr-plans`)**:
-   - `(Recommended) Monitored mode — interactive prompts on boundary exceptions and PR plan dispatches`
-   - `Autonomous mode (review PR plans) — unattended Worker execution with upward escalations; require human approval before new PR plans`
-   - `Autonomous mode (auto-approve PR plans) — fully unattended execution when PR Work Order plans pass schema validation`
-2. **Memory Mode (`--memory-mode`)**:
-   - `(Recommended) Auto-detected (<external | builtin>)`
-   - `External (repo-memory-plugin) — delegate codebase memory to repo-memory (Succinct Write-Back Mode)`
-   - `Built-in (.agents/plugins/principal-architect-workspace/memory/) — maintain PA's 3-file markdown memory bank (Full Distillation Mode)`
-3. **VCS Mode (`--vcs-mode`)**:
-   - `(Recommended) Auto-detected (<github | local_git>)`
-   - `GitHub PR-mediated (github) — use gh pr for Cold-Firewall audits and PR graduation`
-   - `Local Git only (local_git) — use local stacked branches, git trailers, and committed AUDIT-round-*.md files`
+#### Options to Explain to the User
 
-*(Note: Do **not** ask the user to curate `--extra-skill` or `--exclude-rule` lists at enrollment time. `pa-chief-architect` and `pa-principal-architect` inherit full skill visibility (`inheritCustomizations: true`), and it is the Principal Architect's responsibility when scoping each `WORKORDER.md` to populate `required_skills: [...]`, which `pre_invocation.py` automatically resolves and injects into the isolated `pa-engineer` Worker on Turn 1. Only ask a 4th question if a legacy `.agents/skills/principal-architect-workspace/` directory is detected and you want to confirm running with `--migrate`.)*
+1. **Execution Mode (`--execution-mode` & `--auto-approve-pr-plans`)** — controls how the `PreToolUse` and `Stop` governance hooks handle boundary exceptions and plan gates:
+   - **`monitored` (Interactive — default)**: Prompts you (`ask`) in the IDE whenever an Architect attempts an inline code edit (R1), when a PA dispatches the first Worker on a `PLANNED` PR (R2), when a Worker needs a file outside `allowed_files` (R3), or when graduating without a matching audit (R6). Best when you want interactive human sign-off at each boundary.
+   - **`autonomous` (Review PR Plans — `--no-auto-approve-pr-plans`)**: Workers execute unattended inside their `allowed_files` boundary box; out-of-bounds actions or retry-ceiling hits are denied and automatically routed up `Worker -> PA -> Chief -> 🔔 Human Attention Needed` inbox. New PR Work Order plans still pause for your approval before Workers are dispatched.
+   - **`autonomous` + Auto-Approve PR Plans (`--auto-approve-pr-plans`)**: Fully unattended execution — if a PA's `PROJECT.md` Part II plan and `WORKORDER.md` specs pass schema, `charter_hash`, and `charter.allowed_modules` validation, the R2 gate auto-approves the plan and dispatches `pa-engineer` Workers immediately.
+
+2. **Memory Mode (`--memory-mode`)** — controls how repository architecture memory and Work Order write-backs are managed (mutually exclusive so tokens are never wasted duplicating work):
+   - **`external` (`repo-memory-plugin`)**: Recommended when `repo-memory` (`.memory/`) is used. `repo-memory` owns codebase memory (`ATLAS.md`, subsystem dossiers, op-log), while Principal Architect switches to **Succinct Write-Back Mode** (never creating/updating PA's `memory/` folder and keeping `WORKORDER.md` completion reports strictly mechanical to save output tokens).
+   - **`builtin` (PA 3-File Markdown Memory Bank)**: Scaffolds and maintains `.agents/plugins/principal-architect-workspace/memory/{MEMORY.md, MODULE_INDEX.md, PROJECT_INDEX.md}` with a 5-PR rolling window and **Full Distillation Mode** (`decisions_made` and `dead_ends` recorded in `WORKORDER.md` and `PROJECT.md`). Best for standalone repos not using `repo-memory`.
+
+3. **VCS & Audit Bus (`--vcs-mode`)** — controls how stacked branches, Cold-Firewall audits, and deferred findings are synchronized:
+   - **`github` (GitHub PR-Mediated Bus)**: Pushes stacked branches (`feat/pr-NN-<slug>`) to `origin`, opens/updates GitHub PRs (`pa pr open-or-sync`), posts Cold-Firewall `AuditReport` reviews on the PR via `gh pr review --comment`, and files out-of-scope findings as `pa:deferred` GitHub Issues.
+   - **`local_git` (Offline Local Git Floor)**: Operates 100% locally without requiring a GitHub remote or `gh` CLI — uses local stacked branches, cryptographic git commit trailers (`PA-WorkOrder`, `PA-Verified-Hash`, `PA-Audit-Verdict`), committed `AUDIT-round-<K>.md` files, and `DEFERRED_BACKLOG.md`.
+
+4. **Legacy Workspace Migration (`--migrate`)** *(only when `.agents/skills/principal-architect-workspace/` is detected)*:
+   - Moves/merges `.agents/skills/principal-architect-workspace/` into `.agents/plugins/principal-architect-workspace/`, removes any legacy `.agents/skills/principal-architect` skill/submodule, rewrites stale path references while recomputing `charter_hash`/`spec_hash`, backfills `.state/state.db` from git trailers, and (if `memory_mode=external`) seeds `repo-memory`.
+
+#### `ask_question` Prompts to Present
+
+Call `ask_question` with self-contained option descriptions so every choice is clear inside the modal:
+
+1. **Question 1 — Execution Mode**:
+   - *"How should Principal Architect enforce hook gates and PR plan approvals in this repository?"*
+   - Options:
+     - `(Recommended) Monitored mode (interactive) — prompt me on boundary exceptions and before dispatching new PR Work Order plans`
+     - `Autonomous mode (review PR plans) — run Workers unattended with upward escalations to the Cockpit inbox, but pause for my approval on new PR plans`
+     - `Autonomous mode (auto-approve PR plans) — run fully unattended, auto-approving PR Work Order plans that pass Charter & schema validation`
+2. **Question 2 — Memory Mode**:
+   - *"How should codebase architecture memory and Work Order takeaways be managed?"*
+   - Options:
+     - `(Recommended) <Auto-detected mode: External (repo-memory-plugin) | Built-in 3-file PA memory> — <1-line reason based on whether .memory/ was detected>`
+     - `External (repo-memory-plugin) — delegate codebase memory to repo-memory and use token-saving Succinct Write-Back Mode in PA`
+     - `Built-in (.agents/plugins/principal-architect-workspace/memory/) — maintain PA's own MEMORY.md, MODULE_INDEX.md, and PROJECT_INDEX.md in Full Distillation Mode`
+3. **Question 3 — VCS & Audit Bus Mode**:
+   - *"How should stacked PR branches, Cold-Firewall audits, and deferred findings be synchronized?"*
+   - Options:
+     - `(Recommended) <Auto-detected mode: GitHub PR bus (github) | Local Git only (local_git)> — <1-line reason based on origin remote & gh auth>`
+     - `GitHub PR-mediated (github) — sync stacked branches with origin, post Cold-Firewall audits to GitHub PRs, and file pa:deferred GitHub Issues`
+     - `Local Git only (local_git) — keep everything offline using local stacked branches, git commit trailers, and committed AUDIT-round-*.md files`
+4. **Question 4 — Legacy PA Workspace Migration** *(include only if `.agents/skills/principal-architect-workspace/` was detected in Step 1)*:
+   - *"A legacy `.agents/skills/principal-architect-workspace/` directory was detected. How should it be handled?"*
+   - Options:
+     - `(Recommended) Migrate & merge into .agents/plugins/principal-architect-workspace/ (--migrate) — move artifacts, clean up legacy skill, rewrite paths, and backfill/seed memory`
+     - `Skip migration — leave the legacy directory untouched`
+
+*(Note: Do **not** ask the user to curate `--extra-skill` or `--exclude-rule` lists at enrollment time. `pa-chief-architect` and `pa-principal-architect` inherit full skill visibility (`inheritCustomizations: true`), and it is the Principal Architect's responsibility when scoping each `WORKORDER.md` to populate `required_skills: [...]`, which `pre_invocation.py` automatically resolves and injects into the isolated `pa-engineer` Worker on Turn 1.)*
 
 ### Step 3 — Execute enrollment & initial sync
 
-Run `pa enroll` with the selected flags, followed by `pa sync` and `pa status`:
+Run `pa enroll` with the user's confirmed flags, followed by `pa sync` and `pa status`:
 
 ```bash
-~/.local/bin/pa enroll <repo-root> \
+~/.local/bin/pa enroll "$REPO_ROOT" \
   --execution-mode <monitored|autonomous> \
   [--auto-approve-pr-plans | --no-auto-approve-pr-plans] \
   --memory-mode <auto|external|builtin> \
   --vcs-mode <auto|github|local_git> \
   [--migrate]
-~/.local/bin/pa sync <repo-root>
-~/.local/bin/pa status <repo-root>
+~/.local/bin/pa sync "$REPO_ROOT"
+~/.local/bin/pa status "$REPO_ROOT"
 ```
 
 ### Step 4 — Post-enrollment summary
