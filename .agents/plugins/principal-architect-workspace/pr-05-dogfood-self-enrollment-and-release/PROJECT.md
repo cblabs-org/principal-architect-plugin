@@ -26,7 +26,7 @@ charter:
   charter_hash: "814b217d643808d255816fe07d98603c8df048a20ba2d133b847e536f608f457"
 status: STAGED_FOR_AUDIT
 approved_at: "2026-10-16T23:58:00Z"
-github_pr: null
+github_pr: 5
 work_orders:
   - id: WO-05.1
     slug: wo1-self-enroll-and-migrate
