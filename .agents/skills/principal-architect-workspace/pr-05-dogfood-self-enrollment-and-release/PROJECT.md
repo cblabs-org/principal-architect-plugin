@@ -24,10 +24,31 @@ charter:
     - "pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py tests/test_github_and_local_git_bus.py tests/test_memory_modes.py tests/test_cockpit_api.py"
   charter_locked: true
   charter_hash: "814b217d643808d255816fe07d98603c8df048a20ba2d133b847e536f608f457"
-status: PLANNED
-approved_at: null
+status: APPROVED
+approved_at: "2026-10-16T23:58:00Z"
 github_pr: null
-work_orders: []
+work_orders:
+  - id: WO-05.1
+    slug: wo1-self-enroll-and-migrate
+    title: "Self-enrollment and legacy workspace migration (.agents/skills -> .agents/plugins)"
+    complexity: standard
+    status: PENDING
+    attempts: 0
+    commit_sha: null
+  - id: WO-05.2
+    slug: wo2-sync-and-reconcile
+    title: "Live state reconciliation (pa sync & pa status --json) and automated dogfood suite"
+    complexity: standard
+    status: PENDING
+    attempts: 0
+    commit_sha: null
+  - id: WO-05.3
+    slug: wo3-release-v0-1-0
+    title: "CHANGELOG.md, v0.1.0 release metadata verification, and README release notes"
+    complexity: mechanical
+    status: PENDING
+    attempts: 0
+    commit_sha: null
 ---
 
 # PR-05: Dogfood self-enrollment, workspace migration, state reconciliation, and v0.1.0 release
@@ -96,10 +117,32 @@ work_orders: []
 
 ## 3. Implementation Plan & Work Order Breakdown (Principal Architect)
 
-*To be completed by the Tier 2 Principal Architect for PR-05.*
+### 3.1 File-Level Architecture & Integration Design
+
+1. **Self-Enrollment & Legacy Workspace Migration (`WO-05.1` `wo1-self-enroll-and-migrate`):**
+   - Run `bash scripts/install.sh` and `pa enroll . --memory-mode builtin --vcs-mode local_git` against this repository using an isolated temporary daemon/bin root (`PA_DAEMON_HOME=/tmp/pa-dogfood-pr05/pa-daemon`, `PA_BIN_DIR=/tmp/pa-dogfood-pr05/bin`).
+   - `pa enroll` detects that `.agents/skills/principal-architect-workspace/` is tracked by Git and executes `git mv .agents/skills/principal-architect-workspace .agents/plugins/principal-architect-workspace`, creating `.agents/plugins/principal-architect-workspace/.gitignore` (ignoring `.state/`).
+   - Add `.agents/plugins/principal-architect-workspace/.state/` to root `.gitignore` for defense-in-depth alongside the workspace `.gitignore`.
+   - Remove the empty `.agents/skills` directory if left behind by `git mv`, and clean up the untracked/gitignored `.agents/plugins.json`, `.agents/plugins/principal-architect-workspace/.state/`, and `/tmp/pa-dogfood-pr05` after capturing verification output so zero host-specific absolute paths remain on disk.
+   - Update `test_workspace_dir_dogfood()` in `tests/test_state_db_and_sync.py` so it asserts `common.workspace_dir(repo_root) == repo_root / common.NEW_WORKSPACE_REL` and `not (repo_root / common.LEGACY_WORKSPACE_REL).exists()`.
+   - Verify that every committed `PROGRAM.md`, `PROJECT.md` (`PR-01`..`PR-05`), `WORKORDER.md`, and `AUDIT-round-1.md` under `.agents/plugins/principal-architect-workspace/` loads and validates with `schemas.verify_charter_hash` and `schemas.verify_spec_hash`.
+2. **State Reconciliation & Dogfood Verification Suite (`WO-05.2` `wo2-sync-and-reconcile`):**
+   - Run `pa enroll . --vcs-mode local_git`, `pa sync`, and `pa status --json` against this repository using an isolated temporary `PA_DAEMON_HOME` to verify live state reconciliation across `PR-01`..`PR-05`, all Work Order commit trailers (`PA-WorkOrder`, `PA-Verified-Hash`), and all Cold-Firewall audit commits (`PA-Audit-Verdict` + `AUDIT-round-1.md`), then remove the untracked `.agents/plugins.json` and `.agents/plugins/principal-architect-workspace/.state/` directory so the working tree stays clean.
+   - Add a permanent automated dogfood test `test_dogfood_self_enroll_sync_and_status_on_repo_workspace` in `tests/test_state_db_and_sync.py` that copies the repository's committed `.agents/plugins/principal-architect-workspace/` into `tmp_repo`, runs `pa enroll`, `pa sync`, and `pa status --json`, and asserts that all 5 PRs (`PR-01`..`PR-05`), all committed `PROJECT.md` `charter_hash` locks, and all committed `WORKORDER.md` `spec_hash` locks are valid and reconciled.
+3. **`v0.1.0` Release Artifacts (`WO-05.3` `wo3-release-v0-1-0`):**
+   - Author `CHANGELOG.md` following Keep a Changelog and Semantic Versioning for `0.1.0` (`2026-10-16`), documenting all 5 PRs (`PR-01` through `PR-05`).
+   - Verify `version = "0.1.0"` across `pyproject.toml`, `daemon/plugin.json`, and `daemon/workspace-plugin/principal-architect/plugin.json`, and update `README.md` with a release/changelog pointer.
+
+### 3.2 Work Order Ledger
+
+| WO ID | Slug & Branch | Base Branch | Complexity | Allowed Files | Summary | Status |
+|---|---|---|---|---|---|---|
+| **WO-05.1** | [`wo1-self-enroll-and-migrate`](wo1-self-enroll-and-migrate/WORKORDER.md)<br>`pr-05-dogfood-self-enrollment-and-release/wo1-self-enroll-and-migrate` | `feat/pr-04-cockpit-auxpane-ui` | `standard` | `.gitignore`, `.agents/skills/principal-architect-workspace/`, `.agents/plugins/principal-architect-workspace/`, `tests/test_state_db_and_sync.py` | Execute `scripts/install.sh` and `pa enroll .` in isolated `PA_DAEMON_HOME` to migrate `.agents/skills/principal-architect-workspace/` to `.agents/plugins/principal-architect-workspace/` via `git mv`, add `.state/` to root `.gitignore`, update `test_workspace_dir_dogfood`, and verify all committed `charter_hash`/`spec_hash` locks. | `PENDING` |
+| **WO-05.2** | [`wo2-sync-and-reconcile`](wo2-sync-and-reconcile/WORKORDER.md)<br>`pr-05-dogfood-self-enrollment-and-release/wo2-sync-and-reconcile` | `pr-05-dogfood-self-enrollment-and-release/wo1-self-enroll-and-migrate` | `standard` | `tests/test_state_db_and_sync.py` | Verify live `pa enroll` + `pa sync` + `pa status --json` state reconciliation on this repository and add permanent dogfood test `test_dogfood_self_enroll_sync_and_status_on_repo_workspace` in `tests/test_state_db_and_sync.py`. | `PENDING` |
+| **WO-05.3** | [`wo3-release-v0-1-0`](wo3-release-v0-1-0/WORKORDER.md)<br>`pr-05-dogfood-self-enrollment-and-release/wo3-release-v0-1-0` | `pr-05-dogfood-self-enrollment-and-release/wo2-sync-and-reconcile` | `mechanical` | `CHANGELOG.md`, `README.md`, `pyproject.toml`, `daemon/plugin.json`, `daemon/workspace-plugin/principal-architect/plugin.json` | Author `CHANGELOG.md` for `v0.1.0` (`2026-10-16`) across `PR-01`..`PR-05`, verify `0.1.0` version alignment across `pyproject.toml` and both `plugin.json` manifests, and update `README.md`. | `PENDING` |
 
 <!-- PART III — OUTCOME & SESSION LOG (PRINCIPAL ARCHITECT) -->
 
 ## 4. Outcome & Session Log (Principal Architect)
 
-*To be completed by the Tier 2 Principal Architect for PR-05.*
+- **2026-10-16T23:58:00Z — Part II Implementation Plan Approved:** Recorded user's standing programme-level autonomous execution authorization (`status: APPROVED`, decomposition approved by user under programme authorization `2026-10-16`). Decomposed `PR-05` into 3 sequential single-writer Work Orders (`WO-05.1` `wo1-self-enroll-and-migrate`, `WO-05.2` `wo2-sync-and-reconcile`, `WO-05.3` `wo3-release-v0-1-0`).
