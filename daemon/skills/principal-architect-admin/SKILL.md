@@ -20,7 +20,7 @@ description: >
 Fallback if `~/.local/bin` is not on `PATH`:
 
 ```bash
-python3 ~/.gemini/config/plugins/pa-daemon/workspace-plugin/principal-architect/scripts/pa_cli.py
+~/.gemini/config/plugins/pa-daemon/bin/pa
 ```
 
 ---
@@ -30,7 +30,7 @@ python3 ~/.gemini/config/plugins/pa-daemon/workspace-plugin/principal-architect/
 | Command | Example | Purpose |
 |---|---|---|
 | **status** | `pa status [path] [--json]` | Reconciles committed specs, git trailers, and `.state/state.db`; shows Programme -> PR -> WO DAG and **Human Attention Needed** queue. |
-| **doctor** | `pa doctor [path] [--json]` | Checks CLI vs. installed `pa-daemon` version drift, Python 3.11+ & `pydantic`/`pyyaml` dependencies, and enrolled repository health. |
+| **doctor** | `pa doctor [path] [--fix] [--json]` | Checks CLI vs. installed `pa-daemon` version drift, Python 3.11+ & `pydantic`/`pyyaml` dependencies (provisioning `pa-daemon/.venv` when `--fix` is passed), and enrolled repository health. |
 | **mode** | `pa mode [--path PATH]` | Displays active `execution_mode` (`monitored` vs `autonomous`). |
 
 ---
@@ -164,10 +164,10 @@ What `pa migrate` executes:
 
 ## Troubleshooting
 
-1. **Hooks failing with `No module named 'pydantic'`**:
-   Ensure `pydantic` and `pyyaml` are installed in user site-packages for system `python3`:
+1. **Hooks or CLI failing with `No module named 'pydantic'`**:
+   Run `pa doctor --fix` to automatically provision `~/.gemini/config/plugins/pa-daemon/.venv` with `pydantic` and `pyyaml` (especially on PEP 668 externally-managed Python environments such as Homebrew on macOS), or verify manually:
    ```bash
-   python3 -c "import pydantic, yaml"
+   ~/.gemini/config/plugins/pa-daemon/bin/pa doctor --fix
    ```
 2. **Stale PR/WO status after switching branches or pulling**:
    Run `pa sync <repo-root>` followed by `pa status <repo-root>`.

@@ -8,8 +8,9 @@
 # Responsibility:
 #   Downloads the `pa-daemon.zip` release bundle from GitHub Releases, extracts
 #   it in-place into `~/.gemini/config/plugins/pa-daemon/` while preserving any
-#   existing `state/registry.json`, strips macOS Gatekeeper quarantine
-#   attributes, and links the `pa` CLI into `~/.local/bin/pa`.
+#   existing `state/registry.json`, provisions `<PA_DAEMON_HOME>/.venv` when
+#   system `python3` lacks `pydantic` or `pyyaml`, strips macOS Gatekeeper
+#   quarantine attributes, and links the `bin/pa` CLI wrapper into `~/.local/bin/pa`.
 #
 # CLI / Environment Interface:
 #   Usage: curl -fsSL https://raw.githubusercontent.com/matthewmcneill/principal-architect-plugin/main/scripts/install-release.sh | bash
@@ -93,7 +94,24 @@ if [[ ! -f "${PA_DAEMON_HOME}/state/registry.json" ]]; then
 EOF
 fi
 
-# --- Step 5: Set executable bits, strip macOS quarantine, and link `pa` CLI ---
+# --- Step 5: Ensure Python dependencies (`pydantic`, `pyyaml`) in daemon `.venv` if needed ---
+if [[ -z "${PA_SKIP_VENV:-}" ]]; then
+  if [[ -x "${PA_DAEMON_HOME}/.venv/bin/python3" ]] && "${PA_DAEMON_HOME}/.venv/bin/python3" -c "import pydantic, yaml" >/dev/null 2>&1; then
+    :
+  elif python3 -c "import pydantic, yaml" >/dev/null 2>&1; then
+    :
+  elif command -v uv >/dev/null 2>&1; then
+    echo "Provisioning daemon virtual environment at ${PA_DAEMON_HOME}/.venv (via uv)..."
+    uv venv "${PA_DAEMON_HOME}/.venv" >/dev/null 2>&1 && \
+      uv pip install --python "${PA_DAEMON_HOME}/.venv/bin/python3" "pydantic>=2,<3" "pyyaml>=6" >/dev/null 2>&1 || true
+  elif python3 -c "import ensurepip" >/dev/null 2>&1; then
+    echo "Provisioning daemon virtual environment at ${PA_DAEMON_HOME}/.venv (via python3 -m venv)..."
+    python3 -m venv "${PA_DAEMON_HOME}/.venv" >/dev/null 2>&1 && \
+      "${PA_DAEMON_HOME}/.venv/bin/pip" install --quiet "pydantic>=2,<3" "pyyaml>=6" >/dev/null 2>&1 || true
+  fi
+fi
+
+# --- Step 6: Set executable bits, strip macOS quarantine, and link `pa` CLI wrapper ---
 chmod +x "${PA_DAEMON_HOME}/workspace-plugin/principal-architect/scripts/"*.py
 if [[ -d "${PA_DAEMON_HOME}/bin" ]]; then
   chmod +x "${PA_DAEMON_HOME}/bin/"* 2>/dev/null || true
@@ -104,7 +122,7 @@ if [[ "$(uname -s)" == "Darwin" ]] && command -v xattr >/dev/null 2>&1; then
 fi
 
 mkdir -p "${PA_BIN_DIR}"
-ln -sf "${PA_DAEMON_HOME}/workspace-plugin/principal-architect/scripts/pa_cli.py" "${PA_BIN_DIR}/pa"
+ln -sf "${PA_DAEMON_HOME}/bin/pa" "${PA_BIN_DIR}/pa"
 
 echo "Installed principal-architect-plugin (${PA_VERSION}):"
 echo "  PA_DAEMON_HOME: ${PA_DAEMON_HOME}"

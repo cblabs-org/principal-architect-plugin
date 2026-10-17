@@ -51,7 +51,9 @@ Functions:
   - `_cmd_status(args, *, runner=common.run) -> int`: Handler for `pa status [--json]`.
   - `_cli_plugin_version() -> str`: Resolve the semantic version of the running `pa_cli.py` bundle.
   - `_installed_daemon_version() -> str | None`: Read the semantic version of the installed `pa-daemon` bundle.
-  - `_cmd_doctor(args, *, runner=common.run) -> int`: Handler for `pa doctor [--json]`.
+  - `_provision_daemon_venv(daemon_dir, *, runner=common.run) -> tuple[bool, str]`:
+    Provision `<PA_DAEMON_HOME>/.venv` and install `pydantic` and `pyyaml`.
+  - `_cmd_doctor(args, *, runner=common.run) -> int`: Handler for `pa doctor [--fix] [--json]`.
   - `_cmd_mode(args, *, runner=common.run) -> int`: Handler for `pa mode`.
   - `_parse_porcelain_paths(stdout) -> list[str]`: Parse paths from `git status --porcelain`.
   - `_is_ephemeral_runtime_path(rel_posix) -> bool`: Check if a path is an ignored runtime file.
@@ -1256,11 +1258,70 @@ def _installed_daemon_version() -> str | None:
     return None
 
 
+def _provision_daemon_venv(
+    daemon_dir: Path,
+    *,
+    runner: common.Runner = common.run,
+) -> tuple[bool, str]:
+    """Provision `<daemon_dir>/.venv` and install `pydantic>=2,<3` and `pyyaml>=6`.
+
+    Args:
+        daemon_dir: Target `pa-daemon` home directory where `.venv` should be created.
+        runner: Subprocess runner callable.
+
+    Returns:
+        Tuple `(ok, message)` indicating whether `.venv` was provisioned and packages installed.
+    """
+    # --- Step 1: Prepare target virtual environment paths under daemon_dir ---
+    venv_dir = daemon_dir / ".venv"
+    venv_py = venv_dir / "bin" / "python3"
+    venv_pip = venv_dir / "bin" / "pip"
+    daemon_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- Step 2: Provision via uv when available, otherwise fall back to python3 -m venv ---
+    if shutil.which("uv") is not None:
+        res_venv = runner(["uv", "venv", str(venv_dir)], cwd=daemon_dir, timeout=60.0)
+        if res_venv.returncode == 0:
+            res_pip = runner(
+                [
+                    "uv",
+                    "pip",
+                    "install",
+                    "--python",
+                    str(venv_py),
+                    "pydantic>=2,<3",
+                    "pyyaml>=6",
+                ],
+                cwd=daemon_dir,
+                timeout=120.0,
+            )
+            if res_pip.returncode == 0:
+                common.activate_daemon_venv(daemon_dir)
+                return True, f"Provisioned {venv_dir} via uv."
+
+    res_std = runner([sys.executable, "-m", "venv", str(venv_dir)], cwd=daemon_dir, timeout=60.0)
+    if res_std.returncode != 0:
+        err_msg = (res_std.stderr or res_std.stdout or "python3 -m venv failed").strip()
+        return False, f"Failed to create {venv_dir}: {err_msg}"
+
+    res_install = runner(
+        [str(venv_pip), "install", "--quiet", "pydantic>=2,<3", "pyyaml>=6"],
+        cwd=daemon_dir,
+        timeout=120.0,
+    )
+    if res_install.returncode != 0:
+        err_msg = (res_install.stderr or res_install.stdout or "pip install failed").strip()
+        return False, f"Failed to install dependencies into {venv_dir}: {err_msg}"
+
+    common.activate_daemon_venv(daemon_dir)
+    return True, f"Provisioned {venv_dir} with pydantic and pyyaml."
+
+
 def _cmd_doctor(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
     """Inspect CLI vs. installed daemon version drift, Python dependencies, and enrolled repos.
 
     Args:
-        args: Parsed CLI arguments (`path`, `as_json`).
+        args: Parsed CLI arguments (`path`, `fix`, `as_json`).
         runner: Subprocess runner callable.
 
     Returns:
@@ -1269,6 +1330,7 @@ def _cmd_doctor(args: argparse.Namespace, *, runner: common.Runner = common.run)
     # --- Step 1: Compare running CLI bundle version against installed pa-daemon version ---
     cli_ver = _cli_plugin_version()
     daemon_dir = common.daemon_home()
+    common.activate_daemon_venv(daemon_dir)
     daemon_ver = _installed_daemon_version()
     warnings: list[str] = []
     errors: list[str] = []
@@ -1295,9 +1357,25 @@ def _cmd_doctor(args: argparse.Namespace, *, runner: common.Runner = common.run)
             importlib.import_module(mod_name)
             deps_status[mod_name] = True
         except ImportError:
+            deps_status[mod_name] = False
+
+    if getattr(args, "fix", False) and not all(deps_status.values()):
+        fixed_ok, fixed_msg = _provision_daemon_venv(daemon_dir, runner=runner)
+        if fixed_ok:
+            for mod_name in ("pydantic", "yaml"):
+                try:
+                    importlib.import_module(mod_name)
+                    deps_status[mod_name] = True
+                except ImportError:
+                    deps_status[mod_name] = False
+        else:
+            errors.append(fixed_msg)
+
+    for mod_name in ("pydantic", "yaml"):
+        if not deps_status[mod_name]:
             errors.append(
                 f"Missing required Python package '{mod_name}'. "
-                "Run `./scripts/dev-bootstrap.sh` or `pip install pydantic pyyaml`."
+                "Run `pa doctor --fix`, `./scripts/dev-bootstrap.sh`, or `pip install pydantic pyyaml`."
             )
 
     # --- Step 3: Inspect registry.json and target repository enrollment pointers ---
@@ -3702,6 +3780,12 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         default=".",
         help="Path to the target repository (default: current directory).",
+    )
+    p_doctor.add_argument(
+        "--fix",
+        action="store_true",
+        dest="fix",
+        help="Automatically provision <PA_DAEMON_HOME>/.venv if pydantic or pyyaml is missing.",
     )
     p_doctor.add_argument(
         "--json",

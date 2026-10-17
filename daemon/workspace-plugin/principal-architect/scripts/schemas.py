@@ -13,6 +13,7 @@ enumerations (`PRState`, `WorkOrderStatus`, `ComplexityTier`), H2 section parsin
 and `charter_hash` / `spec_hash` algorithms.
 
 Exported API Summary:
+- _SCRIPTS_DIR: Absolute directory path containing the Principal Architect control-plane scripts.
 - PRState: Lifecycle state enumeration for a Pull Request (`PROJECT.md` / `PRNodeSpec`).
 - WorkOrderStatus: Execution state enumeration for a Work Order (`WORKORDER.md` / `WOSummaryRow`).
 - ComplexityTier: Model routing complexity tier enumeration for a Work Order.
@@ -53,12 +54,22 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Generic, Literal, TypeVar
+
+# Absolute directory containing the Principal Architect control-plane scripts.
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+import common
+
+common.activate_daemon_venv()
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field

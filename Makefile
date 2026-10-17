@@ -22,9 +22,10 @@ dist-zip:
 	@mkdir -p $(DIST_DIR)/stage/$(PLUGIN_NAME)
 	@PA_DAEMON_HOME="$(CURDIR)/$(DIST_DIR)/stage/$(PLUGIN_NAME)" \
 		PA_BIN_DIR="$(CURDIR)/$(DIST_DIR)/stage-bin" \
+		PA_SKIP_VENV="1" \
 		VERSION="$(VERSION)" \
 		./scripts/install.sh >/dev/null
-	@rm -rf "$(DIST_DIR)/stage/$(PLUGIN_NAME)/state" "$(DIST_DIR)/stage-bin"
+	@rm -rf "$(DIST_DIR)/stage/$(PLUGIN_NAME)/state" "$(DIST_DIR)/stage/$(PLUGIN_NAME)/.venv" "$(DIST_DIR)/stage-bin"
 	@find "$(DIST_DIR)/stage/$(PLUGIN_NAME)" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 	@python3 -c 'import os, pathlib, sys, zipfile; stage = pathlib.Path(sys.argv[1]); out = pathlib.Path(sys.argv[2]); zf = zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED); [zf.write(p, p.relative_to(stage)) for p in sorted(stage.rglob("*"))]; zf.close()' "$(DIST_DIR)/stage" "$(DIST_DIR)/$(PLUGIN_NAME).zip"
 	@cp "$(DIST_DIR)/$(PLUGIN_NAME).zip" "$(DIST_DIR)/$(PLUGIN_NAME)-v$(VERSION).zip"
