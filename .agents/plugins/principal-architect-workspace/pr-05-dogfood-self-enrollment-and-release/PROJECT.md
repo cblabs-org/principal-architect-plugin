@@ -23,7 +23,7 @@ charter:
   verification_floor:
     - "pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py tests/test_github_and_local_git_bus.py tests/test_memory_modes.py tests/test_cockpit_api.py"
   charter_locked: true
-  charter_hash: "814b217d643808d255816fe07d98603c8df048a20ba2d133b847e536f608f457"
+  charter_hash: "f0766d770d73f22ed925232ac9facbc2dce27e6057d5d67209af2a7fdc260e80"
 status: STAGED_FOR_AUDIT
 approved_at: "2026-10-16T23:58:00Z"
 github_pr: 5
@@ -94,7 +94,7 @@ work_orders:
 3. **Release Metadata & Hygiene (Invariants I1, I2, I10):**
    - `CHANGELOG.md` must follow Keep a Changelog / Semantic Versioning format for `0.1.0` (`2026-10-16`).
    - `pyproject.toml`, `daemon/plugin.json`, and `daemon/workspace-plugin/principal-architect/plugin.json` must all carry `"version": "0.1.0"`.
-   - Zero internal identifiers or machine-local paths (`google3`, `/usr/local/google`, `cl/`, `b/`, `go/`, `jetski`, `moma`, or `@google.com`) may appear anywhere in tracked or untracked files under `daemon/`, `scripts/`, `tests/`, `pyproject.toml`, `README.md`, `CHANGELOG.md`, or `.agents/`.
+   - Zero employer-internal identifiers, codenames, shortlinks, ticket prefixes, or machine-local home paths may appear anywhere in tracked or untracked files under `daemon/`, `scripts/`, `tests/`, `pyproject.toml`, `README.md`, `CHANGELOG.md`, or `.agents/`.
 
 ### 2.2 Allowed Modules & Verification Floor
 
