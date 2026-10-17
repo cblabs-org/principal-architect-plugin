@@ -49,6 +49,9 @@ Functions:
     Scan local Git history for `PA-WorkOrder` and `PA-Verified-Hash` commit trailers.
   - `_status_glyph(status) -> str`: Map a status string to a human-readable terminal glyph.
   - `_cmd_status(args, *, runner=common.run) -> int`: Handler for `pa status [--json]`.
+  - `_cli_plugin_version() -> str`: Resolve the semantic version of the running `pa_cli.py` bundle.
+  - `_installed_daemon_version() -> str | None`: Read the semantic version of the installed `pa-daemon` bundle.
+  - `_cmd_doctor(args, *, runner=common.run) -> int`: Handler for `pa doctor [--json]`.
   - `_cmd_mode(args, *, runner=common.run) -> int`: Handler for `pa mode`.
   - `_parse_porcelain_paths(stdout) -> list[str]`: Parse paths from `git status --porcelain`.
   - `_is_ephemeral_runtime_path(rel_posix) -> bool`: Check if a path is an ignored runtime file.
@@ -1213,6 +1216,141 @@ def _cmd_status(args: argparse.Namespace, *, runner: common.Runner = common.run)
 
     print("\n".join(lines))
     return 0
+
+
+def _cli_plugin_version() -> str:
+    """Resolve the semantic version string of the running `pa_cli.py` plugin bundle.
+
+    Reads `workspace-plugin/principal-architect/plugin.json` adjacent to `_SCRIPTS_DIR`,
+    falling back to `"0.1.0"` if the manifest file is absent or unreadable.
+
+    Returns:
+        Semantic version string from the workspace plugin manifest (e.g., `"0.1.0"`).
+    """
+    manifest = Path(_SCRIPTS_DIR).parent / "plugin.json"
+    if manifest.is_file():
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("version"):
+                return str(data["version"]).strip()
+        except (OSError, json.JSONDecodeError):
+            pass
+    return "0.1.0"
+
+
+def _installed_daemon_version() -> str | None:
+    """Read the semantic version string from the installed `pa-daemon/plugin.json` manifest.
+
+    Returns:
+        Semantic version string from `common.daemon_home() / "plugin.json"`, or `None`
+        if the daemon plugin directory or manifest is not installed.
+    """
+    manifest = common.daemon_home() / "plugin.json"
+    if manifest.is_file():
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("version"):
+                return str(data["version"]).strip()
+        except (OSError, json.JSONDecodeError):
+            pass
+    return None
+
+
+def _cmd_doctor(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
+    """Inspect CLI vs. installed daemon version drift, Python dependencies, and enrolled repos.
+
+    Args:
+        args: Parsed CLI arguments (`path`, `as_json`).
+        runner: Subprocess runner callable.
+
+    Returns:
+        Exit code (`0` when no blocking errors are found, `1` if a critical check fails).
+    """
+    # --- Step 1: Compare running CLI bundle version against installed pa-daemon version ---
+    cli_ver = _cli_plugin_version()
+    daemon_dir = common.daemon_home()
+    daemon_ver = _installed_daemon_version()
+    warnings: list[str] = []
+    errors: list[str] = []
+
+    if daemon_ver is None:
+        warnings.append(
+            f"Global plugin manifest not found at {daemon_dir / 'plugin.json'}. "
+            "Run `./scripts/install.sh` or extract `pa-daemon.zip`."
+        )
+    elif daemon_ver != cli_ver:
+        warnings.append(
+            f"Installed pa-daemon version ({daemon_ver}) does not match CLI version ({cli_ver}). "
+            "Run `./scripts/install.sh` to refresh hooks, sidecar, and skills."
+        )
+
+    # --- Step 2: Verify Python runtime version and third-party schema dependencies ---
+    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    if (sys.version_info.major, sys.version_info.minor) < (3, 11):
+        errors.append(f"Python >= 3.11 is required (current: {py_ver}).")
+
+    deps_status: dict[str, bool] = {"pydantic": False, "yaml": False}
+    for mod_name in ("pydantic", "yaml"):
+        try:
+            importlib.import_module(mod_name)
+            deps_status[mod_name] = True
+        except ImportError:
+            errors.append(
+                f"Missing required Python package '{mod_name}'. "
+                "Run `./scripts/dev-bootstrap.sh` or `pip install pydantic pyyaml`."
+            )
+
+    # --- Step 3: Inspect registry.json and target repository enrollment pointers ---
+    registry_path = daemon_dir / "state" / "registry.json"
+    enrolled_count = 0
+    if registry_path.is_file():
+        try:
+            reg_data = json.loads(registry_path.read_text(encoding="utf-8"))
+            if isinstance(reg_data, dict) and isinstance(reg_data.get("repos"), dict):
+                enrolled_count = len(reg_data["repos"])
+        except (OSError, json.JSONDecodeError):
+            warnings.append(f"Could not parse {registry_path}.")
+
+    raw_target = Path(getattr(args, "path", ".")).expanduser()
+    repo_root = (
+        common.find_repo_root(raw_target, runner=runner) if raw_target.exists() else None
+    )
+    repo_enrolled = False
+    if repo_root is not None:
+        repo_enrolled = common.is_repo_enrolled([repo_root])
+
+    # --- Step 4: Emit structured JSON or human diagnostic report ---
+    ok = len(errors) == 0
+    payload: dict[str, Any] = {
+        "ok": ok,
+        "cli_version": cli_ver,
+        "daemon_version": daemon_ver,
+        "daemon_home": str(daemon_dir),
+        "python_version": py_ver,
+        "dependencies": deps_status,
+        "enrolled_repos_count": enrolled_count,
+        "current_repo_enrolled": repo_enrolled,
+        "warnings": warnings,
+        "errors": errors,
+    }
+    if getattr(args, "as_json", False):
+        print(json.dumps(payload, indent=2))
+        return 0 if ok else 1
+
+    lines = [
+        f"Principal Architect Doctor (CLI v{cli_ver})",
+        f"  Daemon Home:     {daemon_dir} (version: {daemon_ver or 'not installed'})",
+        f"  Python Runtime:  {py_ver} (pydantic={deps_status['pydantic']}, pyyaml={deps_status['yaml']})",
+        f"  Enrolled Repos:  {enrolled_count}",
+    ]
+    for w in warnings:
+        lines.append(f"  [WARN] {w}")
+    for err in errors:
+        lines.append(f"  [ERROR] {err}")
+    if ok and not warnings:
+        lines.append("  [OK] All installation and runtime checks passed.")
+    print("\n".join(lines))
+    return 0 if ok else 1
 
 
 def _cmd_mode(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
@@ -3410,6 +3548,11 @@ def build_parser() -> argparse.ArgumentParser:
         prog="pa",
         description="Principal Architect Plugin CLI control plane.",
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"pa {_cli_plugin_version()}",
+    )
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
 
     # --- Step 1: Register repository enrollment and migration commands ---
@@ -3549,6 +3692,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON status to stdout.",
     )
     p_status.set_defaults(_handler=_cmd_status)
+
+    p_doctor = subparsers.add_parser(
+        "doctor",
+        help="Check CLI vs. installed daemon version drift, Python dependencies, and repo health.",
+    )
+    p_doctor.add_argument(
+        "path",
+        nargs="?",
+        default=".",
+        help="Path to the target repository (default: current directory).",
+    )
+    p_doctor.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Emit machine-readable JSON diagnostics to stdout.",
+    )
+    p_doctor.set_defaults(_handler=_cmd_doctor)
 
     p_sync = subparsers.add_parser(
         "sync",

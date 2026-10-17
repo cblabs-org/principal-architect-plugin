@@ -30,6 +30,7 @@ python3 ~/.gemini/config/plugins/pa-daemon/workspace-plugin/principal-architect/
 | Command | Example | Purpose |
 |---|---|---|
 | **status** | `pa status [path] [--json]` | Reconciles committed specs, git trailers, and `.state/state.db`; shows Programme -> PR -> WO DAG and **Human Attention Needed** queue. |
+| **doctor** | `pa doctor [path] [--json]` | Checks CLI vs. installed `pa-daemon` version drift, Python 3.11+ & `pydantic`/`pyyaml` dependencies, and enrolled repository health. |
 | **mode** | `pa mode [--path PATH]` | Displays active `execution_mode` (`monitored` vs `autonomous`). |
 
 ---

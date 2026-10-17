@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Principal Architect Plugin (c) 2026 Matt McNeill
+# https://github.com/matthewmcneill/principal-architect-plugin
+# SPDX-License-Identifier: Apache-2.0
+#
+# Module: daemon/bin/pa
+#
+# Responsibility:
+#   Portable CLI wrapper for the `pa` control-plane entrypoint inside `pa-daemon`.
+#   Resolves its own physical location (following symlinks when invoked from
+#   `~/.local/bin/pa`), strips macOS Gatekeeper quarantine attributes on first
+#   run if present, selects the daemon `.venv` Python interpreter when
+#   provisioned (falling back to `python3` on `PATH`), and delegates to
+#   `workspace-plugin/principal-architect/scripts/pa_cli.py`.
+#
+# CLI / Environment Interface:
+#   Usage: pa <subcommand> [args...]
+#   Environment Variables:
+#     - PA_DAEMON_HOME: Optional override for the installed `pa-daemon` directory.
+set -euo pipefail
+
+# --- Step 1: Resolve physical script location across symlinks to find PA_DAEMON_HOME ---
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "${SOURCE}" ]]; do
+  LINK_DIR="$(cd -P "$(dirname "${SOURCE}")" && pwd)"
+  SOURCE="$(readlink "${SOURCE}")"
+  [[ "${SOURCE}" != /* ]] && SOURCE="${LINK_DIR}/${SOURCE}"
+done
+BIN_DIR="$(cd -P "$(dirname "${SOURCE}")" && pwd)"
+RESOLVED_DAEMON_HOME="$(cd -P "${BIN_DIR}/.." && pwd)"
+export PA_DAEMON_HOME="${PA_DAEMON_HOME:-${RESOLVED_DAEMON_HOME}}"
+
+# --- Step 2: Clear macOS browser quarantine attribute on first run if present ---
+if [[ "$(uname -s)" == "Darwin" ]] && command -v xattr >/dev/null 2>&1; then
+  xattr -dr com.apple.quarantine "${PA_DAEMON_HOME}" 2>/dev/null || true
+fi
+
+# --- Step 3: Select Python interpreter (preferring daemon .venv when available) ---
+if [[ -x "${PA_DAEMON_HOME}/.venv/bin/python3" ]]; then
+  PYTHON_BIN="${PA_DAEMON_HOME}/.venv/bin/python3"
+else
+  PYTHON_BIN="python3"
+fi
+
+exec "${PYTHON_BIN}" "${PA_DAEMON_HOME}/workspace-plugin/principal-architect/scripts/pa_cli.py" "$@"

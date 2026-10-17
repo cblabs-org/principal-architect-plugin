@@ -880,7 +880,7 @@ def test_install_and_uninstall_scripts_isolated_tmp_path(
     assert pa_bin.is_file()
     assert os.access(pa_bin, os.X_OK)
 
-    # 3. Invoke installed `bin/pa --help`, `bin/pa enroll`, and `bin/pa status <repo> --json`
+    # 3. Invoke installed `bin/pa --help`, `bin/pa --version`, `bin/pa doctor --json`, `bin/pa enroll`, and `bin/pa status <repo> --json`
     res_help = subprocess.run(
         [str(pa_bin), "--help"],
         cwd=tmp_repo,
@@ -891,6 +891,32 @@ def test_install_and_uninstall_scripts_isolated_tmp_path(
     )
     assert res_help.returncode == 0
     assert "enroll" in res_help.stdout
+    assert "doctor" in res_help.stdout
+
+    res_ver = subprocess.run(
+        [str(pa_bin), "--version"],
+        cwd=tmp_repo,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert res_ver.returncode == 0
+    assert res_ver.stdout.strip().startswith("pa ")
+
+    res_doc = subprocess.run(
+        [str(pa_bin), "doctor", str(tmp_repo), "--json"],
+        cwd=tmp_repo,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert res_doc.returncode == 0
+    doc_payload = json.loads(res_doc.stdout)
+    assert doc_payload["ok"] is True
+    assert doc_payload["cli_version"] == doc_payload["daemon_version"]
+    assert doc_payload["dependencies"] == {"pydantic": True, "yaml": True}
 
     res_enroll = subprocess.run(
         [
