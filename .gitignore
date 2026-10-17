@@ -1,0 +1,28 @@
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Python cache & bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Testing & Linting
+.pytest_cache/
+.ruff_cache/
+
+# Packaging & Builds
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# SQLite & databases
+*.db
+*.db-shm
+*.db-wal
+
+# Dynamic configuration & state
+.agents/plugins.json
+daemon/state/

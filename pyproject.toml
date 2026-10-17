@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "principal-architect-plugin"
+version = "0.1.0"
+description = "Mechanically enforced multi-tier orchestration plugin for Principal Architect workflows"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2,<3",
+    "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
+[tool.setuptools.packages.find]
+where = ["daemon/workspace-plugin/principal-architect"]
+include = ["scripts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["daemon/workspace-plugin/principal-architect/scripts"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100

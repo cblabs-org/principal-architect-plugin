@@ -1,0 +1,10 @@
+# Daemon local state
+state/
+
+# Python cache & bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Packaging & Builds
+*.egg-info/

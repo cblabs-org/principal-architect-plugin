@@ -31,8 +31,8 @@ prs:
       - tests/test_schemas.py
       - tests/test_state_db_and_sync.py
     required_skills: []
-    status: IN_PROGRESS
-    github_pr: null
+    status: GRADUATED
+    github_pr: 1
   - id: PR-02
     slug: pr-02-agents-and-dual-mode-hooks
     title: "Custom agent definitions, hooks.json, dual-mode PreToolUse/PostToolUse/Stop gates, pa pr approve-plan, pa wo verify"
@@ -56,7 +56,7 @@ prs:
       - tests/conftest.py
       - tests/test_hooks_monitored_vs_autonomous.py
     required_skills: []
-    status: PLANNED
+    status: IN_PROGRESS
     github_pr: null
   - id: PR-03
     slug: pr-03-vcs-bus-models-and-memory-modes
@@ -118,7 +118,7 @@ prs:
 
 > **Programme:** Build `principal-architect-plugin` — a self-contained Python 3.11+ / Pydantic v2 split-daemon Antigravity plugin that turns the prompt-driven `principal-architect` skill into a mechanically enforced, token-efficient, multi-tier orchestration system.
 > **Specification:** [SPEC.md](../../../../SPEC.md) v1.1 (2026-10-16) + [Positioning Paper](../../../../docs/positioning-paper.md) Rev 3
-> **Status:** Approved — autonomous execution authorized (2026-10-16). **0/5 PRs graduated.** **Active:** PR-01 (`pr-01-core-schemas-and-enrollment`).
+> **Status:** Approved — autonomous execution authorized (2026-10-16). **1/5 PRs graduated (PR-01).** **Active:** PR-02 (`pr-02-agents-and-dual-mode-hooks`).
 > **Base branch:** `main` (`a16d659`; `origin` = `github.com/matthewmcneill/principal-architect-plugin`, `vcs_mode: github`, `memory_mode: builtin`)
 > **Execution plan:** [PROGRAM-PLAN.md](PROGRAM-PLAN.md) — dependency graph, branching, per-PR protocol, indicative Work Orders, human tasks, decisions, risks, status tracker.
 
@@ -216,7 +216,7 @@ Specification frozen at v1.1; governance rule provisioned; PA workspace and `bui
 | **Deliverables** | `hooks.json` (`PreInvocation`, `PreToolUse` matched on the mutating file tools + `run_command` + `invoke_subagent`, `PostToolUse`, `Stop`; `timeout: 10`; commands resolved via the plugin root); `escalation.py` (pure decision engine: `(rule, mode, ctx) → HookResponse`, structural-blocker signatures, escalation + attention-queue recording); `pre_tool_gate.py` (R1 Architect no-inline-code, R1b Charter lock, R2 plan-approval gate, R3 Worker boundary/spec lock, R4 Worker git/gh lockdown, R5 Auditor read-only, R6 graduation audit gate; `os.path.realpath` traversal defence); `post_tool_receipt.py` (receipt invalidation on edit, `tree_hash` receipt stamping on `verification_command` exit 0, `attempt_num` / `structural_failures` tracking); `stop_gate.py` (fast-fail structural escalation, productive ceiling → `pa-debugger` enqueue, Case A/B completion invariants, auditor `post-audit` check); `pre_invocation.py` (role binding from the `PA_ROLE:` / `WO_ID:` / `PR_ID:` prompt header, `CHECKPOINT`/rewind detection, role-specific persistent `userMessage` injection, memory-boundary-aware `MEMORY.md` + `MODULE_INDEX.md` slices, Succinct vs Full write-back instruction); five `agents/pa-*.md` with the exact §5.2 tool allowlists and `model: inherit`, `inheritCustomizations: false`, `skills:` / `rules:` → `.state/*.json`, `inheritMcp` per role; `rules/00-pa-operating-model.md`; in-plugin `skills/principal-architect/SKILL.md`; `pa pr approve-plan` (schema validation, `allowed_files ⊆ allowed_modules`, `charter_hash` check, `spec_hash` stamping, `status: APPROVED`), `pa wo verify`, `pa escalate`; `tests/test_hooks_monitored_vs_autonomous.py` (rule × mode matrix driven through the real stdin/stdout hook entrypoints). |
 | **Verification floor** | `pytest tests/test_hooks_monitored_vs_autonomous.py` |
 | **Exit criteria** | Floor green and PR-01 floor still green; every rule R1–R6 has both `monitored` and `autonomous` outcome tests plus the traversal-escape test; unenrolled fast-exit path measured and recorded in Part III (in-process check < 1 ms); agent files pass the harness frontmatter rules (non-empty `name`/`description`, `model` is a tier alias); Stop hook never loops beyond the harness continuation cap; Cold-Firewall `APPROVED`. |
-| **Charter** | Stub (frontmatter) — refined and locked when PR-01 graduates. |
+| **Charter** | [PROJECT.md](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) — Part I **locked** (`c4101d40…`). |
 
 ### Phase 3 — Transport, Routing & Memory: PR-03 `pr-03-vcs-bus-models-and-memory-modes`
 
@@ -318,3 +318,8 @@ Downstream PRs may make **additive-only** changes to upstream modules (new funct
 ### 2026-10-16 — Programme approved; PR-05 accepted; PR-01 PA spawned (session 1)
 - User approved the full Programme Plan (`status: APPROVED`), accepted Phase 5 (`PR-05` `pr-05-dogfood-self-enrollment-and-release`) into the frontmatter DAG, directed the programme to proceed with the current `principal-architect` skill implementation (defaulting to current skill for simplicity, with an optional check-in after PR-02), and authorized autonomous execution and sub-agent spawning across the programme.
 - Spawned Tier 2 Principal Architect for `PR-01` (`pr-01-core-schemas-and-enrollment`).
+
+### 2026-10-16 — PR-01 graduated; PR-02 Chartered & PA spawned (session 1)
+- **Summary (`PR-01`, GitHub PR `#1`, `b3a9e773`):** Tier 2 PA (`18498c8a`) decomposed `PR-01` into 6 sequential Work Orders (`WO-01.1`..`WO-01.6`), spawned 6 dedicated Tier 3 Execution Workers (`ce18a7ea`, `2c7d0f68`, `6ccd1320`, `0dfb941c`, `71973f79`, `a7af1930`), and delivered `scripts/dev-bootstrap.sh`, stdlib-only `common.py` (`<1ms` `is_repo_enrolled`), `schemas.py` (all SPEC §6.1–6.4 Pydantic v2 models, lossless H2 parser/renderer, `charter_hash`/`spec_hash`), `state_db.py` (`StateDB` WAL + 5 tables, atomic `Registry`), 7 `.md.tpl` templates, `pa_cli.py` (`enroll`, `unenroll`, `status [--json]`, `mode`), and 51 passing tests (`ruff` clean). Cold-Firewall Auditor (`06c008f6`) audited `be21bcc8` on Round 1 and returned `APPROVED (0 blocking, 0 major, 0 minor)` (`ce4950c2`).
+- **Cross-PR decisions & interface notes:** `schemas.parse_document` preserves pre-H2 preambles and HTML banners inside the preceding `Section.body` (so `PROJECT.md` `## 2.` includes the Part II HTML separator banner; Part II/III edits must occur from `## 3.` onward to keep `charter_hash` intact). `pa status` is strictly read-only on unenrolled repositories.
+- **Next:** Authored and locked Part I Charter of [`pr-02-agents-and-dual-mode-hooks/PROJECT.md`](../pr-02-agents-and-dual-mode-hooks/PROJECT.md) (`charter_hash: c4101d401d3bfce795e277df30e49ffc534e9e1d2c835788a433f342d95ddbde`) using `schemas.compute_charter_hash` and spawned the Tier 2 Principal Architect for `PR-02`.
