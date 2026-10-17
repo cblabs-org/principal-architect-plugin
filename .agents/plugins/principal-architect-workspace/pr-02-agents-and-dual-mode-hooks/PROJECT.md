@@ -30,10 +30,52 @@ charter:
     - "pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py"
   charter_locked: true
   charter_hash: "c4101d401d3bfce795e277df30e49ffc534e9e1d2c835788a433f342d95ddbde"
-status: PLANNED
-approved_at: null
-github_pr: null
-work_orders: []
+status: GRADUATED
+approved_at: "2026-10-16T20:05:00Z"
+github_pr: 2
+work_orders:
+  - id: WO-02.1
+    slug: wo1-escalation-engine-and-hook-io
+    title: "Dual-mode escalation engine (decide R1-R6), structural blocker signatures, hook I/O helpers, and hooks.json"
+    complexity: architect
+    status: COMPLETED
+    attempts: 1
+    commit_sha: "9d85dceb1157ff2feb91ee937fd25d4655bcdf2c"
+  - id: WO-02.2
+    slug: wo2-pre-tool-gate-r1-r6
+    title: "PreToolUse gate enforcing R1, R1b, R2, R3, R4, R5, R6 with realpath traversal defense and <1ms fast-exit"
+    complexity: architect
+    status: COMPLETED
+    attempts: 1
+    commit_sha: "8493e39eef2581bbb450c6f36bc481403e7d1361"
+  - id: WO-02.3
+    slug: wo3-post-tool-receipt-and-wo-verify
+    title: "PostToolUse receipt invalidation/stamping, deterministic compute_tree_hash, and pa wo verify CLI"
+    complexity: standard
+    status: COMPLETED
+    attempts: 1
+    commit_sha: "31f20e2a83bc049821cde13355e771d7cdd927cc"
+  - id: WO-02.4
+    slug: wo4-stop-gate-two-tier-retry
+    title: "Stop gate implementing two-tier retry ceiling (max_attempts=5 vs max_structural_failures=2) and Case A/B + auditor checks"
+    complexity: architect
+    status: COMPLETED
+    attempts: 1
+    commit_sha: "0af943264174ed7cea4080cff01e7a3e03dfbf15"
+  - id: WO-02.5
+    slug: wo5-pre-invocation-role-binding-and-injection
+    title: "PreInvocation session role binding, CHECKPOINT/rewind detection, and memory-mode-aware userMessage injection"
+    complexity: standard
+    status: COMPLETED
+    attempts: 1
+    commit_sha: "99bfa757287e773ff0c86436b89f347c1dab3137"
+  - id: WO-02.6
+    slug: wo6-agents-rules-skill-and-approve-plan
+    title: "Five custom agent definitions (agents/pa-*.md), operating-model rule, in-plugin SKILL.md, pa pr approve-plan, and pa escalate"
+    complexity: standard
+    status: COMPLETED
+    attempts: 1
+    commit_sha: "410237d6eb94ebfe8bf8bc77bc101de113849e8a"
 ---
 
 # PR-02 — Agents, Capability Scoping & Dual-Mode Hook Engine
@@ -125,7 +167,25 @@ PR-02 turns the prompt-only `principal-architect` methodology into **determinist
 
 ## 3. Implementation Plan & Work Order Breakdown
 
-_To be authored by the Tier 2 Principal Architect for PR-02 after file-level discovery. Ledger rows must link to each `woM-<topic>/WORKORDER.md`._
+### 3.1 File-Level Discovery & Sequencing Strategy
+
+Inspection of `feat/pr-01-core-schemas-and-enrollment` (`a0216da`) confirms that `common.py` (stdlib-only `<1ms` `is_repo_enrolled`, `find_repo_root`, `workspace_dir`, `read_transcript`, `latest_checkpoint_step`, `run`), `schemas.py` (`ProjectSpec`, `WorkOrderSpec`, `AuditReport`, `EscalationRequest`, `verify_charter_hash`, `verify_spec_hash`, `compute_spec_hash`), `state_db.py` (`StateDB` with `repo_config`, `sessions`, `verification_receipts`, `escalations`, `attention_queue`), and `pa_cli.py` (`COMMAND_MODULES`, `build_parser`, `main`) are in place with 51 passing tests. To build PR-02 cleanly with zero circular dependencies and keep all verification floors green at every Work Order tip:
+
+1. **Escalation & Hook I/O foundation first (`WO-02.1`):** Implement `scripts/escalation.py` (`decide(rule, mode, ctx)` covering `R1`, `R1b`, `R2`, `R3`, `R4`, `R5`, `R6` symmetrically across `monitored` and `autonomous` modes, `STRUCTURAL_SIGNATURES`, `is_structural_blocker`, `record_escalation`, `enqueue_attention`, `extract_workspace_paths`, `read_hook_input`, `write_hook_output`), `daemon/workspace-plugin/principal-architect/hooks.json`, and the initial `tests/test_hooks_monitored_vs_autonomous.py` suite so the PR-02 verification floor (`pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py`) collects and passes from `WO-02.1` onward.
+2. **`PreToolUse` gate second (`WO-02.2`):** Implement `scripts/pre_tool_gate.py` with `<1ms` unenrolled fast-exit before heavy imports, `os.path.realpath` canonical path resolution and traversal defense, and `evaluate_pre_tool` / `main()` enforcing rules `R1`, `R1b`, `R2` (with `auto_approve_pr_plans` support), `R3`, `R4`, `R5`, and `R6`, plus the full `rule × mode` matrix, symlink/`../` traversal escape tests, and unenrolled import-purity tests.
+3. **`PostToolUse` receipt engine & `pa wo verify` third (`WO-02.3`):** Implement `scripts/post_tool_receipt.py` (`<1ms` unenrolled fast-exit, deterministic `compute_tree_hash(repo_root, allowed_files)`, receipt invalidation on edit/mutating shell commands, valid receipt stamping on `verification_command` exit `0`, and `attempt_num`/`structural_failures` tracking on non-zero exit) and add `pa wo verify <WO-ID>` to `scripts/pa_cli.py`.
+4. **`Stop` gate & two-tier retry ceiling fourth (`WO-02.4`):** Implement `scripts/stop_gate.py` (`<1ms` unenrolled fast-exit, fast-fail structural escalation at `structural_failures >= max_structural_failures` [2] or `>= 3` consecutive `ERROR_MESSAGE` steps in `transcript.jsonl`, productive ceiling at `attempt_num >= max_attempts` [5] transitioning to `BLOCKED` and enqueuing `pa-debugger`, Case A blocker completion, Case B normal completion checking receipt `tree_hash` + clean git status with `<WO-ID>:` commit + valid `CompletionReport` + intact `spec_hash`, bounded continuation counter incrementing `attempt_num` on each `"decision": "continue"`, and Auditor stop check requiring an `AuditReport` for current `HEAD`).
+5. **`PreInvocation` role binding & context injection fifth (`WO-02.5`):** Implement `scripts/pre_invocation.py` (`<1ms` unenrolled fast-exit, `parse_spawn_header`, unbound subagent session binding on Turn 1, `CHECKPOINT` compaction and step-rewind detection, and persistent `userMessage` injection tailored to role and `memory_mode` [`builtin` vs. `external`]).
+6. **Custom agents, operating rule, in-plugin skill, and `pa pr approve-plan` / `pa escalate` sixth (`WO-02.6`):** Author `agents/{pa-chief-architect,pa-principal-architect,pa-engineer,pa-auditor,pa-debugger}.md` per SPEC §5.2, `rules/00-pa-operating-model.md`, `skills/principal-architect/SKILL.md`, and CLI subcommands `pa pr approve-plan <PR-ID>` and `pa escalate` in `scripts/pa_cli.py`, plus frontmatter/CLI/dogfood verification tests.
+
+### 3.2 Work Order Ledger
+
+- **[x] [wo1-escalation-engine-and-hook-io](wo1-escalation-engine-and-hook-io/WORKORDER.md)** (`WO-02.1`, `complexity: architect`, base: `feat/pr-01-core-schemas-and-enrollment`, commit `9d85dce`): Implement `scripts/escalation.py` (`decide`, `STRUCTURAL_SIGNATURES`, `is_structural_blocker`, `record_escalation`, `enqueue_attention`, `extract_workspace_paths`, `read_hook_input`, `write_hook_output`), `hooks.json`, and initial unit tests in `tests/test_hooks_monitored_vs_autonomous.py`.
+- **[x] [wo2-pre-tool-gate-r1-r6](wo2-pre-tool-gate-r1-r6/WORKORDER.md)** (`WO-02.2`, `complexity: architect`, base: `pr-02-agents-and-dual-mode-hooks/wo1-escalation-engine-and-hook-io`, commit `8493e39`): Implement `scripts/pre_tool_gate.py` (`<1ms` unenrolled fast-exit, `os.path.realpath` canonical path resolution & traversal defense, `evaluate_pre_tool` and `main()` enforcing R1, R1b, R2, R3, R4, R5, R6) and comprehensive `rule × mode` + traversal + fast-exit tests in `tests/test_hooks_monitored_vs_autonomous.py`.
+- **[x] [wo3-post-tool-receipt-and-wo-verify](wo3-post-tool-receipt-and-wo-verify/WORKORDER.md)** (`WO-02.3`, `complexity: standard`, base: `pr-02-agents-and-dual-mode-hooks/wo2-pre-tool-gate-r1-r6`, commit `31f20e2`): Implement `scripts/post_tool_receipt.py` (`compute_tree_hash`, receipt invalidation, receipt stamping, attempt/structural failure counters) and `pa wo verify <WO-ID>` in `scripts/pa_cli.py`, plus tests in `tests/test_hooks_monitored_vs_autonomous.py`.
+- **[x] [wo4-stop-gate-two-tier-retry](wo4-stop-gate-two-tier-retry/WORKORDER.md)** (`WO-02.4`, `complexity: architect`, base: `pr-02-agents-and-dual-mode-hooks/wo3-post-tool-receipt-and-wo-verify`, commit `0af9432`): Implement `scripts/stop_gate.py` (two-tier retry ceiling, structural fast-fail, 5-attempt debugger escalation, Case A/B completion gates, bounded continuation cap, and auditor stop gate) and tests in `tests/test_hooks_monitored_vs_autonomous.py`.
+- **[x] [wo5-pre-invocation-role-binding-and-injection](wo5-pre-invocation-role-binding-and-injection/WORKORDER.md)** (`WO-02.5`, `complexity: standard`, base: `pr-02-agents-and-dual-mode-hooks/wo4-stop-gate-two-tier-retry`, commit `99bfa75`): Implement `scripts/pre_invocation.py` (`parse_spawn_header`, Turn 1 role binding, `CHECKPOINT`/rewind detection, and `builtin` vs. `external` memory-mode-aware `userMessage` injection) and tests in `tests/test_hooks_monitored_vs_autonomous.py`.
+- **[x] [wo6-agents-rules-skill-and-approve-plan](wo6-agents-rules-skill-and-approve-plan/WORKORDER.md)** (`WO-02.6`, `complexity: standard`, base: `pr-02-agents-and-dual-mode-hooks/wo5-pre-invocation-role-binding-and-injection`, commit `410237d`): Author the five `agents/pa-*.md` files, `rules/00-pa-operating-model.md`, `skills/principal-architect/SKILL.md`, `pa pr approve-plan <PR-ID>` and `pa escalate` in `scripts/pa_cli.py`, and frontmatter/CLI/dogfood tests in `tests/test_hooks_monitored_vs_autonomous.py`.
 
 <!-- ======================================================================
      PART III — OUTCOME & GRADUATION SUMMARY (authored by the Tier 2 Principal Architect)
@@ -133,4 +193,30 @@ _To be authored by the Tier 2 Principal Architect for PR-02 after file-level dis
 
 ## 4. Outcome & Session Log
 
-_To be authored by the Tier 2 Principal Architect. memory_mode is `builtin`: record full architectural distillation (decisions, dead ends, surfaced findings, audit rounds, final head_sha)._
+- **2026-10-16 (`status: APPROVED`):** User approved the full Programme Plan (`PROGRAM.md` `status: APPROVED`) and explicitly authorized autonomous execution and sub-agent spawning across the programme (Decision D11, 2026-10-16). Part II Work Order decomposition (`WO-02.1` through `WO-02.6`) authored and approved under standing user programme authorization (`approved_at: 2026-10-16T20:05:00Z`).
+- **2026-10-16 (`WO-02.1 COMPLETED`, `9d85dce`):** Delivered `scripts/escalation.py` (`decide` covering `R1`, `R1b`, `R2`, `R3`, `R4`, `R5`, `R6` across `monitored` and `autonomous` modes, `STRUCTURAL_SIGNATURES` & `is_structural_blocker`, `record_escalation` & `enqueue_attention`, and stdlib-only hook I/O helpers `extract_workspace_paths`, `read_hook_input`, `write_hook_output`), `daemon/workspace-plugin/principal-architect/hooks.json`, and 11 unit tests in `tests/test_hooks_monitored_vs_autonomous.py` (62 passed, `ruff check` clean).
+- **2026-10-16 (`WO-02.2 COMPLETED`, `8493e39`):** Delivered `scripts/pre_tool_gate.py` (`<1ms` unenrolled fast-exit with zero top-level `pydantic`/`yaml`/`schemas` imports, `resolve_repo_rel_path` with `os.path.realpath` traversal & symlink escape defense, `matches_pattern` / `matches_any_pattern`, `simulate_file_edit`, and `evaluate_pre_tool` / `main()` enforcing `R1`, `R1b`, `R2` with `auto_approve_pr_plans`, `R3`, `R4`, `R5`, and `R6`) and unit/subprocess tests in `tests/test_hooks_monitored_vs_autonomous.py` (68 passed, `ruff check` clean).
+- **2026-10-16 (`WO-02.3 COMPLETED`, `31f20e2`):** Delivered `scripts/post_tool_receipt.py` (`<1ms` unenrolled fast-exit, `compute_tree_hash`, receipt invalidation on edits/mutating commands, receipt stamping on `verification_command` exit `0`, and `attempt_num`/`structural_failures` tracking on non-zero exit) and `pa wo verify <WO-ID>` in `scripts/pa_cli.py`, with unit and subprocess tests in `tests/test_hooks_monitored_vs_autonomous.py` (72 passed, `ruff check` clean).
+- **2026-10-16 (`WO-02.4 COMPLETED`, `0af9432`):** Delivered `scripts/stop_gate.py` (`<1ms` unenrolled fast-exit, two-tier retry ceiling with structural/transcript fast-fail at `structural_failures >= 2` or `>= 3` consecutive `ERROR_MESSAGE` steps and productive ceiling at `attempt_num >= 5` enqueuing `pa-debugger` `🔬 [Debug <WO-ID>]`, Case A/B completion checks, bounded Stop-hook continuations, and `pa-auditor` Stop check) and unit/subprocess tests in `tests/test_hooks_monitored_vs_autonomous.py` (77 passed, `ruff check` clean).
+- **2026-10-16 (`WO-02.5 COMPLETED`, `99bfa75`):** Delivered `scripts/pre_invocation.py` (`<1ms` unenrolled fast-exit, `parse_spawn_header`, Turn 1 subagent session binding, `CHECKPOINT` compaction and step-rewind detection, and role-specific `userMessage` injection honoring the `builtin` vs. `external` memory boundary) and unit/subprocess tests in `tests/test_hooks_monitored_vs_autonomous.py` (81 passed, `ruff check` clean).
+- **2026-10-16 (`WO-02.6 COMPLETED`, `410237d`; `status: STAGED_FOR_AUDIT`):** Delivered the five custom role agent markdown files (`agents/pa-*.md`), `rules/00-pa-operating-model.md`, `skills/principal-architect/SKILL.md`, `pa pr approve-plan <PR-ID>` and `pa escalate` in `scripts/pa_cli.py`, and unit/CLI/dogfood tests in `tests/test_hooks_monitored_vs_autonomous.py` (85 passed, `ruff check` clean). All 6 Work Orders (`WO-02.1`–`WO-02.6`) completed; staged for Step 6A Cold-Firewall Audit.
+- **2026-10-16 (`AUDIT ROUND 1 APPROVED`, `0d35a8e`):** Cold-Firewall Audit Round 1 (`AUDIT-round-1.md`, GitHub PR `#2`, audited SHA `53697f5bd567d0e0e599eadc86e94da4c116c3e8`) returned `APPROVED (0 blocking, 0 major, 0 minor)` across all 5 audit axes (`spec_alignment`, `invariants`, `edge_cases`, `test_quality`, `scope_hygiene`).
+- **2026-10-16 (`status: GRADUATED`):** Graduated `PR-02` (`pr-02-agents-and-dual-mode-hooks`) into `MEMORY.md`, `MODULE_INDEX.md`, and `PROJECT_INDEX.md` (`memory_mode: builtin`).
+
+### 4.1 Architectural Distillation (`memory_mode: builtin`)
+
+- **Delivered Modules & Cross-PR Exported Interfaces:**
+  - `daemon/workspace-plugin/principal-architect/scripts/escalation.py`: Pure dual-mode decision engine (`decide(rule, mode, ctx) -> dict[str, Any]` covering `R1`, `R1b`, `R2`, `R3`, `R4`, `R5`, `R6` symmetrically across `monitored` and `autonomous` modes), `STRUCTURAL_SIGNATURES`, `is_structural_blocker(text) -> bool`, `record_escalation(db, ...)` and `enqueue_attention(db, ...)`, and stdlib-only hook JSON stdin/stdout helpers (`extract_workspace_paths`, `read_hook_input`, `write_hook_output`).
+  - `daemon/workspace-plugin/principal-architect/hooks.json`: Registers `PreInvocation` (`pre_invocation.py`), `PreToolUse` (`pre_tool_gate.py` with 7-tool matcher `write_to_file|write_file|replace_file_content|edit_file|multi_replace_file_content|run_command|invoke_subagent`), `PostToolUse` (`post_tool_receipt.py`), and `Stop` (`stop_gate.py`) with `timeout: 10`.
+  - `daemon/workspace-plugin/principal-architect/scripts/pre_tool_gate.py`: `<1ms` unenrolled fast-exit (`common.is_repo_enrolled`), `resolve_repo_rel_path` (`os.path.realpath` canonical path resolution preventing `../` traversal and symlink escapes), `matches_pattern` / `matches_any_pattern`, `simulate_file_edit`, and `evaluate_pre_tool(payload, *, repo_root=None)` / `main()` enforcing rules `R1`–`R6` (including `auto_approve_pr_plans` under `R2`).
+  - `daemon/workspace-plugin/principal-architect/scripts/post_tool_receipt.py`: `<1ms` unenrolled fast-exit, single shared `compute_tree_hash(repo_root, allowed_files) -> str` (`<rel_posix_path>\0<len>\0<raw_bytes>\n` SHA-256 over sorted existing files matching `allowed_files`, excluding `.git/` and `.state/`), `evaluate_post_tool(payload, *, repo_root=None)` / `main()` invalidating receipts on file/command mutations, stamping valid receipts (`rcpt_<tree_hash[:12]>`, `valid=1`) when `verification_command` exits `0`, and incrementing `attempt_num` / `structural_failures` on non-zero exit.
+  - `daemon/workspace-plugin/principal-architect/scripts/stop_gate.py`: `<1ms` unenrolled fast-exit, `evaluate_stop(payload, *, repo_root=None)` / `main()` enforcing the two-tier retry ceiling (`structural_failures >= max_structural_failures` [2] or `>= 3` consecutive `ERROR_MESSAGE` steps -> fast-fail `ESCALATED_TO_PA` with `STRUCTURAL_FAST_FAIL` and `{}`; `attempt_num >= max_attempts` [5] -> `BLOCKED` with `MAX_ATTEMPTS_EXCEEDED` and `🔬 [Debug <WO-ID>]` enqueued in `attention_queue`), Case A/B completion invariants, bounded Stop-hook continuations (incrementing `attempt_num` on every `"decision": "continue"`), and `pa-auditor` Stop gate.
+  - `daemon/workspace-plugin/principal-architect/scripts/pre_invocation.py`: `<1ms` unenrolled fast-exit, `parse_spawn_header(text) -> dict[str, str]`, `evaluate_pre_invocation(payload, *, repo_root=None)` / `main()` binding unbound subagent `conversationId` rows on Turn 1, detecting `CHECKPOINT` compaction and step-count rewind on `transcript.jsonl`, and emitting role-specific `{"injectSteps": [{"userMessage": "..."}]}` payloads honoring the strict `builtin` vs. `external` memory boundary.
+  - `daemon/workspace-plugin/principal-architect/agents/pa-{chief-architect,principal-architect,engineer,auditor,debugger}.md`, `rules/00-pa-operating-model.md`, and `skills/principal-architect/SKILL.md`: Five static KV-cache-stable custom role agents with evidence-based capability scoping (`inheritCustomizations: false` + `.state/pa-skills.json` and `.state/pa-worker-rules.json` on `pa-engineer`/`pa-auditor`, `inheritMcp: false` on `pa-auditor`), operating-model rule, and in-plugin skill.
+  - `daemon/workspace-plugin/principal-architect/scripts/pa_cli.py`: Added `pa pr approve-plan <PR-ID>`, `pa wo verify <WO-ID>`, and `pa escalate` while preserving stdlib-only top-level startup.
+- **Key Architectural Decisions & Invariants Preserved:**
+  - All four hook scripts (`pre_invocation.py`, `pre_tool_gate.py`, `post_tool_receipt.py`, `stop_gate.py`) and `pa_cli.py` defer `pydantic`, `yaml`, and `schemas` imports to lazy function scope after `common.is_repo_enrolled`, guaranteeing `<1ms` fast-exit on unenrolled workspaces.
+  - `compute_tree_hash` in `post_tool_receipt.py` is the single shared hashing implementation used across `post_tool_receipt.py`, `stop_gate.py`, and `pa wo verify`, eliminating any receipt drift.
+  - Quoted `-m` / `--message` commit message strings are stripped before matching `R4` forbidden `git`/`gh` patterns so legitimate Worker commit messages mentioning git commands never trigger false-positive denials.
+- **Verification & Audit Summary:**
+  - `85 passed` across `tests/test_schemas.py` (17 tests), `tests/test_state_db_and_sync.py` (34 tests), and `tests/test_hooks_monitored_vs_autonomous.py` (34 tests); `ruff check daemon tests` clean; Cold-Firewall Audit Round 1 `APPROVED (0 blocking, 0 major, 0 minor)` at `0d35a8e66a79dde1bca743c7ade097d14b65bff5`.

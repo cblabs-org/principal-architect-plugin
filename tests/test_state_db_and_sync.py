@@ -100,12 +100,13 @@ def test_workspace_dir_resolution(tmp_repo: Path) -> None:
 
 
 def test_workspace_dir_dogfood() -> None:
-    """Verify workspace_dir on this repository resolves to the active legacy workspace."""
+    """Verify workspace_dir on this repository resolves to the migrated plugins workspace."""
     repo_root = common.find_repo_root(Path(__file__).resolve())
     assert repo_root is not None
     ws = common.workspace_dir(repo_root)
     assert ws.exists()
-    assert ws == repo_root / common.LEGACY_WORKSPACE_REL
+    assert ws == repo_root / common.NEW_WORKSPACE_REL
+    assert not (repo_root / common.LEGACY_WORKSPACE_REL).exists()
 
 
 def test_daemon_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1177,4 +1178,75 @@ def test_pa_status_synthetic_and_dogfood(
     assert wo5["verified_hash"] == "f7e857f8de69f2abdd453e4df6b07e69cd7bde4f"
     # Verify running pa status did NOT create .state/state.db in this unenrolled repo
     assert not (common.workspace_dir(this_repo) / ".state" / "state.db").exists()
+
+
+def test_dogfood_self_enroll_sync_and_status_on_repo_workspace(
+    tmp_repo: Path,
+    daemon_home: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Verify full dogfood enroll, sync, status --json, charter_hash, and spec_hash across PR-01..PR-05."""
+    import shutil
+
+    import schemas
+
+    this_repo = Path(__file__).resolve().parent.parent
+    repo_ws = common.workspace_dir(this_repo)
+    assert repo_ws == this_repo / common.NEW_WORKSPACE_REL
+
+    target_ws = tmp_repo / common.NEW_WORKSPACE_REL
+    shutil.copytree(repo_ws, target_ws, ignore=shutil.ignore_patterns(".state"))
+
+    capsys.readouterr()
+    assert (
+        pa_cli.main(
+            ["enroll", str(tmp_repo), "--vcs-mode", "local_git", "--memory-mode", "builtin"]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert pa_cli.main(["sync", str(tmp_repo)]) == 0
+    sync_summary = json.loads(capsys.readouterr().out)
+    assert sync_summary["synced_receipts"] >= 18
+    assert sync_summary["synced_audits"] >= 4
+    assert sync_summary["synced_wos"] >= 18
+
+    assert pa_cli.main(["status", str(tmp_repo), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["programmes"][0]["programme_id"] == "prog-principal-architect-plugin"
+    assert [p["pr_id"] for p in payload["prs"]] == ["PR-01", "PR-02", "PR-03", "PR-04", "PR-05"]
+
+    prs_by_id = {p["pr_id"]: p for p in payload["prs"]}
+    for pid in ("PR-01", "PR-02", "PR-03", "PR-04"):
+        p = prs_by_id[pid]
+        assert p["status"] == "GRADUATED"
+        assert p["charter_locked"] is True
+        assert p["latest_audit"]["verdict"] == "APPROVED"
+
+    pr05 = prs_by_id["PR-05"]
+    assert pr05["charter_locked"] is True
+    assert len(pr05["work_orders"]) == 3
+
+    proj_files = sorted(target_ws.glob("pr-*/PROJECT.md"))
+    assert len(proj_files) == 5
+    for proj_md in proj_files:
+        assert schemas.verify_charter_hash(proj_md) is True
+
+    wo_files = sorted(target_ws.glob("pr-*/wo*/WORKORDER.md"))
+    assert len(wo_files) >= 21
+    for wo_md in wo_files:
+        assert schemas.verify_spec_hash(wo_md) is True
+
+    assert pa_cli.main(["status", str(this_repo), "--json"]) == 0
+    live_payload = json.loads(capsys.readouterr().out)
+    assert [p["pr_id"] for p in live_payload["prs"]] == [
+        "PR-01",
+        "PR-02",
+        "PR-03",
+        "PR-04",
+        "PR-05",
+    ]
+    assert (repo_ws / ".state" / "state.db").exists() is False
+
 

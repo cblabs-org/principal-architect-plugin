@@ -1,0 +1,16 @@
+{
+  "schema": "v1",
+  "ui": {
+    "entrypoint": "SIDECAR_UI_ENTRYPOINT_AUX_PANE",
+    "title": "Principal Architect Cockpit",
+    "subtitle": "Programme, Stacked PRs, Work Orders & Escalation Queue"
+  },
+  "main": [
+    "python3",
+    "${PLUGIN_ROOT}/workspace-plugin/principal-architect/scripts/cockpit.py"
+  ],
+  "restart_policy": "on_failure",
+  "env": {
+    "PYTHONPATH": "${PLUGIN_ROOT}/workspace-plugin/principal-architect/scripts"
+  }
+}

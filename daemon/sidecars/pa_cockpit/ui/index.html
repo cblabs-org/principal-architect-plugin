@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Principal Architect Cockpit</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/preload.js"></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div id="cockpit-root" class="cockpit-shell">
+    <!-- Zone 1: Top Header & Controls -->
+    <header id="zone-header" class="cockpit-header" aria-label="Cockpit Header and Controls">
+      <div class="header-top-row">
+        <div class="brand-block">
+          <span class="brand-icon" aria-hidden="true">📐</span>
+          <div class="brand-titles">
+            <h1 class="brand-title">Principal Architect Cockpit</h1>
+            <p class="brand-subtitle">Stacked PR DAG, Charter Locks &amp; Escalation Queue</p>
+          </div>
+        </div>
+        <button id="btn-sync" type="button" class="btn btn-compact" title="Synchronize Git / GitHub and SQLite state">
+          🔄 Sync
+        </button>
+      </div>
+
+      <div class="header-workspace-row">
+        <label class="field-label" for="workspace-select">Repository</label>
+        <select id="workspace-select" class="select-control" aria-label="Enrolled Repository">
+          <option value="">Loading enrolled workspaces…</option>
+        </select>
+      </div>
+
+      <div class="header-badges-row">
+        <span id="badge-vcs-mode" class="badge badge-env" title="Active Version Control Bus">
+          Git: Local
+        </span>
+        <span id="badge-memory-mode" class="badge badge-env" title="Active Memory Subsystem">
+          Memory: Built-in
+        </span>
+        <span id="badge-sse-status" class="badge badge-live" title="Server-Sent Events Connection Status">
+          ● Live SSE
+        </span>
+      </div>
+
+      <div class="header-controls-row">
+        <div class="control-group">
+          <span class="field-label">Execution Mode</span>
+          <div class="mode-toggle" role="group" aria-label="Execution Mode Toggle">
+            <button id="btn-mode-monitored" type="button" class="btn mode-btn active" data-mode="monitored">
+              👀 Monitored
+            </button>
+            <button id="btn-mode-autonomous" type="button" class="btn mode-btn" data-mode="autonomous">
+              🤖 Autonomous
+            </button>
+          </div>
+        </div>
+
+        <div class="control-group control-group-grow">
+          <label class="field-label" for="architect-model-select">Architect Model</label>
+          <select id="architect-model-select" class="select-control" aria-label="Architect Model">
+            <option value="gemini-4-argon-high">Gemini 4 Argon (High)</option>
+            <option value="gemini-3-1-pro-high">Gemini 3.1 Pro (High)</option>
+            <option value="claude-opus-5-5-high">Claude Opus 5.5 (High)</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="action-toast" class="action-toast hidden" role="status" aria-live="polite"></div>
+    </header>
+
+    <!-- Zone 2: Human Attention Needed Inbox -->
+    <section id="zone-attention" class="attention-inbox" aria-labelledby="attention-heading">
+      <div class="section-header">
+        <h2 id="attention-heading" class="section-title">🔔 Human Attention Needed</h2>
+        <span id="attention-count" class="badge badge-count">0</span>
+      </div>
+      <div id="attention-list" class="attention-list">
+        <div class="empty-state">No open escalations or approvals pending.</div>
+      </div>
+    </section>
+
+    <!-- Zone 3: Interactive Programme -> Stacked PR -> Work Order DAG -->
+    <section id="zone-dag" class="programme-dag" aria-labelledby="dag-heading">
+      <div class="section-header">
+        <h2 id="dag-heading" class="section-title">Programme &amp; Stacked PR DAG</h2>
+        <span id="dag-pr-count" class="badge badge-muted">0 PRs</span>
+      </div>
+      <div id="dag-container" class="dag-container">
+        <div class="empty-state">Select an enrolled repository to inspect its Programme &amp; Stacked PR DAG.</div>
+      </div>
+    </section>
+  </div>
+</body>
+</html>
