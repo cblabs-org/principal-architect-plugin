@@ -5,7 +5,7 @@ pr_id: PR-05
 title: Live state reconciliation (pa sync & pa status --json) and automated dogfood
   suite
 complexity: standard
-status: PENDING
+status: COMPLETED
 allowed_files:
 - tests/test_state_db_and_sync.py
 forbidden_files:
@@ -30,7 +30,20 @@ verification_command: ./.venv/bin/pytest tests/test_schemas.py tests/test_state_
 max_attempts: 5
 max_structural_failures: 2
 spec_hash: 9f0007935a96e583ea2bf13b967116992ef7485781cf8a55e0cf145e0c127627
-completion: null
+completion:
+  status: COMPLETED
+  attempt_num: 1
+  receipt_id: rcpt_29f789add38d
+  commit_sha: null
+  files_modified:
+  - tests/test_state_db_and_sync.py
+  verification_summary: "122 passed in 48.10s; ruff check daemon tests: All checks passed!; live dogfood pa enroll + pa sync (synced_receipts=21, synced_audits=4, synced_wos=23) + pa status --json verified across PR-01..PR-05"
+  out_of_scope_findings: []
+  escalation_request: null
+  decisions_made:
+  - "Executed live pa enroll . --vcs-mode local_git --memory-mode builtin, pa sync ., and pa status . --json under isolated PA_DAEMON_HOME=/tmp/pa-dogfood-pr05-wo2/pa-daemon, verifying programme_id == prog-principal-architect-plugin, all 5 PRs (PR-01..PR-05), 21 receipts, 4 audits, and 23 work order entries before restoring PROJECT.md files and cleaning up untracked runtime artifacts."
+  - "Added test_dogfood_self_enroll_sync_and_status_on_repo_workspace in tests/test_state_db_and_sync.py to permanently verify pa enroll, pa sync, pa status --json, charter_hash locks across all 5 PRs, and spec_hash locks across all 22 WORKORDER.md files."
+  dead_ends: []
 ---
 
 # WO-05.2 — Live State Reconciliation (`pa sync` & `pa status --json`) and Automated Dogfood Suite
@@ -98,4 +111,17 @@ completion: null
 ## Completion Report
 <!-- Written by the Tier 3 Worker at task completion -->
 
-_Pending execution._
+- **Status:** `COMPLETED` (attempt 1)
+- **Receipt ID:** `rcpt_29f789add38d`
+- **Tree Hash (`allowed_files`):** `29f789add38d957bf1d783aae10160f8932b1d563d53a8092d7f78555e960729`
+- **Files Modified:**
+  - `tests/test_state_db_and_sync.py`
+- **Verification Summary:**
+  - Live dogfood check (`PA_DAEMON_HOME=/tmp/pa-dogfood-pr05-wo2/pa-daemon`): `pa enroll . --vcs-mode local_git --memory-mode builtin`, `pa sync .` (`synced_receipts: 21`, `synced_audits: 4`, `synced_wos: 23`, `trailers_found: 68`), and `pa status . --json` (`programme_id: "prog-principal-architect-plugin"`, `prs: ["PR-01", "PR-02", "PR-03", "PR-04", "PR-05"]`); restored `PROJECT.md` files and removed untracked runtime state
+  - `./.venv/bin/pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py tests/test_github_and_local_git_bus.py tests/test_memory_modes.py tests/test_cockpit_api.py` -> `122 passed in 48.10s`
+  - `./.venv/bin/ruff check daemon tests` -> `All checks passed!`
+- **Decisions Made:**
+  - Executed live `pa enroll`, `pa sync`, and `pa status --json` against this repository using an isolated temporary daemon home (`/tmp/pa-dogfood-pr05-wo2/pa-daemon`), confirmed full state reconciliation across `PR-01`..`PR-05`, and cleaned up all untracked/gitignored runtime state and restored `PROJECT.md` files afterward.
+  - Added `test_dogfood_self_enroll_sync_and_status_on_repo_workspace` in `tests/test_state_db_and_sync.py` to copy `.agents/plugins/principal-architect-workspace/` into `tmp_repo`, run `pa enroll`, `pa sync`, and `pa status --json`, and assert all 5 PRs (`PR-01`..`PR-05`), `charter_hash` locks, and `spec_hash` locks are valid.
+- **Out-of-Scope Findings:** None.
+- **Dead Ends:** None.
