@@ -22,6 +22,8 @@
  *     - showToast(message, isError): Render a transient status or error toast in Zone 1.
  *     - isOpenableConversationId(conversationId): Check whether a conversation ID is a real IDE thread vs synthetic fallback.
  *     - jumpToConversation(conversationId): Focus an agent thread in the host IDE sidebar.
+ *     - openFile(filePath): Request the host IDE to open a spec file at an absolute path.
+ *     - buildSpecLinks(links): Build an inline row of clickable spec-file quick-open buttons.
  *     - postJson(endpoint, payload): Execute a JSON POST request against the Cockpit API.
  *   Mutation Actions:
  *     - triggerSync(): Reconcile VCS trailers, audits, and receipts via POST /api/sync.
@@ -109,6 +111,8 @@
       "M356.54-335.5q-52-45.5-64.46-114.5H100v-60H292.08q12.46-69 64.46-114.5T480-670t123.65,45.5T667.92-510H860v60H667.92q-12.08,69-64.27,114.5T480-290T356.54-335.5ZM480-350q53.85,0 91.92-38.08T610-480t-38.08-91.92T480-610t-91.92,38.08T350-480t38.08,91.92T480-350Z",
     call_split:
       "M450-180V-467.85l-210-210V-560H180V-780H400v60H282.15L510-492.15V-180H450ZM580.15-536.77l-43.38-43.38L677.85-720H560v-60H780v220H720V-677.85L580.15-536.77Z",
+    description:
+      "M320-240h320v-60H320v60Zm0-160h320v-60H320v60ZM220-80q-24.75,0-42.37-17.63T160-140v-680q0-24.75,17.63-42.38T220-880h340l240,240v500q0,24.75-17.63,42.37T740-80H220Zm310-530v-210H220v680h520v-470H530ZM220-820v210V-820v680V-820Z",
   };
 
   /**
@@ -223,6 +227,53 @@
     ) {
       window.sidecar.ui.toggleConversation(conversationId);
     }
+  }
+
+  /**
+   * Request the host IDE to open a spec file at `filePath` in the editor.
+   * @param {string | null | undefined} filePath - Absolute filesystem path to open.
+   * @returns {void}
+   */
+  function openFile(filePath) {
+    const raw = String(filePath || "").trim();
+    if (!raw) {
+      showToast("No spec file path is available for this item.", true);
+      return;
+    }
+    if (
+      window.sidecar &&
+      window.sidecar.ui &&
+      typeof window.sidecar.ui.openFile === "function"
+    ) {
+      window.sidecar.ui.openFile(raw);
+    }
+  }
+
+  /**
+   * Build an inline spec-file links row for Programme, PR, or Work Order cards.
+   * Each non-null entry in `links` produces a small clickable button with a document icon.
+   * @param {Array<{ label: string, filePath: string | null | undefined }>} links - File link specs.
+   * @returns {HTMLDivElement} DOM element containing the spec link buttons.
+   */
+  function buildSpecLinks(links) {
+    const row = document.createElement("div");
+    row.className = "spec-links";
+    for (const { label, filePath } of links) {
+      if (!filePath) {
+        continue;
+      }
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn btn-spec-link";
+      btn.innerHTML = `${iconSvg("description", 11)}<span>${escapeHtml(label)}</span>`;
+      btn.title = `Open ${filePath}`;
+      btn.addEventListener("click", (evt) => {
+        evt.stopPropagation();
+        openFile(filePath);
+      });
+      row.appendChild(btn);
+    }
+    return row;
   }
 
   /**
@@ -845,6 +896,14 @@
 
     row.appendChild(metaRow);
 
+    // --- Step 2b: Render clickable WORKORDER.md spec-file link ---
+    if (wo.spec_file) {
+      const woSpecLinks = buildSpecLinks([
+        { label: "WORKORDER.md", filePath: wo.spec_file },
+      ]);
+      row.appendChild(woSpecLinks);
+    }
+
     // --- Step 3: Wire Peek Worker and Interactive Debug action buttons with state-machine gating ---
     const canPeekWorker = isOpenableConversationId(wo.subagent_id);
     if (isHistorical || isCompleted) {
@@ -973,6 +1032,16 @@
         <span class="badge badge-muted">Model: ${escapeHtml(prog.architect_model)}</span>
       </div>
     `;
+
+    // --- Step 3b: Render clickable spec-file links (PROGRAM.md, PROGRAM-PLAN.md) ---
+    const progSpecLinks = buildSpecLinks([
+      { label: "PROGRAM.md", filePath: prog.spec_file },
+      { label: "PROGRAM-PLAN.md", filePath: prog.plan_file },
+    ]);
+    if (progSpecLinks.children.length > 0) {
+      body.appendChild(progSpecLinks);
+    }
+
     card.appendChild(body);
     return card;
   }
@@ -1099,6 +1168,14 @@
     }
 
     cardBody.appendChild(badgesRow);
+
+    // --- Step 3b: Render clickable PROJECT.md spec-file link ---
+    const prSpecLinks = buildSpecLinks([
+      { label: "PROJECT.md", filePath: pr.spec_file },
+    ]);
+    if (prSpecLinks.children.length > 0) {
+      cardBody.appendChild(prSpecLinks);
+    }
 
     // --- Step 4: Wire PR-level lifecycle action buttons with state-machine gating ---
     const prStatus = String(pr.status || "PLANNED").toUpperCase();

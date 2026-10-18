@@ -27,6 +27,7 @@
  *   Host UI Controls (`window.sidecar.ui`):
  *     - window.sidecar.ui.toggleAuxPane(request): Request the parent host window to toggle an auxiliary sidecar pane.
  *     - window.sidecar.ui.toggleConversation(conversationId): Focus or open a target conversation in the host IDE sidebar (`openUrl` / `toggle-conversation` postMessage).
+ *     - window.sidecar.ui.openFile(filePath): Request the parent host window to open a file in the editor (`open-file` postMessage).
  */
 
 (function() {
@@ -313,6 +314,17 @@
         window.parent.postMessage({
           type: 'toggle-conversation',
           payload: { conversationId }
+        }, '*');
+      },
+      /**
+       * Request the parent Antigravity host window to open a file in the editor.
+       * @param {string} filePath - Absolute filesystem path to open.
+       * @returns {void}
+       */
+      openFile(filePath) {
+        window.parent.postMessage({
+          type: 'open-file',
+          payload: { filePath }
         }, '*');
       }
     }

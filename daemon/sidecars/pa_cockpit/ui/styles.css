@@ -1109,3 +1109,43 @@ body {
   align-items: center;
   gap: 4px;
 }
+
+/* --- Spec-File Links (PROGRAM.md, PROJECT.md, WORKORDER.md quick-open buttons) --- */
+
+.spec-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.btn-spec-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-family: var(--pa-font-mono);
+  padding: 1px 6px;
+  border-radius: var(--pa-radius-sm);
+  border: 1px solid color-mix(in srgb, var(--pa-link, var(--primary)) 22%, transparent);
+  background: color-mix(in srgb, var(--pa-link, var(--primary)) 6%, transparent);
+  color: var(--pa-link, var(--primary));
+  cursor: pointer;
+  transition: background 0.15s var(--ease-cubic-out), border-color 0.15s var(--ease-cubic-out);
+  line-height: 1.5;
+}
+
+.btn-spec-link:hover {
+  background: color-mix(in srgb, var(--pa-link, var(--primary)) 14%, transparent);
+  border-color: color-mix(in srgb, var(--pa-link, var(--primary)) 35%, transparent);
+}
+
+.btn-spec-link:active {
+  background: color-mix(in srgb, var(--pa-link, var(--primary)) 20%, transparent);
+}
+
+.btn-spec-link .ag-icon {
+  opacity: 0.7;
+  fill: currentColor;
+}

@@ -119,7 +119,7 @@ _PRELOAD_SHIM_JS = (
     "window.sidecar = window.sidecar || {\n"
     "  getWorkspaceUris: function() { return []; },\n"
     "  onWorkspaceChange: function() {},\n"
-    "  ui: { toggleConversation: function() {}, toggleAuxPane: function() {} },\n"
+    "  ui: { toggleConversation: function() {}, toggleAuxPane: function() {}, openFile: function() {} },\n"
     "  agent: { sendMessage: function() {} }\n"
     "};\n"
     "window.addEventListener('message', function(event) {\n"
@@ -423,6 +423,7 @@ def build_workspace_state(
                     )
                 )
             )
+            plan_md = prog_dir / "PROGRAM-PLAN.md"
             programmes.append(
                 {
                     "programme_id": prog_doc.spec.programme_id,
@@ -439,6 +440,8 @@ def build_workspace_state(
                     "created_at": _format_dt(getattr(prog_doc.spec, "created_at", None)),
                     "is_completed": is_completed,
                     "is_active": not is_completed,
+                    "spec_file": str(prog_md),
+                    "plan_file": str(plan_md) if plan_md.is_file() else None,
                 }
             )
 
@@ -650,6 +653,7 @@ def build_workspace_state(
                     else False
                 )
 
+                wo_md_path = pr_dir / slug_val / "WORKORDER.md"
                 return {
                     "wo_id": wo_id_val,
                     "id": wo_id_val,
@@ -674,6 +678,7 @@ def build_workspace_state(
                     "tree_hash": tree_hash,
                     "verified_at": verified_at,
                     "subagent_id": subagent_id,
+                    "spec_file": str(wo_md_path) if wo_md_path.is_file() else None,
                 }
 
             for row in proj_doc.spec.work_orders:
@@ -720,6 +725,7 @@ def build_workspace_state(
                     "work_orders": work_orders,
                     "is_merged": is_merged,
                     "is_active": is_active,
+                    "spec_file": str(pr_dir / "PROJECT.md"),
                 }
             )
 
