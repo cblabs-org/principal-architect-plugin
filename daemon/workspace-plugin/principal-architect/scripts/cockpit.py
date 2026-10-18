@@ -1152,6 +1152,100 @@ class CockpitRequestHandler(BaseHTTPRequestHandler):
                 return
             return
 
+        # --- Step 6: Serve `/api/preview` Markdown file rendered as styled HTML ---
+        if route == "/api/preview":
+            file_path_raw = (query.get("file") or [None])[0]
+            if not file_path_raw:
+                self._send_json(400, {"ok": False, "error": "Missing ?file= parameter"})
+                return
+
+            file_path = Path(os.path.realpath(os.path.expanduser(file_path_raw.strip())))
+            if not file_path.is_file():
+                self._send_json(404, {"ok": False, "error": f"File not found: {file_path}"})
+                return
+
+            # Security: restrict access to files inside an enrolled workspace directory
+            workspaces, _, _ = _list_enrolled_workspaces(self.server.daemon_home)
+            allowed = False
+            for ws in workspaces:
+                ws_dir_str = ws.get("workspace_dir", "")
+                if ws_dir_str and str(file_path).startswith(os.path.realpath(ws_dir_str)):
+                    allowed = True
+                    break
+            if not allowed:
+                self._send_json(
+                    403,
+                    {"ok": False, "error": "Access denied: file is outside enrolled workspaces"},
+                )
+                return
+
+            try:
+                raw_content = file_path.read_text(encoding="utf-8")
+            except OSError as exc:
+                self._send_json(500, {"ok": False, "error": f"Cannot read file: {exc}"})
+                return
+
+            # Render as a styled HTML document with preformatted markdown content
+            escaped_content = (
+                raw_content
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+            )
+            escaped_title = (
+                file_path.name
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+            escaped_path = (
+                str(file_path)
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+            html = (
+                "<!doctype html>\n"
+                '<html lang="en">\n'
+                "<head>\n"
+                '  <meta charset="utf-8">\n'
+                f"  <title>{escaped_title}</title>\n"
+                '  <script src="/preload.js"></script>\n'
+                "  <style>\n"
+                "    :root { color-scheme: light; --background: #f9f9f9; --foreground: #101010; }\n"
+                "    @media (prefers-color-scheme: dark) {\n"
+                "      :root { color-scheme: dark; --background: #101010; --foreground: #cccccc; }\n"
+                "    }\n"
+                "    [data-theme='dark'] { --background: #101010; --foreground: #cccccc; }\n"
+                "    body {\n"
+                "      margin: 0; padding: 16px 20px;\n"
+                "      background: var(--background); color: var(--foreground);\n"
+                "      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;\n"
+                "    }\n"
+                "    .preview-header {\n"
+                "      font-size: 11px; color: color-mix(in srgb, var(--foreground) 50%, var(--background));\n"
+                "      border-bottom: 1px solid color-mix(in srgb, var(--foreground) 10%, var(--background));\n"
+                "      padding-bottom: 8px; margin-bottom: 16px;\n"
+                "      font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;\n"
+                "      word-break: break-all;\n"
+                "    }\n"
+                "    pre {\n"
+                "      white-space: pre-wrap; word-wrap: break-word;\n"
+                "      font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;\n"
+                "      font-size: 12px; line-height: 1.6; margin: 0;\n"
+                "    }\n"
+                "  </style>\n"
+                "</head>\n"
+                "<body>\n"
+                f'  <div class="preview-header">{escaped_path}</div>\n'
+                f"  <pre>{escaped_content}</pre>\n"
+                "</body>\n"
+                "</html>\n"
+            )
+            self._send_text(200, html, "text/html; charset=utf-8")
+            return
+
         self._send_json(404, {"ok": False, "error": f"Not found: {route}"})
 
     def do_POST(self) -> None:

@@ -22,7 +22,7 @@
  *     - showToast(message, isError): Render a transient status or error toast in Zone 1.
  *     - isOpenableConversationId(conversationId): Check whether a conversation ID is a real IDE thread vs synthetic fallback.
  *     - jumpToConversation(conversationId): Focus an agent thread in the host IDE sidebar.
- *     - openFile(filePath): Request the host IDE to open a spec file at an absolute path.
+ *     - openFile(filePath): Open a spec file preview in a new tab via /api/preview.
  *     - buildSpecLinks(links): Build an inline row of clickable spec-file quick-open buttons.
  *     - postJson(endpoint, payload): Execute a JSON POST request against the Cockpit API.
  *   Mutation Actions:
@@ -230,8 +230,8 @@
   }
 
   /**
-   * Request the host IDE to open a spec file at `filePath` in the editor.
-   * @param {string | null | undefined} filePath - Absolute filesystem path to open.
+   * Open a spec file preview in a new tab via the Cockpit `/api/preview` endpoint.
+   * @param {string | null | undefined} filePath - Absolute filesystem path to preview.
    * @returns {void}
    */
   function openFile(filePath) {
@@ -240,13 +240,8 @@
       showToast("No spec file path is available for this item.", true);
       return;
     }
-    if (
-      window.sidecar &&
-      window.sidecar.ui &&
-      typeof window.sidecar.ui.openFile === "function"
-    ) {
-      window.sidecar.ui.openFile(raw);
-    }
+    const previewUrl = `/api/preview?file=${encodeURIComponent(raw)}`;
+    window.open(previewUrl, "_blank");
   }
 
   /**
