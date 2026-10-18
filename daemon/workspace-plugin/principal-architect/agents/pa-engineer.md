@@ -15,7 +15,6 @@ tools:
   - list_dir
   - grep_search
   - find_by_name
-  - code_search
   - run_command
   - send_message
 skills:
