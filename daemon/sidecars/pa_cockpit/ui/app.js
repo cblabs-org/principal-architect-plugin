@@ -258,7 +258,7 @@
         continue;
       }
       const a = document.createElement("a");
-      a.className = "btn-spec-link";
+      a.className = "btn btn-spec-link";
       a.href = `/api/preview?file=${encodeURIComponent(filePath)}`;
       a.target = "_blank";
       a.rel = "noopener";
