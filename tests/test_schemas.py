@@ -51,6 +51,9 @@ Test Suite Coverage Summary:
          `PROGRAM.md`, `PROJECT.md`, and `WORKORDER.md` artifacts in this repository.
        - `test_templates_exist_and_render_successfully`: Render all 7 `.md.tpl`
          templates and validate with typed loaders.
+       - `test_legacy_and_unparseable_document_fallbacks_and_upgrade`: Verify
+         `parse_legacy_project_fallback`, `parse_legacy_workorder_fallback`,
+         `parse_legacy_program_fallback`, and `upgrade_legacy_project_frontmatter`.
 """
 
 from __future__ import annotations
@@ -817,3 +820,114 @@ def test_templates_exist_and_render_successfully(tmp_path: Path) -> None:
 def test_canonical_json_and_norm_section_helpers() -> None:
     assert canonical_json({"b": 1, "a": 2}) == '{"a":2,"b":1}'
     assert norm_section("  ## 1. Title  \nLine 1   \nLine 2\n\n") == "## 1. Title\nLine 1\nLine 2"
+
+
+def test_legacy_and_unparseable_document_fallbacks_and_upgrade(tmp_path: Path) -> None:
+    """Verify legacy H1/blockquote fallback parsers, parse_error classification, and frontmatter upgrade."""
+    # --- Step 1: Legacy PROJECT.md starting with '# H1' and child legacy WORKORDER.md ---
+    pr01_dir = tmp_path / "pr-01-foundation"
+    pr01_dir.mkdir(parents=True)
+    proj01_md = pr01_dir / "PROJECT.md"
+    proj01_md.write_text(
+        "# PROJECT: Foundation Layer — PROJECT.md\n\n"
+        "**Base Branch:** `main`\n"
+        "**Branch:** `feat/pr-01-foundation`\n\n"
+        "## Status\n\n"
+        "COMPLETE\n\n"
+        "## Architectural Intent\n\n"
+        "Establish core primitives.\n",
+        encoding="utf-8",
+    )
+    wo1_dir = pr01_dir / "wo1-config-install"
+    wo1_dir.mkdir(parents=True)
+    wo1_md = wo1_dir / "WORKORDER.md"
+    wo1_md.write_text(
+        "---\n"
+        "name: foundation-wo1\n"
+        "description: Handoff instructions for Work Order 1 — Config & Install Defaults\n"
+        "complexity: mechanical\n"
+        "---\n\n"
+        "# Work Order 1 — Config & Install Defaults\n\n"
+        "## Objective\n\n"
+        "Update defaults.\n\n"
+        "## Completion Report\n\n"
+        "- **Status:** ✅ Completed\n"
+        "- **Commit:** `10d6a87`\n",
+        encoding="utf-8",
+    )
+
+    fb_proj = schemas.parse_legacy_project_fallback(proj01_md)
+    assert fb_proj["pr_id"] == "PR-01"
+    assert fb_proj["slug"] == "pr-01-foundation"
+    assert fb_proj["title"] == "Foundation Layer"
+    assert fb_proj["status"] == "GRADUATED"
+    assert fb_proj["branch"] == "feat/pr-01-foundation"
+    assert fb_proj["base_branch"] == "main"
+    assert fb_proj["charter_locked"] is False
+    assert fb_proj["schema"] == "legacy"
+    assert fb_proj["parse_error"] is False
+
+    fb_wo = schemas.parse_legacy_workorder_fallback(wo1_md, default_pr_id="PR-01")
+    assert fb_wo["wo_id"] == "WO-01.1"
+    assert fb_wo["title"] == "Config & Install Defaults"
+    assert fb_wo["complexity"] == "mechanical"
+    assert fb_wo["status"] == "COMPLETED"
+    assert fb_wo["commit_sha"] == "10d6a87"
+    assert fb_wo["schema"] == "legacy"
+    assert fb_wo["parse_error"] is False
+
+    # --- Step 2: Upgrade legacy PROJECT.md with minimal ProjectSpec frontmatter ---
+    assert schemas.upgrade_legacy_project_frontmatter(proj01_md, fallback_pr_index=1) is True
+    # Second call is a no-op since frontmatter now exists
+    assert schemas.upgrade_legacy_project_frontmatter(proj01_md, fallback_pr_index=1) is False
+    fb_upgraded = schemas.parse_legacy_project_fallback(proj01_md)
+    assert fb_upgraded["pr_id"] == "PR-01"
+    assert fb_upgraded["charter_locked"] is False
+    assert fb_upgraded["schema"] == "legacy"
+    assert fb_upgraded["parse_error"] is False
+    assert len(fb_upgraded["work_orders"]) == 1
+    assert fb_upgraded["work_orders"][0]["id"] == "WO-01.1"
+
+    # --- Step 3: Legacy PROJECT.md starting with '>' blockquote and corrupt YAML PROJECT.md ---
+    pr02_dir = tmp_path / "pr-02-blockquote"
+    pr02_dir.mkdir(parents=True)
+    proj02_md = pr02_dir / "PROJECT.md"
+    proj02_md.write_text(
+        "> **Scanning Infrastructure Hardening**\n\n"
+        "Free-form legacy specification without H1.\n",
+        encoding="utf-8",
+    )
+    fb_bq = schemas.parse_legacy_project_fallback(proj02_md)
+    assert fb_bq["pr_id"] == "PR-02"
+    assert fb_bq["title"] == "Scanning Infrastructure Hardening"
+    assert fb_bq["schema"] == "legacy"
+    assert fb_bq["parse_error"] is False
+
+    pr03_dir = tmp_path / "pr-03-corrupt"
+    pr03_dir.mkdir(parents=True)
+    proj03_md = pr03_dir / "PROJECT.md"
+    proj03_md.write_text(
+        "---\n"
+        "schema_version: 1\n"
+        "charter: [unclosed yaml\n"
+        "---\n"
+        "# Corrupt PR\n",
+        encoding="utf-8",
+    )
+    fb_err = schemas.parse_legacy_project_fallback(proj03_md)
+    assert fb_err["pr_id"] == "PR-03"
+    assert fb_err["parse_error"] is True
+    assert fb_err["schema"] == "parse_error"
+    assert "Invalid YAML frontmatter" in fb_err["error"]
+
+    # --- Step 4: Legacy PROGRAM.md fallback ---
+    prog_dir = tmp_path / "programme-legacy"
+    prog_dir.mkdir(parents=True)
+    prog_md = prog_dir / "PROGRAM.md"
+    prog_md.write_text("# Legacy Programme Vision\n\nOverview text.\n", encoding="utf-8")
+    fb_prog = schemas.parse_legacy_program_fallback(prog_md)
+    assert fb_prog["programme_id"] == "prog-legacy"
+    assert fb_prog["title"] == "Legacy Programme Vision"
+    assert fb_prog["schema"] == "legacy"
+    assert fb_prog["parse_error"] is False
+

@@ -47,6 +47,17 @@ Exported API Summary:
 - _resolve_workorder_and_sections: Normalize a target into `(WorkOrderSpec, Sequence[Section])`.
 - compute_spec_hash: Compute the normative SHA-256 `spec_hash` over Part I of `WORKORDER.md`.
 - verify_spec_hash: Verify that `wo_spec.spec_hash` matches `compute_spec_hash`.
+- _LEGACY_PR_DIR_ID_RE: Compiled regex extracting numeric PR IDs from `pr-NN[a-z]-*` directory names.
+- _LEGACY_WO_DIR_NUM_RE: Compiled regex extracting Work Order numbers from `woN[a-z]-*` directory names.
+- _LEGACY_H1_RE: Compiled regex matching the first top-level `# H1` Markdown heading.
+- _LEGACY_BLOCKQUOTE_RE: Compiled regex matching the first `>` Markdown blockquote line.
+- _LEGACY_COMMIT_RE: Compiled regex extracting commit SHAs from legacy Markdown completion reports.
+- _clean_legacy_title: Strip legacy Markdown prefixes, suffixes, and formatting from extracted titles.
+- _infer_legacy_pr_status: Infer a canonical `PRState` value from legacy `PROJECT.md` prose.
+- parse_legacy_program_fallback: Extract best-effort metadata and classify legacy vs. corrupt `PROGRAM.md` files.
+- parse_legacy_workorder_fallback: Extract best-effort metadata and classify legacy vs. corrupt `WORKORDER.md` files.
+- parse_legacy_project_fallback: Extract best-effort metadata and classify legacy vs. corrupt `PROJECT.md` files.
+- upgrade_legacy_project_frontmatter: Prepend heuristic `ProjectSpec` YAML frontmatter (`charter_locked: false`) to a legacy `PROJECT.md`.
 """
 
 from __future__ import annotations
@@ -981,3 +992,693 @@ def verify_spec_hash(
     if not wo_spec.spec_hash:
         return False
     return compute_spec_hash(wo_spec, resolved_sections) == wo_spec.spec_hash
+
+
+# ---------------------------------------------------------------------------
+# Legacy & Unparseable Document Fallbacks
+# ---------------------------------------------------------------------------
+
+# Matches numeric PR identifiers embedded in directory slugs such as `pr-01-core` or `pr-12a-api`.
+_LEGACY_PR_DIR_ID_RE = re.compile(r"^pr-(\d+)([a-z]?)(?:$|[-_])", re.IGNORECASE)
+
+# Matches Work Order sequence numbers in directory names such as `wo1-setup` or `wo-02a-fix`.
+_LEGACY_WO_DIR_NUM_RE = re.compile(r"^wo[-_]?(\d+)([a-z]?)(?:$|[-_])", re.IGNORECASE)
+
+# Captures the first top-level `# H1` Markdown heading in a document body.
+_LEGACY_H1_RE = re.compile(r"^\s*#\s+(.+?)\s*$", re.MULTILINE)
+
+# Captures the first non-empty `>` Markdown blockquote line in a legacy document.
+_LEGACY_BLOCKQUOTE_RE = re.compile(r"^\s*>\s*(.+?)\s*$", re.MULTILINE)
+
+# Captures 7-to-40 hex character Git commit SHAs from legacy Completion Report prose.
+_LEGACY_COMMIT_RE = re.compile(
+    r"(?:\*\*Commit(?:\s+SHA)?:\*\*|Commit(?:\s+SHA)?:)\s*`?([0-9a-fA-F]{7,40})`?",
+    re.IGNORECASE,
+)
+
+
+def _clean_legacy_title(raw_title: str, fallback: str) -> str:
+    """Normalize a heuristic Markdown heading or blockquote into a clean title string.
+
+    Strips legacy document type prefixes (`PROJECT:`, `PR-01:`, `Work Order 1 —`) and
+    trailing filename suffixes (`— PROJECT.md`) while guaranteeing a minimum 3-character
+    title for downstream schema and status consumers.
+
+    Args:
+        raw_title: Raw extracted heading, blockquote, or metadata value.
+        fallback: Fallback directory slug or identifier when `raw_title` is empty after stripping.
+
+    Returns:
+        Cleaned human-readable title string of at least 3 characters.
+    """
+    # --- Step 1: Strip inline Markdown formatting and boilerplate document prefixes/suffixes ---
+    cleaned = raw_title.strip().strip("`*_")
+    cleaned = re.sub(r"^(?:PROJECT|PROGRAMME|PROGRAM)\s*[:—–-]\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^PR-\d+[a-z]?\s*[:—–-]\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"^(?:Work\s+Order\s+\d+[a-z]?|WO[- ]?\d+(?:\.\d+)?[a-z]?)\s*[:—–-]\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\s*[—–-]\s*(?:PROJECT|PROGRAM|WORKORDER)(?:\.md)?\s*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    # --- Step 2: Enforce minimum 3-character title length ---
+    if len(cleaned) < 3:
+        cleaned = fallback.strip() or "Legacy Specification"
+    if len(cleaned) < 3:
+        cleaned = f"{cleaned} Spec"
+    return cleaned
+
+
+def _infer_legacy_pr_status(text: str, *, is_archived_path: bool = False) -> str:
+    """Infer a canonical `PRState` string from legacy `PROJECT.md` prose or tables.
+
+    Args:
+        text: Raw Markdown content of the legacy `PROJECT.md` file.
+        is_archived_path: Whether the file resides under an `archive/` directory tree.
+
+    Returns:
+        Canonical `PRState` string (`"GRADUATED"`, `"IN_PROGRESS"`, `"APPROVED"`,
+        `"ARCHIVED"`, or `"PLANNED"`).
+    """
+    # --- Step 1: Honor archive directory placement immediately ---
+    if is_archived_path:
+        return PRState.ARCHIVED.value
+
+    # --- Step 2: Inspect explicit Status / Approval Status headings or metadata lines ---
+    status_match = re.search(
+        r"(?:##\s*(?:Approval\s+)?Status\s*\n+([^\n#]+)|\*\*(?:Approval\s+)?Status:\*\*\s*([^\n]+))",
+        text,
+        re.IGNORECASE,
+    )
+    status_snippet = ""
+    if status_match:
+        status_snippet = (status_match.group(1) or status_match.group(2) or "").strip().upper()
+
+    if any(tok in status_snippet for tok in ("GRADUATED", "MERGED", "COMPLETE", "COMPLETED")):
+        return PRState.GRADUATED.value
+    if any(tok in status_snippet for tok in ("IN_PROGRESS", "IN PROGRESS", "ACTIVE")):
+        return PRState.IN_PROGRESS.value
+    if "ARCHIVED" in status_snippet:
+        return PRState.ARCHIVED.value
+    if "APPROVED" in status_snippet:
+        return PRState.APPROVED.value
+    return PRState.PLANNED.value
+
+
+def parse_legacy_program_fallback(path: str | Path) -> dict[str, Any]:
+    """Extract best-effort metadata and classify a legacy or corrupt `PROGRAM.md` file.
+
+    Distinguishes pre-plugin free-form `PROGRAM.md` files (`"schema": "legacy"`) from
+    files with malformed YAML syntax or invalid `ProgramSpec` fields (`"parse_error": True`).
+
+    Args:
+        path: Filesystem path to `PROGRAM.md`.
+
+    Returns:
+        Dictionary containing `programme_id`, `title`, `base_branch`, `status`, `prs`,
+        `schema`, `parse_error`, and `error`.
+    """
+    # --- Step 1: Read file content and derive fallback identifiers from directory slug ---
+    p = Path(path)
+    prog_dir_name = p.parent.name
+    default_prog_id = (
+        f"prog-{prog_dir_name.removeprefix('programme-')}"
+        if prog_dir_name.startswith("programme-")
+        else f"prog-{prog_dir_name}"
+    )
+    try:
+        raw_text = p.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {
+            "programme_id": default_prog_id,
+            "title": _clean_legacy_title("", prog_dir_name),
+            "base_branch": "main",
+            "status": "DRAFT",
+            "prs": [],
+            "schema": "parse_error",
+            "parse_error": True,
+            "error": f"Unable to read PROGRAM.md: {exc}",
+        }
+
+    # --- Step 2: Classify frontmatter presence and validate YAML structure if present ---
+    stripped = raw_text.lstrip("\ufeff")
+    fm_match = _FRONTMATTER_RE.match(stripped)
+    fm_dict: dict[str, Any] = {}
+    is_legacy = False
+    parse_error = False
+    error_msg = ""
+
+    if fm_match is None:
+        is_legacy = True
+        error_msg = "Missing YAML frontmatter block ('---') and ProgramSpec schema"
+        body = stripped
+    else:
+        raw_yaml = fm_match.group(1)
+        body = stripped[fm_match.end() :]
+        try:
+            loaded = yaml.safe_load(raw_yaml) if raw_yaml.strip() else {}
+        except yaml.YAMLError as exc:
+            loaded = None
+            parse_error = True
+            error_msg = f"Invalid YAML frontmatter: {exc}"
+
+        if not parse_error:
+            if not isinstance(loaded, dict):
+                parse_error = True
+                error_msg = "YAML frontmatter must deserialize to a mapping/dict"
+            elif "programme_id" not in loaded and "schema_version" not in loaded:
+                is_legacy = True
+                fm_dict = loaded
+                error_msg = "Legacy frontmatter missing Split-Authority 'programme_id' and 'schema_version'"
+            else:
+                fm_dict = loaded
+                try:
+                    spec = ProgramSpec.model_validate(fm_dict)
+                    is_legacy = True
+                    error_msg = (
+                        "PROGRAM.md has valid ProgramSpec frontmatter but is missing required "
+                        "H2 section prefix(es) ('## 1.', '## 2.', '## 3.')"
+                    )
+                    return {
+                        "programme_id": spec.programme_id,
+                        "title": spec.title,
+                        "base_branch": spec.base_branch,
+                        "status": spec.status,
+                        "prs": [pr.model_dump(mode="json") for pr in spec.prs],
+                        "schema": "legacy",
+                        "parse_error": False,
+                        "error": error_msg,
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    parse_error = True
+                    error_msg = f"Invalid ProgramSpec frontmatter: {exc}"
+
+    # --- Step 3: Extract heuristic title and metadata from Markdown body ---
+    h1_match = _LEGACY_H1_RE.search(body)
+    bq_match = _LEGACY_BLOCKQUOTE_RE.search(body)
+    raw_title = (
+        str(fm_dict.get("title") or "")
+        or (h1_match.group(1) if h1_match else "")
+        or (bq_match.group(1) if bq_match else "")
+    )
+    title = _clean_legacy_title(raw_title, prog_dir_name)
+    programme_id = str(fm_dict.get("programme_id") or default_prog_id)
+    base_branch = str(fm_dict.get("base_branch") or "main")
+    status_raw = str(fm_dict.get("status") or "DRAFT").upper()
+    status = status_raw if status_raw in ("DRAFT", "APPROVED", "COMPLETED") else "DRAFT"
+
+    return {
+        "programme_id": programme_id,
+        "title": title,
+        "base_branch": base_branch,
+        "status": status,
+        "prs": [],
+        "schema": "legacy" if is_legacy else "parse_error",
+        "parse_error": parse_error,
+        "error": error_msg,
+    }
+
+
+def parse_legacy_workorder_fallback(
+    path: str | Path,
+    default_pr_id: str = "PR-00",
+) -> dict[str, Any]:
+    """Extract best-effort metadata and classify a legacy or corrupt `WORKORDER.md` file.
+
+    Supports both frontmatter-less `WORKORDER.md` files and pre-plugin v1 skill frontmatter
+    (`name`, `description`, `complexity` without `wo_id` / `pr_id`), classifying them as
+    `"schema": "legacy"` while marking malformed YAML or broken `WorkOrderSpec` files with
+    `"parse_error": True`.
+
+    Args:
+        path: Filesystem path to `WORKORDER.md`.
+        default_pr_id: Parent PR identifier (e.g., `"PR-01"`) used to synthesize `wo_id`.
+
+    Returns:
+        Dictionary containing `id`, `wo_id`, `slug`, `title`, `complexity`, `status`,
+        `attempts`, `commit_sha`, `receipt_id`, `verified_hash`, `schema`, `parse_error`,
+        and `error`.
+    """
+    # --- Step 1: Derive default Work Order ID from parent PR ID and directory name ---
+    p = Path(path)
+    wo_slug = p.parent.name
+    pr_num_match = re.match(r"^PR-(\d+[a-z]?)$", default_pr_id.strip(), re.IGNORECASE)
+    pr_num_str = pr_num_match.group(1) if pr_num_match else "00"
+    if pr_num_str.isdigit():
+        pr_num_str = f"{int(pr_num_str):02d}"
+
+    wo_dir_match = _LEGACY_WO_DIR_NUM_RE.match(wo_slug)
+    wo_num_str = (
+        f"{int(wo_dir_match.group(1))}{wo_dir_match.group(2).lower()}"
+        if wo_dir_match
+        else "1"
+    )
+    synthesized_wo_id = f"WO-{pr_num_str}.{wo_num_str}"
+
+    try:
+        raw_text = p.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {
+            "id": synthesized_wo_id,
+            "wo_id": synthesized_wo_id,
+            "slug": wo_slug,
+            "title": _clean_legacy_title("", wo_slug),
+            "complexity": ComplexityTier.standard.value,
+            "status": WorkOrderStatus.PENDING.value,
+            "attempts": 0,
+            "commit_sha": None,
+            "receipt_id": None,
+            "verified_hash": None,
+            "schema": "parse_error",
+            "parse_error": True,
+            "error": f"Unable to read WORKORDER.md: {exc}",
+        }
+
+    # --- Step 2: Inspect frontmatter to distinguish legacy v1 format from parse errors ---
+    stripped = raw_text.lstrip("\ufeff")
+    fm_match = _FRONTMATTER_RE.match(stripped)
+    fm_dict: dict[str, Any] = {}
+    is_legacy = False
+    parse_error = False
+    error_msg = ""
+
+    if fm_match is None:
+        is_legacy = True
+        error_msg = "Missing YAML frontmatter block ('---') and WorkOrderSpec schema"
+        body = stripped
+    else:
+        raw_yaml = fm_match.group(1)
+        body = stripped[fm_match.end() :]
+        try:
+            loaded = yaml.safe_load(raw_yaml) if raw_yaml.strip() else {}
+        except yaml.YAMLError as exc:
+            loaded = None
+            parse_error = True
+            error_msg = f"Invalid YAML frontmatter: {exc}"
+
+        if not parse_error:
+            if not isinstance(loaded, dict):
+                parse_error = True
+                error_msg = "YAML frontmatter must deserialize to a mapping/dict"
+            elif "wo_id" not in loaded and "schema_version" not in loaded:
+                # Pre-plugin v1 WORKORDER.md frontmatter (`name`, `description`, `complexity`).
+                is_legacy = True
+                fm_dict = loaded
+                error_msg = "Legacy v1 frontmatter missing Split-Authority 'wo_id' and 'pr_id'"
+            else:
+                fm_dict = loaded
+                try:
+                    spec = WorkOrderSpec.model_validate(fm_dict)
+                    is_legacy = True
+                    error_msg = (
+                        "WORKORDER.md has valid WorkOrderSpec frontmatter but is missing "
+                        "required Part I H2 section or '## Completion Report'"
+                    )
+                    return {
+                        "id": spec.wo_id,
+                        "wo_id": spec.wo_id,
+                        "slug": wo_slug,
+                        "title": spec.title,
+                        "complexity": spec.complexity.value,
+                        "status": spec.status.value,
+                        "attempts": spec.completion.attempt_num if spec.completion else 0,
+                        "commit_sha": spec.completion.commit_sha if spec.completion else None,
+                        "receipt_id": spec.completion.receipt_id if spec.completion else None,
+                        "verified_hash": None,
+                        "schema": "legacy",
+                        "parse_error": False,
+                        "error": error_msg,
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    parse_error = True
+                    error_msg = f"Invalid WorkOrderSpec frontmatter: {exc}"
+
+    # --- Step 3: Extract heuristic title, complexity, completion status, and commit SHA ---
+    wo_id = str(fm_dict.get("wo_id") or synthesized_wo_id)
+    h1_match = _LEGACY_H1_RE.search(body)
+    raw_title = (
+        str(fm_dict.get("title") or "")
+        or (h1_match.group(1) if h1_match else "")
+        or str(fm_dict.get("description") or "")
+        or str(fm_dict.get("name") or "")
+    )
+    title = _clean_legacy_title(raw_title, wo_slug)
+
+    raw_comp = str(fm_dict.get("complexity") or "standard").lower()
+    complexity = (
+        raw_comp
+        if raw_comp in ("mechanical", "standard", "architect", "interactive")
+        else ComplexityTier.standard.value
+    )
+
+    # Check Completion Report section for status and commit SHA
+    status = WorkOrderStatus.PENDING.value
+    comp_split = re.split(r"^##\s+Completion\s+Report\b", body, maxsplit=1, flags=re.MULTILINE)
+    comp_body = comp_split[1] if len(comp_split) > 1 else ""
+    if comp_body:
+        if re.search(
+            r"(?:status\s*[:\n]+\s*(?:✅\s*)?(?:complete|completed)|✅\s*completed)",
+            comp_body,
+            re.IGNORECASE,
+        ):
+            status = WorkOrderStatus.COMPLETED.value
+        elif re.search(r"status\s*[:\n]+\s*blocked", comp_body, re.IGNORECASE):
+            status = WorkOrderStatus.BLOCKED.value
+        elif re.search(r"status\s*[:\n]+\s*in[_ ]progress", comp_body, re.IGNORECASE):
+            status = WorkOrderStatus.IN_PROGRESS.value
+
+    commit_match = _LEGACY_COMMIT_RE.search(comp_body or body)
+    commit_sha = commit_match.group(1) if commit_match else None
+    attempts = 1 if status == WorkOrderStatus.COMPLETED.value else 0
+
+    return {
+        "id": wo_id,
+        "wo_id": wo_id,
+        "slug": wo_slug,
+        "title": title,
+        "complexity": complexity,
+        "status": status,
+        "attempts": attempts,
+        "commit_sha": commit_sha,
+        "receipt_id": None,
+        "verified_hash": None,
+        "schema": "legacy" if is_legacy else "parse_error",
+        "parse_error": parse_error,
+        "error": error_msg,
+    }
+
+
+def parse_legacy_project_fallback(path: str | Path) -> dict[str, Any]:
+    """Extract best-effort metadata and classify a legacy or corrupt `PROJECT.md` file.
+
+    Inspects `PROJECT.md` files that failed strict `load_project()` validation. Pre-plugin
+    free-form Markdown files (starting with `# H1` or `>` blockquote without YAML
+    frontmatter) and unlocked `ProjectSpec` files with legacy section headings are
+    classified with `"schema": "legacy"` and `"parse_error": False`. Files containing
+    malformed YAML syntax or invalid `ProjectSpec` frontmatter are classified with
+    `"parse_error": True`.
+
+    Args:
+        path: Filesystem path to `PROJECT.md`.
+
+    Returns:
+        Dictionary containing `pr_id`, `slug`, `title`, `status`, `branch`, `base_branch`,
+        `github_pr`, `charter_locked`, `work_orders`, `schema`, `parse_error`, and `error`.
+    """
+    # --- Step 1: Resolve directory slug and heuristic PR ID ---
+    p = Path(path)
+    pr_dir = p.parent
+    slug = pr_dir.name
+    is_archived = "archive" in p.parts
+
+    dir_id_match = _LEGACY_PR_DIR_ID_RE.match(slug)
+    if dir_id_match:
+        pr_id = f"PR-{int(dir_id_match.group(1)):02d}{dir_id_match.group(2).lower()}"
+    elif slug.lower().startswith("pr-"):
+        pr_id = slug.upper()
+    else:
+        pr_id = "PR-00"
+
+    try:
+        raw_text = p.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {
+            "pr_id": pr_id,
+            "slug": slug,
+            "title": _clean_legacy_title("", slug),
+            "status": PRState.PLANNED.value,
+            "branch": f"feat/{slug}",
+            "base_branch": "main",
+            "github_pr": None,
+            "charter_locked": False,
+            "work_orders": [],
+            "schema": "parse_error",
+            "parse_error": True,
+            "error": f"Unable to read PROJECT.md: {exc}",
+        }
+
+    # --- Step 2: Check YAML frontmatter to distinguish legacy Markdown from parse errors ---
+    stripped = raw_text.lstrip("\ufeff")
+    fm_match = _FRONTMATTER_RE.match(stripped)
+    fm_dict: dict[str, Any] = {}
+    is_legacy = False
+    parse_error = False
+    error_msg = ""
+
+    if fm_match is None:
+        is_legacy = True
+        error_msg = (
+            "Missing YAML frontmatter block ('---'), ProjectSpec.charter "
+            "(pr_id, slug, title, branch), and Part I/II H2 sections ('## 1.'..'## 4.')"
+        )
+        body = stripped
+    else:
+        raw_yaml = fm_match.group(1)
+        body = stripped[fm_match.end() :]
+        try:
+            loaded = yaml.safe_load(raw_yaml) if raw_yaml.strip() else {}
+        except yaml.YAMLError as exc:
+            loaded = None
+            parse_error = True
+            error_msg = f"Invalid YAML frontmatter: {exc}"
+
+        if not parse_error:
+            if not isinstance(loaded, dict):
+                parse_error = True
+                error_msg = "YAML frontmatter must deserialize to a mapping/dict"
+            elif "charter" not in loaded and "schema_version" not in loaded:
+                is_legacy = True
+                fm_dict = loaded
+                error_msg = (
+                    "Legacy frontmatter missing Split-Authority 'charter' block "
+                    "and 'schema_version'"
+                )
+            else:
+                fm_dict = loaded
+                try:
+                    spec = ProjectSpec.model_validate(fm_dict)
+                    # Valid ProjectSpec frontmatter, so load_project failed on missing H2 sections.
+                    if not spec.charter.charter_locked:
+                        is_legacy = True
+                        error_msg = (
+                            "PROJECT.md has unlocked ProjectSpec frontmatter with legacy H2 "
+                            "section headings (missing '## 1.', '## 2.', '## 3.', '## 4.')"
+                        )
+                    else:
+                        parse_error = True
+                        error_msg = (
+                            "Locked PROJECT.md is missing required H2 section prefix(es): "
+                            "'## 1.', '## 2.', '## 3.', '## 4.'"
+                        )
+                    return {
+                        "pr_id": spec.charter.pr_id,
+                        "slug": spec.charter.slug,
+                        "title": spec.charter.title,
+                        "status": spec.status.value,
+                        "branch": spec.charter.branch,
+                        "base_branch": spec.charter.base_branch,
+                        "github_pr": spec.github_pr,
+                        "charter_locked": spec.charter.charter_locked,
+                        "work_orders": [
+                            {
+                                "id": row.id,
+                                "wo_id": row.id,
+                                "slug": row.slug,
+                                "title": row.title,
+                                "complexity": row.complexity.value,
+                                "status": row.status.value,
+                                "attempts": row.attempts,
+                                "commit_sha": row.commit_sha,
+                                "receipt_id": None,
+                                "verified_hash": None,
+                            }
+                            for row in spec.work_orders
+                        ],
+                        "schema": "legacy" if is_legacy else "parse_error",
+                        "parse_error": parse_error,
+                        "error": error_msg,
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    parse_error = True
+                    error_msg = f"Invalid ProjectSpec frontmatter: {exc}"
+
+    # --- Step 3: Extract heuristic PR ID, title, branches, and status from Markdown prose ---
+    charter_raw = fm_dict.get("charter") if isinstance(fm_dict.get("charter"), dict) else {}
+    if isinstance(charter_raw, dict) and charter_raw.get("pr_id"):
+        pr_id = str(charter_raw["pr_id"])
+    elif not dir_id_match:
+        h1_pr_match = re.search(r"\b(PR-\d+[a-z]?)\b", body, re.IGNORECASE)
+        if h1_pr_match:
+            raw_pid = h1_pr_match.group(1).upper()
+            m_num = re.match(r"^PR-(\d+)([A-Z]?)$", raw_pid)
+            if m_num:
+                pr_id = f"PR-{int(m_num.group(1)):02d}{m_num.group(2).lower()}"
+
+    pr_title_meta = re.search(
+        r"(?:\*\*PR\s+Title:\*\*|PR\s+Title:)\s*`?([^\n`]+)`?",
+        body,
+        re.IGNORECASE,
+    )
+    h1_match = _LEGACY_H1_RE.search(body)
+    bq_match = _LEGACY_BLOCKQUOTE_RE.search(body)
+    raw_title = (
+        str(charter_raw.get("title") or fm_dict.get("title") or "")
+        or (pr_title_meta.group(1).strip() if pr_title_meta else "")
+        or (h1_match.group(1) if h1_match else "")
+        or (bq_match.group(1) if bq_match else "")
+    )
+    title = _clean_legacy_title(raw_title, slug)
+
+    branch_meta = re.search(
+        r"\*\*(?:Branch|Stack\s+Head):\*\*\s*`?([^\s\n`]+)`?",
+        body,
+        re.IGNORECASE,
+    )
+    base_meta = re.search(
+        r"\*\*(?:Base\s+Branch|Stack\s+Base):\*\*\s*`?([^\s\n`]+)`?",
+        body,
+        re.IGNORECASE,
+    )
+    branch = str(
+        charter_raw.get("branch")
+        or fm_dict.get("branch")
+        or (branch_meta.group(1) if branch_meta else f"feat/{slug}")
+    )
+    base_branch = str(
+        charter_raw.get("base_branch")
+        or fm_dict.get("base_branch")
+        or (base_meta.group(1) if base_meta else "main")
+    )
+
+    raw_status = str(fm_dict.get("status") or "").upper()
+    if raw_status in PRState.__members__:
+        status = raw_status
+    else:
+        status = _infer_legacy_pr_status(body, is_archived_path=is_archived)
+
+    return {
+        "pr_id": pr_id,
+        "slug": slug,
+        "title": title,
+        "status": status,
+        "branch": branch,
+        "base_branch": base_branch,
+        "github_pr": fm_dict.get("github_pr") if isinstance(fm_dict.get("github_pr"), int) else None,
+        "charter_locked": False,
+        "work_orders": [],
+        "schema": "legacy" if is_legacy else "parse_error",
+        "parse_error": parse_error,
+        "error": error_msg,
+    }
+
+
+def upgrade_legacy_project_frontmatter(
+    path: str | Path,
+    *,
+    fallback_pr_index: int = 1,
+) -> bool:
+    """Prepend minimal `ProjectSpec` YAML frontmatter (`charter_locked: false`) to a legacy `PROJECT.md`.
+
+    Extracts heuristic `pr_id`, `slug`, `title`, `branch`, `base_branch`, `status`, and
+    child `wo*/WORKORDER.md` summary rows while preserving the original Markdown body
+    intact. Only modifies `PROJECT.md` files that lack a YAML frontmatter block (`---`).
+
+    Args:
+        path: Filesystem path to the legacy `PROJECT.md` file.
+        fallback_pr_index: 1-based numeric index used to synthesize `PR-NN` when neither
+            the directory name nor the document body contains a numeric `PR-NN` identifier.
+
+    Returns:
+        `True` if minimal `ProjectSpec` YAML frontmatter was generated and written;
+        `False` if the file already had YAML frontmatter or could not be upgraded.
+    """
+    # --- Step 1: Verify the file is a frontmatter-less legacy PROJECT.md ---
+    p = Path(path)
+    try:
+        raw_text = p.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+    stripped = raw_text.lstrip("\ufeff")
+    if _FRONTMATTER_RE.match(stripped) is not None:
+        return False
+
+    fb = parse_legacy_project_fallback(p)
+    if fb.get("parse_error"):
+        return False
+
+    # --- Step 2: Normalize pr_id and slug to satisfy strict PRCharterSpec patterns ---
+    pr_id = str(fb["pr_id"])
+    if not re.match(r"^PR-\d+[a-z]?$", pr_id):
+        pr_id = f"PR-{max(1, fallback_pr_index):02d}"
+
+    raw_slug = str(fb["slug"]).lower()
+    slug = re.sub(r"[^a-z0-9-]", "-", raw_slug).strip("-")
+    if not slug.startswith("pr-"):
+        slug = f"pr-{slug}" if slug else f"pr-{max(1, fallback_pr_index):02d}-legacy"
+
+    # --- Step 3: Collect heuristic WOSummaryRow entries from child wo*/WORKORDER.md files ---
+    wo_rows: list[WOSummaryRow] = []
+    seen_wo_ids: set[str] = set()
+    for idx, wo_dir in enumerate(sorted(p.parent.glob("wo*")), start=1):
+        wo_md = wo_dir / "WORKORDER.md"
+        if not wo_md.is_file():
+            continue
+        w_fb = parse_legacy_workorder_fallback(wo_md, default_pr_id=pr_id)
+        cand_id = str(w_fb["id"])
+        if not re.match(r"^WO-\d+[a-z]?\.\d+[a-z]?$", cand_id) or cand_id in seen_wo_ids:
+            pr_num = pr_id.removeprefix("PR-")
+            cand_id = f"WO-{pr_num}.{idx}"
+        seen_wo_ids.add(cand_id)
+        wo_rows.append(
+            WOSummaryRow(
+                id=cand_id,
+                slug=wo_dir.name,
+                title=_clean_legacy_title(str(w_fb["title"]), wo_dir.name),
+                complexity=ComplexityTier(str(w_fb["complexity"])),
+                status=WorkOrderStatus(str(w_fb["status"])),
+                attempts=int(w_fb.get("attempts") or 0),
+                commit_sha=w_fb.get("commit_sha"),
+            )
+        )
+
+    status_str = str(fb["status"])
+    if (
+        status_str == PRState.PLANNED.value
+        and wo_rows
+        and all(r.status == WorkOrderStatus.COMPLETED for r in wo_rows)
+    ):
+        status_str = PRState.GRADUATED.value
+
+    # --- Step 4: Construct ProjectSpec with charter_locked=False and write frontmatter + body ---
+    charter = PRCharterSpec(
+        pr_id=pr_id,
+        slug=slug,
+        title=_clean_legacy_title(str(fb["title"]), slug),
+        branch=str(fb["branch"]) or f"feat/{slug}",
+        base_branch=str(fb["base_branch"]) or "main",
+        allowed_modules=["**"],
+        charter_locked=False,
+        charter_hash=None,
+    )
+    proj_spec = ProjectSpec(
+        charter=charter,
+        status=PRState(status_str),
+        work_orders=wo_rows,
+    )
+    yaml_text = yaml.safe_dump(
+        proj_spec.model_dump(mode="json"),
+        sort_keys=False,
+        allow_unicode=True,
+    ).strip()
+    upgraded_text = f"---\n{yaml_text}\n---\n\n{stripped.lstrip()}"
+    p.write_text(upgraded_text, encoding="utf-8")
+    return True
+

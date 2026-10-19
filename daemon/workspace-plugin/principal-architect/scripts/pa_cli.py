@@ -40,6 +40,8 @@ Functions:
     Remove legacy `.agents/skills/principal-architect` directory or submodule.
   - `_rewrite_legacy_workspace_paths(new_ws) -> int`:
     Rewrite stale legacy workspace path references in Markdown specs and recompute hashes.
+  - `_inspect_legacy_workspace_specs(repo_root, new_ws, *, upgrade_legacy=False) -> list[dict[str, Any]]`:
+    Detect legacy or unparseable workspace specs, emit warnings, and optionally generate frontmatter.
   - `_bridge_repo_memory(repo_root, new_ws, *, runner=common.run) -> dict[str, Any]`:
     Register PA memory in `.agents/memory/config.json` and run `repo-memory` seed/index.
   - `_cmd_migrate(args, *, runner=common.run) -> int`: Handler for `pa migrate`.
@@ -472,6 +474,143 @@ def _rewrite_legacy_workspace_paths(new_ws: Path) -> int:
     return updated
 
 
+def _inspect_legacy_workspace_specs(
+    repo_root: Path,
+    new_ws: Path,
+    *,
+    upgrade_legacy: bool = False,
+) -> list[dict[str, Any]]:
+    """Detect legacy or unparseable workspace Markdown specs during `pa migrate` / `pa enroll`.
+
+    Scans `PROGRAM.md`, `PROJECT.md`, and `WORKORDER.md` files under `new_ws` (including
+    `archive/`), optionally prepending minimal `ProjectSpec` YAML frontmatter when
+    `upgrade_legacy=True`, and emits a clear warning per legacy or unparseable file
+    to `sys.stderr` without crashing.
+
+    Args:
+        repo_root: Repository root `Path` used to compute relative display paths.
+        new_ws: Canonical `.agents/plugins/principal-architect-workspace` directory `Path`.
+        upgrade_legacy: When `True`, auto-generate minimal `ProjectSpec` frontmatter
+            (`charter_locked: false`) on frontmatter-less `PROJECT.md` files.
+
+    Returns:
+        List of dictionaries describing each legacy or unparseable specification file.
+    """
+    if not new_ws.is_dir():
+        return []
+
+    import schemas
+
+    # --- Step 1: Collect candidate PROGRAM.md, PROJECT.md, and WORKORDER.md paths ---
+    findings: list[dict[str, Any]] = []
+    candidate_files: list[Path] = []
+    for prog_md in sorted(new_ws.glob("programme-*/PROGRAM.md")):
+        if prog_md.is_file():
+            candidate_files.append(prog_md)
+    for proj_md in sorted(new_ws.glob("pr-*/PROJECT.md")):
+        if proj_md.is_file():
+            candidate_files.append(proj_md)
+    archive_dir = new_ws / "archive"
+    if archive_dir.is_dir():
+        for arch_proj in sorted(archive_dir.rglob("PROJECT.md")):
+            if arch_proj.is_file():
+                candidate_files.append(arch_proj)
+    for wo_md in sorted(new_ws.glob("pr-*/wo*/WORKORDER.md")):
+        if wo_md.is_file():
+            candidate_files.append(wo_md)
+    if archive_dir.is_dir():
+        for arch_wo in sorted(archive_dir.rglob("WORKORDER.md")):
+            if arch_wo.is_file():
+                candidate_files.append(arch_wo)
+
+    # --- Step 2: Validate each candidate and classify or upgrade legacy files ---
+    pr_counter = 0
+    for md_file in candidate_files:
+        try:
+            rel_path = md_file.relative_to(repo_root).as_posix()
+        except ValueError:
+            rel_path = str(md_file)
+
+        if md_file.name == "PROGRAM.md":
+            try:
+                schemas.load_program(md_file)
+                continue
+            except Exception:  # noqa: BLE001
+                fb = schemas.parse_legacy_program_fallback(md_file)
+                entry = {
+                    "path": rel_path,
+                    "schema": fb["schema"],
+                    "parse_error": fb["parse_error"],
+                    "error": fb["error"],
+                    "upgraded": False,
+                }
+                findings.append(entry)
+                print(
+                    f"Warning: {md_file.name} ({rel_path}) [{fb['schema']}]: {fb['error']}",
+                    file=sys.stderr,
+                )
+        elif md_file.name == "PROJECT.md":
+            pr_counter += 1
+            try:
+                schemas.load_project(md_file)
+                continue
+            except Exception:  # noqa: BLE001
+                upgraded = False
+                if upgrade_legacy:
+                    upgraded = schemas.upgrade_legacy_project_frontmatter(
+                        md_file,
+                        fallback_pr_index=pr_counter,
+                    )
+                fb = schemas.parse_legacy_project_fallback(md_file)
+                entry = {
+                    "path": rel_path,
+                    "pr_id": fb["pr_id"],
+                    "title": fb["title"],
+                    "status": fb["status"],
+                    "schema": fb["schema"],
+                    "parse_error": fb["parse_error"],
+                    "error": fb["error"],
+                    "upgraded": upgraded,
+                }
+                findings.append(entry)
+                action_note = " (generated minimal ProjectSpec frontmatter)" if upgraded else ""
+                print(
+                    f"Warning: {md_file.name} ({rel_path}) [{fb['schema']}]{action_note}: "
+                    f"{fb['error']}",
+                    file=sys.stderr,
+                )
+        elif md_file.name == "WORKORDER.md":
+            try:
+                schemas.load_workorder(md_file)
+                continue
+            except Exception:  # noqa: BLE001
+                parent_proj = md_file.parent.parent / "PROJECT.md"
+                default_pr_id = "PR-00"
+                if parent_proj.is_file():
+                    p_fb = schemas.parse_legacy_project_fallback(parent_proj)
+                    default_pr_id = str(p_fb.get("pr_id") or "PR-00")
+                fb = schemas.parse_legacy_workorder_fallback(
+                    md_file,
+                    default_pr_id=default_pr_id,
+                )
+                entry = {
+                    "path": rel_path,
+                    "wo_id": fb["wo_id"],
+                    "schema": fb["schema"],
+                    "parse_error": fb["parse_error"],
+                    "error": fb["error"],
+                    "upgraded": False,
+                }
+                findings.append(entry)
+                print(
+                    f"Warning: {md_file.name} ({rel_path}) [{fb['schema']}]: {fb['error']}",
+                    file=sys.stderr,
+                )
+
+    return findings
+
+
+
 def _bridge_repo_memory(
     repo_root: Path,
     new_ws: Path,
@@ -575,6 +714,11 @@ def _cmd_migrate(args: argparse.Namespace, *, runner: common.Runner = common.run
         removed_legacy_skill = _cleanup_legacy_skill_dir(real_root, runner=runner)
 
     rewritten_files = _rewrite_legacy_workspace_paths(new_ws)
+    legacy_files = _inspect_legacy_workspace_specs(
+        real_root,
+        new_ws,
+        upgrade_legacy=bool(getattr(args, "upgrade_legacy", False)),
+    )
 
     # --- Step 3: Synchronize VCS state and optionally bridge repo-memory ---
     new_ws.mkdir(parents=True, exist_ok=True)
@@ -601,6 +745,7 @@ def _cmd_migrate(args: argparse.Namespace, *, runner: common.Runner = common.run
         "moved_paths": moved_paths,
         "removed_legacy_skill": removed_legacy_skill,
         "rewritten_markdown_files": rewritten_files,
+        "legacy_files": legacy_files,
         "sync": sync_summary,
         "repo_memory": rm_summary,
     }
@@ -615,6 +760,7 @@ def _cmd_migrate(args: argparse.Namespace, *, runner: common.Runner = common.run
             f"  moved_paths:              {len(moved_paths)}\n"
             f"  removed_legacy_skill:     {removed_legacy_skill}\n"
             f"  rewritten_markdown_files: {rewritten_files}\n"
+            f"  legacy_files_detected:    {len(legacy_files)}\n"
             f"  synced_wos:               {sync_summary.get('synced_wos', 0)}\n"
             f"  synced_receipts:          {sync_summary.get('synced_receipts', 0)}\n"
             f"  synced_audits:            {sync_summary.get('synced_audits', 0)}\n"
@@ -679,6 +825,11 @@ def _cmd_enroll(args: argparse.Namespace, *, runner: common.Runner = common.run)
     if had_legacy or force_migrate:
         _cleanup_legacy_skill_dir(repo_root, runner=runner)
         _rewrite_legacy_workspace_paths(new_ws)
+        _inspect_legacy_workspace_specs(
+            repo_root,
+            new_ws,
+            upgrade_legacy=bool(getattr(args, "upgrade_legacy", False)),
+        )
 
     # --- Step 3: Ensure workspace and .state directories exist and resolve memory_mode ---
     new_ws.mkdir(parents=True, exist_ok=True)
@@ -1017,6 +1168,14 @@ def _cmd_status(args: argparse.Namespace, *, runner: common.Runner = common.run)
 
     programmes: list[dict[str, Any]] = []
     prs: list[dict[str, Any]] = []
+    unparseable_files: list[dict[str, Any]] = []
+
+    def _rel_ws_path(target_file: Path) -> str:
+        """Return repository-relative POSIX path for `target_file`, falling back to `str`."""
+        try:
+            return target_file.relative_to(repo_root).as_posix()
+        except ValueError:
+            return str(target_file)
 
     # --- Step 2: Load Programme and Pull Request specifications from workspace ---
     if ws_dir.is_dir():
@@ -1024,82 +1183,205 @@ def _cmd_status(args: argparse.Namespace, *, runner: common.Runner = common.run)
             prog_md = prog_dir / "PROGRAM.md"
             if not prog_md.is_file():
                 continue
-            prog_doc = schemas.load_program(prog_md)
-            programmes.append(
-                {
-                    "programme_id": prog_doc.spec.programme_id,
-                    "title": prog_doc.spec.title,
-                    "base_branch": prog_doc.spec.base_branch,
-                    "status": prog_doc.spec.status,
-                    "prs": [p.model_dump(mode="json") for p in prog_doc.spec.prs],
+            try:
+                prog_doc = schemas.load_program(prog_md)
+                programmes.append(
+                    {
+                        "programme_id": prog_doc.spec.programme_id,
+                        "title": prog_doc.spec.title,
+                        "base_branch": prog_doc.spec.base_branch,
+                        "status": prog_doc.spec.status,
+                        "prs": [p.model_dump(mode="json") for p in prog_doc.spec.prs],
+                    }
+                )
+            except Exception:  # noqa: BLE001
+                prog_fb = schemas.parse_legacy_program_fallback(prog_md)
+                prog_entry: dict[str, Any] = {
+                    "programme_id": prog_fb["programme_id"],
+                    "title": prog_fb["title"],
+                    "base_branch": prog_fb["base_branch"],
+                    "status": prog_fb["status"],
+                    "prs": prog_fb["prs"],
                 }
-            )
+                if prog_fb["parse_error"]:
+                    prog_entry["parse_error"] = True
+                    prog_entry["error"] = prog_fb["error"]
+                else:
+                    prog_entry["schema"] = "legacy"
+                programmes.append(prog_entry)
+                unparseable_files.append(
+                    {
+                        "path": _rel_ws_path(prog_md),
+                        "schema": prog_fb["schema"],
+                        "parse_error": prog_fb["parse_error"],
+                        "error": prog_fb["error"],
+                    }
+                )
 
         # --- Step 3: Reconcile each PR's Work Orders and Audit reports ---
         for pr_dir in sorted(ws_dir.glob("pr-*")):
             proj_md = pr_dir / "PROJECT.md"
             if not proj_md.is_file():
                 continue
-            proj_doc = schemas.load_project(proj_md)
 
-            # Load individual WORKORDER.md files in this PR directory
+            proj_doc: schemas.Document[schemas.ProjectSpec] | None = None
+            proj_fb: dict[str, Any] | None = None
+            try:
+                proj_doc = schemas.load_project(proj_md)
+                current_pr_id = proj_doc.spec.charter.pr_id
+            except Exception:  # noqa: BLE001
+                proj_fb = schemas.parse_legacy_project_fallback(proj_md)
+                current_pr_id = str(proj_fb["pr_id"])
+                unparseable_files.append(
+                    {
+                        "path": _rel_ws_path(proj_md),
+                        "schema": proj_fb["schema"],
+                        "parse_error": proj_fb["parse_error"],
+                        "error": proj_fb["error"],
+                    }
+                )
+
+            # Load individual WORKORDER.md files in this PR directory (strict or legacy fallback)
             wo_docs: dict[str, tuple[str, schemas.Document[schemas.WorkOrderSpec]]] = {}
+            legacy_wo_entries: dict[str, dict[str, Any]] = {}
             for wo_dir in sorted(pr_dir.glob("wo*")):
                 wo_md = wo_dir / "WORKORDER.md"
-                if wo_md.is_file():
+                if not wo_md.is_file():
+                    continue
+                try:
                     wo_doc = schemas.load_workorder(wo_md)
                     wo_docs[wo_doc.spec.wo_id] = (wo_dir.name, wo_doc)
+                except Exception:  # noqa: BLE001
+                    wo_fb = schemas.parse_legacy_workorder_fallback(
+                        wo_md,
+                        default_pr_id=current_pr_id,
+                    )
+                    wo_fb_id = str(wo_fb["wo_id"])
+                    if wo_fb_id in wo_docs or wo_fb_id in legacy_wo_entries:
+                        wo_fb_id = f"{wo_fb_id}-{wo_dir.name}"
+                        wo_fb["id"] = wo_fb_id
+                        wo_fb["wo_id"] = wo_fb_id
+                    legacy_wo_entries[wo_fb_id] = wo_fb
+                    unparseable_files.append(
+                        {
+                            "path": _rel_ws_path(wo_md),
+                            "schema": wo_fb["schema"],
+                            "parse_error": wo_fb["parse_error"],
+                            "error": wo_fb["error"],
+                        }
+                    )
 
             reconciled_wos: list[dict[str, Any]] = []
             seen_wo_ids: set[str] = set()
 
-            for row in proj_doc.spec.work_orders:
-                seen_wo_ids.add(row.id)
-                wo_status = row.status.value
-                attempts = row.attempts
-                commit_sha = row.commit_sha
-                receipt_id: str | None = None
-                verified_hash: str | None = None
+            if proj_doc is not None:
+                for row in proj_doc.spec.work_orders:
+                    seen_wo_ids.add(row.id)
+                    wo_status = row.status.value
+                    attempts = row.attempts
+                    commit_sha = row.commit_sha
+                    receipt_id: str | None = None
+                    verified_hash: str | None = None
 
-                if row.id in wo_docs:
-                    _, wdoc = wo_docs[row.id]
-                    if (
-                        wdoc.spec.status == schemas.WorkOrderStatus.COMPLETED
-                        or wo_status == "PENDING"
-                    ):
-                        wo_status = wdoc.spec.status.value
-                    if wdoc.spec.completion is not None:
-                        attempts = max(attempts, wdoc.spec.completion.attempt_num)
-                        if wdoc.spec.completion.commit_sha:
-                            commit_sha = wdoc.spec.completion.commit_sha
-                        if wdoc.spec.completion.receipt_id:
-                            receipt_id = wdoc.spec.completion.receipt_id
+                    if row.id in wo_docs:
+                        _, wdoc = wo_docs[row.id]
+                        if (
+                            wdoc.spec.status == schemas.WorkOrderStatus.COMPLETED
+                            or wo_status == "PENDING"
+                        ):
+                            wo_status = wdoc.spec.status.value
+                        if wdoc.spec.completion is not None:
+                            attempts = max(attempts, wdoc.spec.completion.attempt_num)
+                            if wdoc.spec.completion.commit_sha:
+                                commit_sha = wdoc.spec.completion.commit_sha
+                            if wdoc.spec.completion.receipt_id:
+                                receipt_id = wdoc.spec.completion.receipt_id
+                    elif row.id in legacy_wo_entries:
+                        lwo = legacy_wo_entries[row.id]
+                        if lwo["status"] == "COMPLETED" or wo_status == "PENDING":
+                            wo_status = str(lwo["status"])
+                        attempts = max(attempts, int(lwo.get("attempts") or 0))
+                        if lwo.get("commit_sha"):
+                            commit_sha = str(lwo["commit_sha"])
 
-                if row.id in git_trailers:
-                    t_sha, t_hash = git_trailers[row.id]
-                    if t_sha:
-                        commit_sha = t_sha
-                    if t_hash:
-                        verified_hash = t_hash
+                    if row.id in git_trailers:
+                        t_sha, t_hash = git_trailers[row.id]
+                        if t_sha:
+                            commit_sha = t_sha
+                        if t_hash:
+                            verified_hash = t_hash
 
-                reconciled_wos.append(
-                    {
-                        "id": row.id,
-                        "wo_id": row.id,
-                        "slug": row.slug,
-                        "title": row.title,
-                        "complexity": row.complexity.value,
-                        "status": wo_status,
-                        "attempts": attempts,
-                        "commit_sha": commit_sha,
-                        "receipt_id": receipt_id,
-                        "verified_hash": verified_hash,
-                    }
-                )
+                    reconciled_wos.append(
+                        {
+                            "id": row.id,
+                            "wo_id": row.id,
+                            "slug": row.slug,
+                            "title": row.title,
+                            "complexity": row.complexity.value,
+                            "status": wo_status,
+                            "attempts": attempts,
+                            "commit_sha": commit_sha,
+                            "receipt_id": receipt_id,
+                            "verified_hash": verified_hash,
+                        }
+                    )
+            elif proj_fb is not None:
+                for fb_row in proj_fb.get("work_orders", []):
+                    row_id = str(fb_row["id"])
+                    seen_wo_ids.add(row_id)
+                    wo_status = str(fb_row["status"])
+                    attempts = int(fb_row.get("attempts") or 0)
+                    commit_sha = fb_row.get("commit_sha")
+                    receipt_id = fb_row.get("receipt_id")
+                    verified_hash = fb_row.get("verified_hash")
+
+                    if row_id in wo_docs:
+                        _, wdoc = wo_docs[row_id]
+                        if (
+                            wdoc.spec.status == schemas.WorkOrderStatus.COMPLETED
+                            or wo_status == "PENDING"
+                        ):
+                            wo_status = wdoc.spec.status.value
+                        if wdoc.spec.completion is not None:
+                            attempts = max(attempts, wdoc.spec.completion.attempt_num)
+                            if wdoc.spec.completion.commit_sha:
+                                commit_sha = wdoc.spec.completion.commit_sha
+                            if wdoc.spec.completion.receipt_id:
+                                receipt_id = wdoc.spec.completion.receipt_id
+                    elif row_id in legacy_wo_entries:
+                        lwo = legacy_wo_entries[row_id]
+                        if lwo["status"] == "COMPLETED" or wo_status == "PENDING":
+                            wo_status = str(lwo["status"])
+                        attempts = max(attempts, int(lwo.get("attempts") or 0))
+                        if lwo.get("commit_sha"):
+                            commit_sha = str(lwo["commit_sha"])
+
+                    if row_id in git_trailers:
+                        t_sha, t_hash = git_trailers[row_id]
+                        if t_sha:
+                            commit_sha = t_sha
+                        if t_hash:
+                            verified_hash = t_hash
+
+                    reconciled_wos.append(
+                        {
+                            "id": row_id,
+                            "wo_id": row_id,
+                            "slug": fb_row["slug"],
+                            "title": fb_row["title"],
+                            "complexity": fb_row["complexity"],
+                            "status": wo_status,
+                            "attempts": attempts,
+                            "commit_sha": commit_sha,
+                            "receipt_id": receipt_id,
+                            "verified_hash": verified_hash,
+                        }
+                    )
 
             for wo_id, (wo_slug, wdoc) in wo_docs.items():
                 if wo_id in seen_wo_ids:
                     continue
+                seen_wo_ids.add(wo_id)
                 commit_sha = (
                     wdoc.spec.completion.commit_sha if wdoc.spec.completion else None
                 )
@@ -1132,12 +1414,54 @@ def _cmd_status(args: argparse.Namespace, *, runner: common.Runner = common.run)
                     }
                 )
 
+            for wo_id, lwo in legacy_wo_entries.items():
+                if wo_id in seen_wo_ids:
+                    continue
+                seen_wo_ids.add(wo_id)
+                commit_sha = lwo.get("commit_sha")
+                verified_hash = None
+                if wo_id in git_trailers:
+                    t_sha, t_hash = git_trailers[wo_id]
+                    if t_sha:
+                        commit_sha = t_sha
+                    if t_hash:
+                        verified_hash = t_hash
+
+                lwo_entry: dict[str, Any] = {
+                    "id": wo_id,
+                    "wo_id": wo_id,
+                    "slug": lwo["slug"],
+                    "title": lwo["title"],
+                    "complexity": lwo["complexity"],
+                    "status": lwo["status"],
+                    "attempts": lwo["attempts"],
+                    "commit_sha": commit_sha,
+                    "receipt_id": None,
+                    "verified_hash": verified_hash,
+                }
+                if lwo.get("parse_error"):
+                    lwo_entry["parse_error"] = True
+                    lwo_entry["error"] = lwo["error"]
+                else:
+                    lwo_entry["schema"] = "legacy"
+                reconciled_wos.append(lwo_entry)
+
             # Inspect AUDIT-round-*.md files
             latest_audit: dict[str, Any] | None = None
             audit_docs: list[schemas.Document[schemas.AuditReport]] = []
             for audit_md in sorted(pr_dir.glob("AUDIT-round-*.md")):
                 if audit_md.is_file():
-                    audit_docs.append(schemas.load_audit(audit_md))
+                    try:
+                        audit_docs.append(schemas.load_audit(audit_md))
+                    except Exception as exc:  # noqa: BLE001
+                        unparseable_files.append(
+                            {
+                                "path": _rel_ws_path(audit_md),
+                                "schema": "parse_error",
+                                "parse_error": True,
+                                "error": str(exc),
+                            }
+                        )
             if audit_docs:
                 audit_docs.sort(key=lambda d: d.spec.audit_round)
                 top_audit = audit_docs[-1].spec
@@ -1149,20 +1473,66 @@ def _cmd_status(args: argparse.Namespace, *, runner: common.Runner = common.run)
                     "findings_count": len(top_audit.findings),
                 }
 
-            pr_entry: dict[str, Any] = {
-                "pr_id": proj_doc.spec.charter.pr_id,
-                "slug": proj_doc.spec.charter.slug,
-                "title": proj_doc.spec.charter.title,
-                "status": proj_doc.spec.status.value,
-                "branch": proj_doc.spec.charter.branch,
-                "base_branch": proj_doc.spec.charter.base_branch,
-                "github_pr": proj_doc.spec.github_pr,
-                "charter_locked": proj_doc.spec.charter.charter_locked,
-                "work_orders": reconciled_wos,
-            }
+            if proj_doc is not None:
+                pr_entry: dict[str, Any] = {
+                    "pr_id": proj_doc.spec.charter.pr_id,
+                    "slug": proj_doc.spec.charter.slug,
+                    "title": proj_doc.spec.charter.title,
+                    "status": proj_doc.spec.status.value,
+                    "branch": proj_doc.spec.charter.branch,
+                    "base_branch": proj_doc.spec.charter.base_branch,
+                    "github_pr": proj_doc.spec.github_pr,
+                    "charter_locked": proj_doc.spec.charter.charter_locked,
+                    "work_orders": reconciled_wos,
+                }
+            else:
+                assert proj_fb is not None
+                fb_status = str(proj_fb["status"])
+                if (
+                    fb_status == "PLANNED"
+                    and reconciled_wos
+                    and all(w.get("status") == "COMPLETED" for w in reconciled_wos)
+                ):
+                    fb_status = "GRADUATED"
+                pr_entry = {
+                    "pr_id": proj_fb["pr_id"],
+                    "slug": proj_fb["slug"],
+                    "title": proj_fb["title"],
+                    "status": fb_status,
+                    "branch": proj_fb["branch"],
+                    "base_branch": proj_fb["base_branch"],
+                    "github_pr": proj_fb["github_pr"],
+                    "charter_locked": proj_fb["charter_locked"],
+                    "work_orders": reconciled_wos,
+                }
+                if proj_fb["parse_error"]:
+                    pr_entry["parse_error"] = True
+                    pr_entry["error"] = proj_fb["error"]
+                else:
+                    pr_entry["schema"] = "legacy"
+
             if latest_audit is not None:
                 pr_entry["latest_audit"] = latest_audit
             prs.append(pr_entry)
+
+        # Also check archive/ for legacy or unparseable PROJECT.md files
+        archive_dir = ws_dir / "archive"
+        if archive_dir.is_dir():
+            for arch_proj in sorted(archive_dir.rglob("PROJECT.md")):
+                if not arch_proj.is_file():
+                    continue
+                try:
+                    schemas.load_project(arch_proj)
+                except Exception:  # noqa: BLE001
+                    arch_fb = schemas.parse_legacy_project_fallback(arch_proj)
+                    unparseable_files.append(
+                        {
+                            "path": _rel_ws_path(arch_proj),
+                            "schema": arch_fb["schema"],
+                            "parse_error": arch_fb["parse_error"],
+                            "error": arch_fb["error"],
+                        }
+                    )
 
     # --- Step 4: Emit JSON payload or formatted human status tree ---
     payload: dict[str, Any] = {
@@ -1176,6 +1546,8 @@ def _cmd_status(args: argparse.Namespace, *, runner: common.Runner = common.run)
         "prs": prs,
         "attention_queue": attention_queue,
     }
+    if unparseable_files:
+        payload["unparseable_files"] = unparseable_files
 
     if args.as_json:
         print(json.dumps(payload, indent=2))
@@ -1197,24 +1569,53 @@ def _cmd_status(args: argparse.Namespace, *, runner: common.Runner = common.run)
         lines.append("\nProgrammes:")
         for prog in programmes:
             g = _status_glyph(str(prog["status"]))
-            lines.append(f"  {g} {prog['programme_id']}: {prog['title']} [{prog['status']}]")
+            prog_tag = ""
+            if prog.get("parse_error"):
+                prog_tag = " [parse_error]"
+            elif prog.get("schema") == "legacy":
+                prog_tag = " [legacy]"
+            lines.append(
+                f"  {g} {prog['programme_id']}: {prog['title']} [{prog['status']}]{prog_tag}"
+            )
 
     if prs:
         lines.append("\nPull Requests:")
         for pr in prs:
             g = _status_glyph(str(pr["status"]))
             lock_glyph = " 🔒" if pr.get("charter_locked") else ""
+            schema_tag = ""
+            if pr.get("parse_error"):
+                schema_tag = " [parse_error]"
+            elif pr.get("schema") == "legacy":
+                schema_tag = " [legacy]"
             lines.append(
-                f"  {g} {pr['pr_id']} ({pr['slug']}): {pr['title']} [{pr['status']}]{lock_glyph}"
+                f"  {g} {pr['pr_id']} ({pr['slug']}): {pr['title']} "
+                f"[{pr['status']}]{lock_glyph}{schema_tag}"
             )
             for wo in pr["work_orders"]:
                 wg = _status_glyph(str(wo["status"]))
                 sha_sfx = f" ({str(wo['commit_sha'])[:7]})" if wo.get("commit_sha") else ""
+                wo_tag = ""
+                if wo.get("parse_error"):
+                    wo_tag = " [parse_error]"
+                elif wo.get("schema") == "legacy":
+                    wo_tag = " [legacy]"
                 wo_line = (
                     f"      {wg} {wo['id']} [{wo['complexity']}]: "
-                    f"{wo['title']} — {wo['status']}{sha_sfx}"
+                    f"{wo['title']} — {wo['status']}{sha_sfx}{wo_tag}"
                 )
                 lines.append(wo_line)
+
+    if unparseable_files:
+        legacy_cnt = sum(1 for f in unparseable_files if not f.get("parse_error"))
+        err_cnt = sum(1 for f in unparseable_files if f.get("parse_error"))
+        lines.append(
+            f"\nUnparseable / Legacy Files ({len(unparseable_files)} total: "
+            f"{legacy_cnt} legacy, {err_cnt} parse_error):"
+        )
+        for item in unparseable_files:
+            tag = "parse_error" if item.get("parse_error") else "legacy"
+            lines.append(f"  - {item['path']} [{tag}]: {item['error']}")
 
     print("\n".join(lines))
     return 0
@@ -3697,6 +4098,12 @@ def build_parser() -> argparse.ArgumentParser:
             "rewrite stale paths, clean up legacy skill, and seed repo-memory."
         ),
     )
+    p_enroll.add_argument(
+        "--upgrade-legacy",
+        action="store_true",
+        dest="upgrade_legacy",
+        help="Auto-generate minimal ProjectSpec frontmatter (charter_locked: false) on legacy PROJECT.md files.",
+    )
     p_enroll.set_defaults(_handler=_cmd_enroll)
 
     p_migrate = subparsers.add_parser(
@@ -3731,6 +4138,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         default=True,
         help="Do not remove .agents/skills/principal-architect directory/submodule.",
+    )
+    p_migrate.add_argument(
+        "--upgrade-legacy",
+        action="store_true",
+        dest="upgrade_legacy",
+        help="Auto-generate minimal ProjectSpec frontmatter (charter_locked: false) on legacy PROJECT.md files.",
     )
     p_migrate.add_argument(
         "--json",
