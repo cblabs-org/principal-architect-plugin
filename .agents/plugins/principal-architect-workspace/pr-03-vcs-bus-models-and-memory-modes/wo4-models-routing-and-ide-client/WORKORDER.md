@@ -21,7 +21,7 @@ verification_command: ./.venv/bin/pytest tests/test_schemas.py tests/test_state_
   tests/test_memory_modes.py && ./.venv/bin/ruff check daemon tests
 max_attempts: 5
 max_structural_failures: 2
-spec_hash: b1032705889a3fd4442f6a2dfdadaa0ae32c8be88028d9ee4b2bac9d7f2ad942
+spec_hash: 82f0e8e1090ff385c597c02788bd4c501ce5ea7a1e4739d7f2b69a3b5a2bda5f
 completion:
   status: COMPLETED
   attempt_num: 1
@@ -31,13 +31,17 @@ completion:
   - daemon/workspace-plugin/principal-architect/scripts/models.py
   - daemon/workspace-plugin/principal-architect/scripts/pa_cli.py
   - tests/test_github_and_local_git_bus.py
-  verification_summary: "pytest (112 passed) and ruff check (All checks passed)"
+  verification_summary: pytest (112 passed) and ruff check (All checks passed)
   out_of_scope_findings: []
   escalation_request: null
   decisions_made:
-  - "Enforced top-tier ceiling in step_up and route so 'flash' and 'inherit' never step to 'pro'."
-  - "Implemented graceful headless bridge-prompt fallback in LanguageServerClient when ANTIGRAVITY_LS_ADDRESS/ANTIGRAVITY_CSRF_TOKEN is unset or RPC fails."
-  - "Preserved stdlib-only top-level imports in pa_cli.py by importing models, schemas, pre_tool_gate, post_tool_receipt, and escalation lazily inside _cmd_wo_debug and _cmd_wo_resolve."
+  - Enforced top-tier ceiling in step_up and route so 'flash' and 'inherit' never
+    step to 'pro'.
+  - Implemented graceful headless bridge-prompt fallback in LanguageServerClient when
+    ANTIGRAVITY_LS_ADDRESS/ANTIGRAVITY_CSRF_TOKEN is unset or RPC fails.
+  - Preserved stdlib-only top-level imports in pa_cli.py by importing models, schemas,
+    pre_tool_gate, post_tool_receipt, and escalation lazily inside _cmd_wo_debug and
+    _cmd_wo_resolve.
   dead_ends: []
 ---
 
@@ -66,10 +70,10 @@ completion:
 
 - [ ] **`daemon/workspace-plugin/principal-architect/scripts/models.py`:**
   1. **Constants & Tier Step-Up (`ARCHITECT_MODEL_PREFERENCE`, `step_up`):**
-     - `ARCHITECT_MODEL_PREFERENCE: tuple[str, ...] = ("gemini-4-argon-high", "gemini-3.1-pro-high", "claude-opus-5-5-high")`
+     - `ARCHITECT_MODEL_PREFERENCE: tuple[str, ...] = ("gemini-3.1-pro-high", "claude-opus-4-6-thinking", "gemini-3.1-pro-low")`
      - `step_up(tier: str) -> str`:
        - Steps up one model tier: `"flash_lite" -> "flash"`, `"flash" -> "inherit"`, `"inherit" -> "inherit"`.
-       - **CRITICAL (Charter R4 & SPEC §5.3):** Never return `"pro"` when stepping up from `"flash"` or `"inherit"` — top tier is strictly `"inherit"` so a parent running on Argon or Opus is never downgraded to `"pro"`.
+       - **CRITICAL (Charter R4 & SPEC §5.3):** Never return `"pro"` when stepping up from `"flash"` or `"inherit"` — top tier is strictly `"inherit"` so a parent running on a frontier Pro or Opus model is never downgraded to `"pro"`.
        - Raise `ValueError` for unrecognized tier names.
   2. **Complexity Router (`route`, Charter G2 & R4, SPEC §5.3):**
      - `route(complexity: str | Any, attempt: int = 1, parent_model: str = "inherit") -> str`:
@@ -86,7 +90,7 @@ completion:
        - If `preferred` is not passed and `repo_root` is provided, check `<ws_dir>/.state/state.db` (`db.get_config("architect_model")`).
        - If `preferred` is set and either `catalog` is empty/None or `preferred` matches an entry in `catalog`, return `preferred`.
        - If `catalog` is provided and non-empty, iterate through `ARCHITECT_MODEL_PREFERENCE` and return the first candidate present in `catalog` (supporting exact match or case-insensitive substring match); if none of the 3 preferred models are in `catalog`, return `catalog[0]`.
-       - If `catalog` is None or empty, default to `ARCHITECT_MODEL_PREFERENCE[0]` (`"gemini-4-argon-high"`).
+       - If `catalog` is None or empty, default to `ARCHITECT_MODEL_PREFERENCE[0]` (`"gemini-3.1-pro-high"`).
   4. **Antigravity IDE Language Server Client (`LanguageServerClient`, Charter G2 & SPEC §5.3):**
      - `__init__(self, *, address: str | None = None, csrf_token: str | None = None, transport: Callable[[str, dict[str, Any], dict[str, str]], dict[str, Any]] | None = None, timeout: float = 3.0) -> None`:
        - Read `self.address = (address if address is not None else os.environ.get("ANTIGRAVITY_LS_ADDRESS", "")).strip()` and `self.csrf_token = (csrf_token if csrf_token is not None else os.environ.get("ANTIGRAVITY_CSRF_TOKEN", "")).strip()`.
@@ -164,7 +168,7 @@ completion:
   - `tests/test_github_and_local_git_bus.py`
 - **Verification Summary:** `pytest` (`112 passed`) and `ruff check daemon tests` (`All checks passed!`).
 - **Key Decisions:**
-  - Enforced the `step_up` and `route` top-tier ceiling (`"flash_lite" -> "flash" -> "inherit" -> "inherit"`) so `"inherit"` never downgrades a parent running on Argon or Opus to `"pro"`.
+  - Enforced the `step_up` and `route` top-tier ceiling (`"flash_lite" -> "flash" -> "inherit" -> "inherit"`) so `"inherit"` never downgrades a parent running on a frontier Pro or Opus model to `"pro"`.
   - Built `LanguageServerClient` (`start_conversation`, `set_pinned`, `send_message`) with injectable `transport` for unit testing and graceful headless fallback (`"connected": False`, `"fallback": "bridge_prompt"` / `"headless"`).
   - Added `pa wo debug` and `pa wo resolve` to `pa_cli.py` while preserving top-level stdlib-only lazy imports (`test_pa_cli_lazy_import_purity` passes).
 

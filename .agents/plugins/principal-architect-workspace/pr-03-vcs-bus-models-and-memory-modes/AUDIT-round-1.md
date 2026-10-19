@@ -53,7 +53,7 @@ No `BLOCKING`, `MAJOR`, or `MINOR` defects were identified during the Round 1 Co
    - In `builtin` mode, `graduate()` additionally transitions the PR from `## Active Projects` to the top of `## Recently Completed (last 5)` in `MEMORY.md`, rolls entries beyond the 5-PR window into `PROJECT_INDEX.md`, and idempotently updates `MODULE_INDEX.md` with byte-for-byte stability across repeated invocations.
 
 3. **`models.py` (`WO-03.4` — Model Routing, Retry Step-Up & `LanguageServerClient`):**
-   - Defines `ARCHITECT_MODEL_PREFERENCE = ("gemini-4-argon-high", "gemini-3.1-pro-high", "claude-opus-5-5-high")`.
+   - Defines `ARCHITECT_MODEL_PREFERENCE = ("gemini-3.1-pro-high", "claude-opus-4-6-thinking", "gemini-3.1-pro-low")`.
    - `step_up(tier)` implements `flash_lite -> flash -> inherit -> inherit`, and `route(complexity, attempt=1, parent_model="inherit")` routes `TRIVIAL`/`LOW` -> `flash_lite`, `MEDIUM` -> `flash`, `HIGH`/`CRITICAL` -> `inherit`, stepping up one tier when `attempt >= 3` and never downgrading `"inherit"` to `"pro"`.
    - `select_architect_model` honours explicit override, stored `state_db` `architect_model`, ordered preference against `available_models`, and safe fallback to `ARCHITECT_MODEL_PREFERENCE[0]`.
    - `LanguageServerClient` implements `start_conversation`, `set_pinned`, and `send_message` over JSON HTTP with CSRF header injection and graceful headless fallback (`{"ok": False, "headless": True, ...}`) when `ANTIGRAVITY_LS_ADDRESS` / `ANTIGRAVITY_CSRF_TOKEN` are absent or unreachable.
@@ -78,7 +78,7 @@ All verification checks were executed directly in the repository environment aga
 3. **Top-Level Lazy Import Check (`pa_cli.py`):**
    - Verified in a fresh Python process that importing `pa_cli` leaves `pydantic`, `yaml`, `schemas`, `vcs_sync`, `models`, `memory_grad`, `pre_tool_gate`, `post_tool_receipt`, and `escalation` unloaded in `sys.modules`.
 4. **Charter & Work Order Cryptographic Hash Integrity:**
-   - `schemas.verify_charter_hash(".agents/skills/principal-architect-workspace/pr-03-vcs-bus-models-and-memory-modes/PROJECT.md")` -> `True` (`ad7e71f954cd3d2b3db2eed6c4e55ef17b855bd01bfeefa2c59246c44c5d4e21`).
+   - `schemas.verify_charter_hash(".agents/skills/principal-architect-workspace/pr-03-vcs-bus-models-and-memory-modes/PROJECT.md")` -> `True` (`971e095159c245b56bb1e5a0768e371a400b5249efbcc91e5df339fcb1f212f8`).
    - `schemas.verify_spec_hash` across all 5 `PR-03` Work Orders (`WO-03.1`..`WO-03.5`) -> `True`, with all 5 WOs in `status: COMPLETED` and populated Section 4 completion blocks.
 5. **Git Commit Trailer Verification (`WO-03.1`..`WO-03.5`):**
    - `114ace2` (`WO-03.1`): `PA-WorkOrder: WO-03.1`, `PA-Verified-Hash: 2b45270c49cef7c6...`

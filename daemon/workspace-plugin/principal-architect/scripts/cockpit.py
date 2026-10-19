@@ -549,6 +549,7 @@ def build_workspace_state(
                 wdoc_obj: schemas.Document[schemas.WorkOrderSpec] | None,
                 _pr_id: str = pr_id,
                 _pr_slug: str = ch.slug,
+                _pr_dir: Path = pr_dir,
             ) -> dict[str, Any]:
                 """Reconcile a Work Order entry across PROJECT.md, WORKORDER.md, Git, and StateDB.
 
@@ -564,6 +565,7 @@ def build_workspace_state(
                     wdoc_obj: Optional loaded `WORKORDER.md` document from disk.
                     _pr_id: Parent Pull Request ID bound from outer loop.
                     _pr_slug: Parent Pull Request slug bound from outer loop.
+                    _pr_dir: Parent Pull Request directory bound from outer loop.
 
                 Returns:
                     Normalized Work Order dictionary for the Cockpit `/api/state` payload.
@@ -653,7 +655,7 @@ def build_workspace_state(
                     else False
                 )
 
-                wo_md_path = pr_dir / slug_val / "WORKORDER.md"
+                wo_md_path = _pr_dir / slug_val / "WORKORDER.md"
                 return {
                     "wo_id": wo_id_val,
                     "id": wo_id_val,

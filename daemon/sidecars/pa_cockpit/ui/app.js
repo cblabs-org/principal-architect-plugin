@@ -22,7 +22,8 @@
  *     - showToast(message, isError): Render a transient status or error toast in Zone 1.
  *     - isOpenableConversationId(conversationId): Check whether a conversation ID is a real IDE thread vs synthetic fallback.
  *     - jumpToConversation(conversationId): Focus an agent thread in the host IDE sidebar.
- *     - buildSpecLinks(links): Build an inline row of clickable spec-file preview anchors.
+ *     - showSpecPreview(filePath, label): Show the inline spec-file preview overlay panel with content fetched from GET /api/preview?format=text.
+ *     - buildSpecLinks(links): Build an inline row of clickable spec-file preview buttons.
  *     - postJson(endpoint, payload): Execute a JSON POST request against the Cockpit API.
  *   Mutation Actions:
  *     - triggerSync(): Reconcile VCS trailers, audits, and receipts via POST /api/sync.
@@ -70,8 +71,7 @@
   };
 
   /**
-   * Canonical Antigravity Google Symbols wght300 24px SVG path data (`viewBox="0 -960 960 960"`).
-   * Matches `agent_ui_toolkit/src/icons/generated/*.tsx` and `LoadingSpinner.tsx`.
+   * Canonical Google Symbols wght300 24px SVG path data (`viewBox="0 -960 960 960"`).
    */
   const GOOGLE_SYMBOL_PATHS = {
     progress_activity:
@@ -115,7 +115,7 @@
   };
 
   /**
-   * Render an inline Google Symbol SVG matching Antigravity's `GoogleSymbol.tsx` / `LoadingSpinner.tsx`.
+   * Render an inline Google Symbol SVG for the Cockpit UI.
    * @param {keyof typeof GOOGLE_SYMBOL_PATHS} name - Google Symbol identifier.
    * @param {number} [size=12] - Icon width and height in pixels.
    * @param {string} [extraClass=""] - Optional CSS class names (e.g. "animate-spin").

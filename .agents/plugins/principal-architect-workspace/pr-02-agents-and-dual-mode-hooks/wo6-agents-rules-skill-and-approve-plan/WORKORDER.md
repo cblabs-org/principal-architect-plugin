@@ -2,46 +2,52 @@
 schema_version: 1
 wo_id: WO-02.6
 pr_id: PR-02
-title: "Five custom agent definitions (agents/pa-*.md), operating-model rule, in-plugin SKILL.md, pa pr approve-plan, and pa escalate"
+title: Five custom agent definitions (agents/pa-*.md), operating-model rule, in-plugin
+  SKILL.md, pa pr approve-plan, and pa escalate
 complexity: standard
 status: COMPLETED
 allowed_files:
-  - daemon/workspace-plugin/principal-architect/agents/**
-  - daemon/workspace-plugin/principal-architect/rules/**
-  - daemon/workspace-plugin/principal-architect/skills/principal-architect/SKILL.md
-  - daemon/workspace-plugin/principal-architect/scripts/pa_cli.py
-  - tests/test_hooks_monitored_vs_autonomous.py
+- daemon/workspace-plugin/principal-architect/agents/**
+- daemon/workspace-plugin/principal-architect/rules/**
+- daemon/workspace-plugin/principal-architect/skills/principal-architect/SKILL.md
+- daemon/workspace-plugin/principal-architect/scripts/pa_cli.py
+- tests/test_hooks_monitored_vs_autonomous.py
 forbidden_files:
-  - SPEC.md
-  - docs/positioning-paper.md
-  - .agents/skills/principal-architect-workspace/pr-02-agents-and-dual-mode-hooks/PROJECT.md
-  - .agents/skills/principal-architect-workspace/programme-principal-architect-plugin/PROGRAM.md
+- SPEC.md
+- docs/positioning-paper.md
+- .agents/skills/principal-architect-workspace/pr-02-agents-and-dual-mode-hooks/PROJECT.md
+- .agents/skills/principal-architect-workspace/programme-principal-architect-plugin/PROGRAM.md
 required_skills: []
-verification_command: "./.venv/bin/pytest tests/test_schemas.py tests/test_state_db_and_sync.py tests/test_hooks_monitored_vs_autonomous.py && ./.venv/bin/ruff check daemon tests"
+verification_command: ./.venv/bin/pytest tests/test_schemas.py tests/test_state_db_and_sync.py
+  tests/test_hooks_monitored_vs_autonomous.py && ./.venv/bin/ruff check daemon tests
 max_attempts: 5
 max_structural_failures: 2
-spec_hash: 72c40ab174373449f4d60f0436cab3c337fa55a8cc6a99392828cbba6a3e1dda
+spec_hash: bd9d68dd97812e78d616dc251bf1f10236cb6c2f635233e7c68e992c8d4b2f05
 completion:
   status: COMPLETED
   attempt_num: 1
   receipt_id: rcpt_b620400d70e1
   commit_sha: 1f0d1f96c84019e78c03e7ebe36e7d3103a4b4ab
   files_modified:
-    - daemon/workspace-plugin/principal-architect/agents/pa-auditor.md
-    - daemon/workspace-plugin/principal-architect/agents/pa-chief-architect.md
-    - daemon/workspace-plugin/principal-architect/agents/pa-debugger.md
-    - daemon/workspace-plugin/principal-architect/agents/pa-engineer.md
-    - daemon/workspace-plugin/principal-architect/agents/pa-principal-architect.md
-    - daemon/workspace-plugin/principal-architect/rules/00-pa-operating-model.md
-    - daemon/workspace-plugin/principal-architect/scripts/pa_cli.py
-    - daemon/workspace-plugin/principal-architect/skills/principal-architect/SKILL.md
-    - tests/test_hooks_monitored_vs_autonomous.py
-  verification_summary: "85 passed in 16.02s; ruff check daemon tests: All checks passed!"
+  - daemon/workspace-plugin/principal-architect/agents/pa-auditor.md
+  - daemon/workspace-plugin/principal-architect/agents/pa-chief-architect.md
+  - daemon/workspace-plugin/principal-architect/agents/pa-debugger.md
+  - daemon/workspace-plugin/principal-architect/agents/pa-engineer.md
+  - daemon/workspace-plugin/principal-architect/agents/pa-principal-architect.md
+  - daemon/workspace-plugin/principal-architect/rules/00-pa-operating-model.md
+  - daemon/workspace-plugin/principal-architect/scripts/pa_cli.py
+  - daemon/workspace-plugin/principal-architect/skills/principal-architect/SKILL.md
+  - tests/test_hooks_monitored_vs_autonomous.py
+  verification_summary: '85 passed in 16.02s; ruff check daemon tests: All checks
+    passed!'
   out_of_scope_findings: []
   escalation_request: null
   decisions_made:
-    - "Defined _is_pattern_within_allowed_modules in pa_cli.py wrapping pre_tool_gate.matches_any_pattern so glob/directory patterns in allowed_files are validated against charter.allowed_modules without mutating pre_tool_gate.py."
-    - "Kept pa_cli.py top-level imports stdlib-only and lazy-imported schemas, pre_tool_gate, and escalation inside _cmd_pr_approve_plan and _cmd_escalate."
+  - Defined _is_pattern_within_allowed_modules in pa_cli.py wrapping pre_tool_gate.matches_any_pattern
+    so glob/directory patterns in allowed_files are validated against charter.allowed_modules
+    without mutating pre_tool_gate.py.
+  - Kept pa_cli.py top-level imports stdlib-only and lazy-imported schemas, pre_tool_gate,
+    and escalation inside _cmd_pr_approve_plan and _cmd_escalate.
   dead_ends: []
 ---
 
@@ -78,11 +84,11 @@ completion:
 - **Architectural Invariants:**
   - **Agent Frontmatter Compliance (SPEC §5.2, Charter R6, Invariant I9):**
     - Every `agents/pa-*.md` file MUST have valid YAML frontmatter with non-empty `name` and `description`, `model: inherit`, `excludeDefaultComponents: false`, and exact `mainAgent`, `subagent`, `inheritCustomizations`, `tools`, `skills`, `rules`, and `inheritMcp` fields matching SPEC §5.2:
-      - `pa-chief-architect.md`: `mainAgent: true`, `subagent: true`, `tools: [view_file, read_file, write_to_file, write_file, replace_file_content, edit_file, list_dir, grep_search, find_by_name, code_search, run_command, invoke_subagent, ask_question, send_message]`, `skills: [.agents/plugins/principal-architect-workspace/.state/pa-skills.json]`, `rules: [.agents/rules]`, `inheritMcp: true`.
-      - `pa-principal-architect.md`: `mainAgent: true`, `subagent: true`, `tools: [view_file, read_file, write_to_file, write_file, replace_file_content, edit_file, list_dir, grep_search, find_by_name, code_search, run_command, invoke_subagent, ask_question, send_message]`, `skills: [.agents/plugins/principal-architect-workspace/.state/pa-skills.json]`, `rules: [.agents/rules]`, `inheritMcp: true`.
-      - `pa-engineer.md`: `mainAgent: false`, `subagent: true`, `inheritCustomizations: false`, `tools: [view_file, read_file, write_to_file, write_file, replace_file_content, edit_file, list_dir, grep_search, find_by_name, code_search, run_command, send_message]` (MUST OMIT `invoke_subagent`, `ask_question`, `search_web`, `search_marketplace`), `skills: [.agents/plugins/principal-architect-workspace/.state/pa-skills.json]`, `rules: [.agents/plugins/principal-architect-workspace/.state/pa-worker-rules.json]`, `inheritMcp: true`.
-      - `pa-auditor.md`: `mainAgent: true`, `subagent: true`, `inheritCustomizations: false`, `tools: [view_file, read_file, list_dir, grep_search, find_by_name, code_search, run_command, send_message]` (MUST OMIT all file-write tools and `invoke_subagent`), `skills: [.agents/plugins/principal-architect-workspace/.state/pa-skills.json]`, `rules: [.agents/plugins/principal-architect-workspace/.state/pa-worker-rules.json]`, `inheritMcp: false`.
-      - `pa-debugger.md`: `mainAgent: true`, `subagent: true`, `tools: [view_file, read_file, write_to_file, write_file, replace_file_content, edit_file, list_dir, grep_search, find_by_name, code_search, run_command, ask_question, send_message]`, `skills: [.agents/plugins/principal-architect-workspace/.state/pa-skills.json]`, `rules: [.agents/plugins/principal-architect-workspace/.state/pa-worker-rules.json]`, `inheritMcp: true`.
+      - `pa-chief-architect.md`: `mainAgent: true`, `subagent: true`, `tools: [view_file, read_file, write_to_file, write_file, replace_file_content, edit_file, list_dir, grep_search, find_by_name, run_command, invoke_subagent, ask_question, send_message]`, `skills: [.agents/plugins/principal-architect-workspace/.state/pa-skills.json]`, `rules: [.agents/rules]`, `inheritMcp: true`.
+      - `pa-principal-architect.md`: `mainAgent: true`, `subagent: true`, `tools: [view_file, read_file, write_to_file, write_file, replace_file_content, edit_file, list_dir, grep_search, find_by_name, run_command, invoke_subagent, ask_question, send_message]`, `skills: [.agents/plugins/principal-architect-workspace/.state/pa-skills.json]`, `rules: [.agents/rules]`, `inheritMcp: true`.
+      - `pa-engineer.md`: `mainAgent: false`, `subagent: true`, `inheritCustomizations: false`, `tools: [view_file, read_file, write_to_file, write_file, replace_file_content, edit_file, list_dir, grep_search, find_by_name, run_command, send_message]` (MUST OMIT `invoke_subagent`, `ask_question`, `search_web`, `search_marketplace`), `skills: [.agents/plugins/principal-architect-workspace/.state/pa-skills.json]`, `rules: [.agents/plugins/principal-architect-workspace/.state/pa-worker-rules.json]`, `inheritMcp: true`.
+      - `pa-auditor.md`: `mainAgent: true`, `subagent: true`, `inheritCustomizations: false`, `tools: [view_file, read_file, list_dir, grep_search, find_by_name, run_command, send_message]` (MUST OMIT all file-write tools and `invoke_subagent`), `skills: [.agents/plugins/principal-architect-workspace/.state/pa-skills.json]`, `rules: [.agents/plugins/principal-architect-workspace/.state/pa-worker-rules.json]`, `inheritMcp: false`.
+      - `pa-debugger.md`: `mainAgent: true`, `subagent: true`, `tools: [view_file, read_file, write_to_file, write_file, replace_file_content, edit_file, list_dir, grep_search, find_by_name, run_command, ask_question, send_message]`, `skills: [.agents/plugins/principal-architect-workspace/.state/pa-skills.json]`, `rules: [.agents/plugins/principal-architect-workspace/.state/pa-worker-rules.json]`, `inheritMcp: true`.
   - **Rule File Compliance:** `daemon/workspace-plugin/principal-architect/rules/00-pa-operating-model.md` MUST NOT have YAML frontmatter and must be `< 8 KB`.
   - **Lazy Imports in `pa_cli.py` (Charter R1 & R8):** Keep `pa_cli.py` stdlib-only at module top-level; lazy-import `schemas`, `pre_tool_gate`, and `escalation` inside `_cmd_pr_approve_plan` and `_cmd_escalate`.
 

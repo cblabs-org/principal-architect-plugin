@@ -1197,8 +1197,8 @@ def test_models_step_up_and_route_all_complexities_and_attempts() -> None:
         assert models.route("architect", attempt=attempt) == "inherit"
         assert models.route("interactive", attempt=attempt) == "inherit"
 
-    # 3. Verify parent_model on Argon or Opus never causes "pro" downgrade
-    for parent in ("inherit", "gemini-4-argon-high", "claude-opus-5-5-high"):
+    # 3. Verify parent_model on frontier Pro or Opus never causes "pro" downgrade
+    for parent in ("inherit", "gemini-3.1-pro-high", "claude-opus-4-6-thinking"):
         for comp in ("mechanical", "standard", "architect", "interactive"):
             for att in range(1, 6):
                 routed = models.route(comp, attempt=att, parent_model=parent)
@@ -1219,27 +1219,27 @@ def test_select_architect_model_preferences_catalog_and_state_db(tmp_repo: Path)
     import models
 
     assert models.ARCHITECT_MODEL_PREFERENCE == (
-        "gemini-4-argon-high",
         "gemini-3.1-pro-high",
-        "claude-opus-5-5-high",
+        "claude-opus-4-6-thinking",
+        "gemini-3.1-pro-low",
     )
 
     # 1. Default when catalog is None or empty
-    assert models.select_architect_model() == "gemini-4-argon-high"
-    assert models.select_architect_model([]) == "gemini-4-argon-high"
+    assert models.select_architect_model() == "gemini-3.1-pro-high"
+    assert models.select_architect_model([]) == "gemini-3.1-pro-high"
 
     # 2. Preference order matching against catalog
     assert (
-        models.select_architect_model(["claude-opus-5-5-high", "gemini-3.1-pro-high"])
+        models.select_architect_model(["gemini-3.1-pro-low", "claude-opus-4-6-thinking"])
+        == "claude-opus-4-6-thinking"
+    )
+    assert (
+        models.select_architect_model(["claude-opus-4-6-thinking", "gemini-3.1-pro-high"])
         == "gemini-3.1-pro-high"
     )
     assert (
-        models.select_architect_model(["claude-opus-5-5-high", "gemini-4-argon-high"])
-        == "gemini-4-argon-high"
-    )
-    assert (
-        models.select_architect_model(["custom-local-model", "claude-opus-5-5-high"])
-        == "claude-opus-5-5-high"
+        models.select_architect_model(["custom-local-model", "gemini-3.1-pro-low"])
+        == "gemini-3.1-pro-low"
     )
 
     # 3. Case-insensitive substring matching & fallback to catalog[0]
@@ -1254,15 +1254,15 @@ def test_select_architect_model_preferences_catalog_and_state_db(tmp_repo: Path)
 
     # 4. Explicit preferred parameter
     assert (
-        models.select_architect_model(preferred="claude-opus-5-5-high")
-        == "claude-opus-5-5-high"
+        models.select_architect_model(preferred="claude-opus-4-6-thinking")
+        == "claude-opus-4-6-thinking"
     )
     assert (
         models.select_architect_model(
-            ["gemini-4-argon-high", "claude-opus-5-5-high"],
-            preferred="claude-opus-5-5-high",
+            ["gemini-3.1-pro-high", "claude-opus-4-6-thinking"],
+            preferred="claude-opus-4-6-thinking",
         )
-        == "claude-opus-5-5-high"
+        == "claude-opus-4-6-thinking"
     )
 
     # 5. Lookup from <ws_dir>/.state/state.db repo_config["architect_model"]
@@ -1270,15 +1270,15 @@ def test_select_architect_model_preferences_catalog_and_state_db(tmp_repo: Path)
     db_file = ws_dir / ".state" / "state.db"
     db_file.parent.mkdir(parents=True, exist_ok=True)
     with state_db.StateDB(db_file) as db:
-        db.set_config("architect_model", "claude-opus-5-5-high")
+        db.set_config("architect_model", "claude-opus-4-6-thinking")
 
-    assert models.select_architect_model(repo_root=tmp_repo) == "claude-opus-5-5-high"
+    assert models.select_architect_model(repo_root=tmp_repo) == "claude-opus-4-6-thinking"
     assert (
         models.select_architect_model(
-            ["gemini-4-argon-high", "claude-opus-5-5-high"],
+            ["gemini-3.1-pro-high", "claude-opus-4-6-thinking"],
             repo_root=tmp_repo,
         )
-        == "claude-opus-5-5-high"
+        == "claude-opus-4-6-thinking"
     )
 
 
@@ -1348,7 +1348,7 @@ def test_language_server_client_connected_and_headless_fallback(
         title="PA Session",
         prompt="PA_ROLE: pa\nPR_ID: PR-03",
         role="pa",
-        model="gemini-4-argon-high",
+        model="gemini-3.1-pro-high",
         pin=True,
     )
     assert res_start_ok["connected"] is True
