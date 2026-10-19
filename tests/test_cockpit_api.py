@@ -339,6 +339,10 @@ def test_get_workspaces_state_and_static_routes(
 
         assert len(state_payload["programmes"]) == 1
         assert state_payload["programmes"][0]["programme_id"] == "prog-cockpit-demo"
+        assert state_payload["programmes"][0]["spec_file"] == str(
+            ws_dir / "programme-cockpit-demo" / "PROGRAM.md"
+        )
+        assert state_payload["programmes"][0]["plan_file"] is None
 
         assert len(state_payload["prs"]) == 1
         pr01 = state_payload["prs"][0]
@@ -347,6 +351,7 @@ def test_get_workspaces_state_and_static_routes(
         assert pr01["charter_valid"] is True
         assert pr01["charter_hash"]
         assert pr01["pa_conversation_id"] == "conv-pa-pr01"
+        assert pr01["spec_file"] == str(ws_dir / "pr-01-demo-feature" / "PROJECT.md")
 
         assert len(pr01["work_orders"]) == 1
         wo01 = pr01["work_orders"][0]
@@ -358,6 +363,9 @@ def test_get_workspaces_state_and_static_routes(
         assert wo01["complexity"] == "standard"
         assert wo01["required_skills"] == ["demo-skill"]
         assert wo01["spec_valid"] is True
+        assert wo01["spec_file"] == str(
+            ws_dir / "pr-01-demo-feature" / "wo1-core" / "WORKORDER.md"
+        )
 
         # Attention queue sorted by priority ASC (priority 5 before priority 20)
         attn = state_payload["attention_queue"]
@@ -378,6 +386,50 @@ def test_get_workspaces_state_and_static_routes(
         )
         assert status_404 == 404
         assert err_payload["ok"] is False
+
+        # 5. GET /api/preview serves enrolled Markdown spec files and rejects invalid/external files
+        proj_preview_q = urllib.parse.quote(pr01["spec_file"], safe="")
+        with urllib.request.urlopen(
+            f"{base_url}/api/preview?file={proj_preview_q}", timeout=5.0
+        ) as resp_prev:
+            assert resp_prev.status == 200
+            assert "text/html" in resp_prev.headers.get("Content-Type", "")
+            prev_html = resp_prev.read().decode("utf-8")
+            assert "<title>PROJECT.md</title>" in prev_html
+            assert "Demo Feature Implementation" in prev_html
+
+        # Missing ?file= returns 400
+        status_prev_400, err_prev_400 = _http_get_json(f"{base_url}/api/preview")
+        assert status_prev_400 == 400
+        assert err_prev_400["ok"] is False
+
+        # Nonexistent file returns 404
+        missing_file_q = urllib.parse.quote(str(ws_dir / "NONEXISTENT.md"), safe="")
+        status_prev_404, err_prev_404 = _http_get_json(
+            f"{base_url}/api/preview?file={missing_file_q}"
+        )
+        assert status_prev_404 == 404
+        assert err_prev_404["ok"] is False
+
+        # Non-Markdown file inside enrolled workspace (e.g. state.db) returns 403
+        db_file_q = urllib.parse.quote(str(db_file), safe="")
+        status_prev_db, err_prev_db = _http_get_json(
+            f"{base_url}/api/preview?file={db_file_q}"
+        )
+        assert status_prev_db == 403
+        assert err_prev_db["ok"] is False
+
+        # Sibling directory prefix collision outside enrolled workspace returns 403
+        sibling_ws = ws_dir.parent / f"{ws_dir.name}-secret"
+        sibling_ws.mkdir(parents=True, exist_ok=True)
+        sibling_md = sibling_ws / "SECRET.md"
+        sibling_md.write_text("# Secret\n", encoding="utf-8")
+        sibling_q = urllib.parse.quote(str(sibling_md), safe="")
+        status_prev_403, err_prev_403 = _http_get_json(
+            f"{base_url}/api/preview?file={sibling_q}"
+        )
+        assert status_prev_403 == 403
+        assert err_prev_403["ok"] is False
 
 
 def test_sse_events_once_and_live_push(
@@ -791,6 +843,8 @@ def test_cockpit_frontend_assets_and_ui_contract(
         ".status-pill",
         ".charter-badge",
         ".receipt-badge",
+        ".spec-links",
+        ".btn-spec-link",
     ):
         assert selector in disk_css
 
@@ -801,6 +855,7 @@ def test_cockpit_frontend_assets_and_ui_contract(
     assert "/api/events" in disk_js
     assert "/api/workspaces" in disk_js
     assert "/api/state" in disk_js
+    assert "/api/preview" in disk_js
 
     for post_endpoint in (
         "/api/mode",

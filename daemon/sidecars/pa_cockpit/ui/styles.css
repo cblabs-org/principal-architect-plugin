@@ -1134,6 +1134,7 @@ body {
   cursor: pointer;
   transition: background 0.15s var(--ease-cubic-out), border-color 0.15s var(--ease-cubic-out);
   line-height: 1.5;
+  text-decoration: none;
 }
 
 .btn-spec-link:hover {
