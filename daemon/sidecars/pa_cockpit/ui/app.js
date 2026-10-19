@@ -13,7 +13,7 @@
  *   renders the three-zone operational cockpit interface using native Antigravity
  *   Google Symbols wght300 SVG iconography and keyframe animations.
  *
- * Component / Function Summary:
+ * Exported API Summary (Component / Function Summary):
  *   DOM, Icon & Transport Utilities:
  *     - escapeHtml(raw): Escape HTML special characters for safe DOM interpolation.
  *     - iconSvg(name, size, extraClass): Render an inline Antigravity Google Symbol wght300 SVG icon.
@@ -22,8 +22,7 @@
  *     - showToast(message, isError): Render a transient status or error toast in Zone 1.
  *     - isOpenableConversationId(conversationId): Check whether a conversation ID is a real IDE thread vs synthetic fallback.
  *     - jumpToConversation(conversationId): Focus an agent thread in the host IDE sidebar.
- *     - openFile(filePath): Open a spec file preview in a new tab via /api/preview.
- *     - buildSpecLinks(links): Build an inline row of clickable spec-file quick-open buttons.
+ *     - buildSpecLinks(links): Build an inline row of clickable spec-file preview anchors.
  *     - postJson(endpoint, payload): Execute a JSON POST request against the Cockpit API.
  *   Mutation Actions:
  *     - triggerSync(): Reconcile VCS trailers, audits, and receipts via POST /api/sync.
@@ -227,21 +226,6 @@
     ) {
       window.sidecar.ui.toggleConversation(conversationId);
     }
-  }
-
-  /**
-   * Open a spec file preview in a new tab via the Cockpit `/api/preview` endpoint.
-   * @param {string | null | undefined} filePath - Absolute filesystem path to preview.
-   * @returns {void}
-   */
-  function openFile(filePath) {
-    const raw = String(filePath || "").trim();
-    if (!raw) {
-      showToast("No spec file path is available for this item.", true);
-      return;
-    }
-    const previewUrl = `/api/preview?file=${encodeURIComponent(raw)}`;
-    window.open(previewUrl, "_blank");
   }
 
   /**

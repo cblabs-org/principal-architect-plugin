@@ -45,7 +45,7 @@ Classes (Contract / Interface-Grouped Exports):
     BaseHTTPRequestHandler Entry Points:
       - `log_message(format, *args) -> None`: Silence default stderr request logging.
       - `do_OPTIONS() -> None`: Respond to CORS preflight requests.
-      - `do_GET() -> None`: Serve static UI assets, `/api/workspaces`, `/api/state`, `/api/events`.
+      - `do_GET() -> None`: Serve static UI assets, `/api/workspaces`, `/api/state`, `/api/events`, `/api/preview`.
       - `do_POST() -> None`: Dispatch Cockpit JSON mutation endpoints.
     Response & Asset Helpers:
       - `_send_json(status_code, payload) -> None`: Serialize and send a JSON HTTP response.
@@ -119,7 +119,7 @@ _PRELOAD_SHIM_JS = (
     "window.sidecar = window.sidecar || {\n"
     "  getWorkspaceUris: function() { return []; },\n"
     "  onWorkspaceChange: function() {},\n"
-    "  ui: { toggleConversation: function() {}, toggleAuxPane: function() {}, openFile: function() {} },\n"
+    "  ui: { toggleConversation: function() {}, toggleAuxPane: function() {} },\n"
     "  agent: { sendMessage: function() {} }\n"
     "};\n"
     "window.addEventListener('message', function(event) {\n"
@@ -1164,12 +1164,15 @@ class CockpitRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(404, {"ok": False, "error": f"File not found: {file_path}"})
                 return
 
-            # Security: restrict access to files inside an enrolled workspace directory
+            # Security: restrict access to Markdown (.md) files inside an enrolled workspace directory
             workspaces, _, _ = _list_enrolled_workspaces(self.server.daemon_home)
             allowed = False
             for ws in workspaces:
                 ws_dir_str = ws.get("workspace_dir", "")
-                if ws_dir_str and str(file_path).startswith(os.path.realpath(ws_dir_str)):
+                if not ws_dir_str:
+                    continue
+                ws_real_path = Path(os.path.realpath(ws_dir_str))
+                if file_path.is_relative_to(ws_real_path):
                     allowed = True
                     break
             if not allowed:
@@ -1179,9 +1182,16 @@ class CockpitRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
 
+            if file_path.suffix.lower() != ".md":
+                self._send_json(
+                    403,
+                    {"ok": False, "error": "Access denied: only Markdown (.md) files may be previewed"},
+                )
+                return
+
             try:
                 raw_content = file_path.read_text(encoding="utf-8")
-            except OSError as exc:
+            except (OSError, UnicodeDecodeError) as exc:
                 self._send_json(500, {"ok": False, "error": f"Cannot read file: {exc}"})
                 return
 

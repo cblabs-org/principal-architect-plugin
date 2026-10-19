@@ -2414,6 +2414,7 @@ def test_agent_frontmatter_rule_and_skill_compliance() -> None:
         assert fm_data.get("model") == "inherit"
         assert fm_data.get("excludeDefaultComponents") is False
         assert isinstance(fm_data.get("tools"), list) and len(fm_data["tools"]) >= 1
+        assert "code_search" not in fm_data["tools"]
         assert len(sections) >= 1
         parsed_agents[fname] = fm_data
 
