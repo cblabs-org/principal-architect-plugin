@@ -229,10 +229,43 @@
   }
 
   /**
+   * Show the inline spec-file preview panel with content fetched from `/api/preview`.
+   * @param {string} filePath - Absolute filesystem path to preview.
+   * @param {string} label - Display label for the file (e.g. "PROGRAM.md").
+   * @returns {void}
+   */
+  async function showSpecPreview(filePath, label) {
+    const panel = document.getElementById("spec-preview-panel");
+    const titleEl = document.getElementById("spec-preview-title");
+    const pathEl = document.getElementById("spec-preview-path");
+    const contentEl = document.getElementById("spec-preview-content");
+    if (!panel || !titleEl || !pathEl || !contentEl) {
+      return;
+    }
+    titleEl.textContent = label;
+    pathEl.textContent = filePath;
+    contentEl.textContent = "Loading…";
+    panel.classList.remove("hidden");
+
+    try {
+      const resp = await fetch(`/api/preview?file=${encodeURIComponent(filePath)}&format=text`);
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        contentEl.textContent = `Error: ${errData.error || resp.statusText}`;
+        return;
+      }
+      contentEl.textContent = await resp.text();
+    } catch (err) {
+      contentEl.textContent = `Failed to load: ${err.message}`;
+    }
+  }
+
+  /**
    * Build an inline spec-file links row for Programme, PR, or Work Order cards.
-   * Each non-null entry in `links` produces a small clickable anchor with a document icon.
+   * Each non-null entry in `links` produces a small clickable button with a document icon
+   * that opens the file in the inline preview panel.
    * @param {Array<{ label: string, filePath: string | null | undefined }>} links - File link specs.
-   * @returns {HTMLDivElement} DOM element containing the spec link anchors.
+   * @returns {HTMLDivElement} DOM element containing the spec link buttons.
    */
   function buildSpecLinks(links) {
     const row = document.createElement("div");
@@ -241,15 +274,16 @@
       if (!filePath) {
         continue;
       }
-      const a = document.createElement("a");
-      a.className = "btn btn-spec-link";
-      a.href = `/api/preview?file=${encodeURIComponent(filePath)}`;
-      a.target = "_blank";
-      a.rel = "noopener";
-      a.innerHTML = `${iconSvg("description", 11)}<span>${escapeHtml(label)}</span>`;
-      a.title = filePath;
-      a.addEventListener("click", (evt) => evt.stopPropagation());
-      row.appendChild(a);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn btn-spec-link";
+      btn.innerHTML = `${iconSvg("description", 11)}<span>${escapeHtml(label)}</span>`;
+      btn.title = filePath;
+      btn.addEventListener("click", (evt) => {
+        evt.stopPropagation();
+        showSpecPreview(filePath, label);
+      });
+      row.appendChild(btn);
     }
     return row;
   }
@@ -1633,7 +1667,14 @@
       });
     }
 
-    // --- Step 3: Subscribe to Antigravity host workspace changes via window.sidecar ---
+    // --- Step 3: Bind spec-file preview panel close button ---
+    const previewClose = document.getElementById("spec-preview-close");
+    const previewPanel = document.getElementById("spec-preview-panel");
+    if (previewClose && previewPanel) {
+      previewClose.addEventListener("click", () => previewPanel.classList.add("hidden"));
+    }
+
+    // --- Step 4: Subscribe to Antigravity host workspace changes via window.sidecar ---
     if (
       window.sidecar &&
       typeof window.sidecar.onWorkspaceChange === "function"

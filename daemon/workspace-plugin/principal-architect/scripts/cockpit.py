@@ -1195,6 +1195,12 @@ class CockpitRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {"ok": False, "error": f"Cannot read file: {exc}"})
                 return
 
+            # If ?format=text, return raw text for inline preview panel consumption
+            fmt = ((query.get("format") or [""])[0] or "").strip().lower()
+            if fmt == "text":
+                self._send_text(200, raw_content, "text/plain; charset=utf-8")
+                return
+
             # Render as a styled HTML document with preformatted markdown content
             escaped_content = (
                 raw_content
