@@ -1,7 +1,7 @@
 {
-  "command": "python3",
+  "command": "sh",
   "args": [
-    "${PLUGIN_ROOT}/workspace-plugin/principal-architect/scripts/cockpit.py"
+    "./run-cockpit.sh"
   ],
   "restart_policy": "always",
   "display_name": "Principal Architect Cockpit",

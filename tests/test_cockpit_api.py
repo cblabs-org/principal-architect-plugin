@@ -219,9 +219,9 @@ def test_sidecar_manifest_contract() -> None:
     assert sidecar_path.is_file()
 
     data = json.loads(sidecar_path.read_text(encoding="utf-8"))
-    assert data["command"] == "python3"
+    assert data["command"] == "sh"
     assert data["args"] == [
-        "${PLUGIN_ROOT}/workspace-plugin/principal-architect/scripts/cockpit.py",
+        "./run-cockpit.sh",
     ]
     assert data["has_web_ui"] is True
     assert data["restart_policy"] == "always"
