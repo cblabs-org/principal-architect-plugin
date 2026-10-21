@@ -255,8 +255,8 @@ def _resolve_skill_paths(repo_root: Path, required_skills: Sequence[str]) -> lis
             d_home / "workspace-plugin" / "principal-architect" / "skills" / slug / "SKILL.md",
             user_home / ".gemini" / "config" / "skills" / slug / "SKILL.md",
             *plugin_skill_candidates,
-            user_home / ".gemini" / "jetski" / "builtin" / "skills" / slug / "SKILL.md",
-            user_home / ".gemini" / "jetski" / "builtin" / "contrib" / "skills" / slug / "SKILL.md",
+            user_home / ".gemini" / "antigravity" / "builtin" / "skills" / slug / "SKILL.md",
+            user_home / ".gemini" / "antigravity" / "builtin" / "contrib" / "skills" / slug / "SKILL.md",
         )
         chosen: Path | None = None
         for cand in candidates:

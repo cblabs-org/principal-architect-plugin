@@ -50,7 +50,7 @@
 ## model-routing (`scripts/models.py`)
 | Project | Scope | Context |
 |---|---|---|
-| [pr-03-vcs-bus-models-and-memory-modes](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) | Delivered `ARCHITECT_MODEL_PREFERENCE = ("gemini-4-argon-high", "gemini-3.1-pro-high", "claude-opus-5-5-high")`, `route`, `step_up` (`flash_lite -> flash -> inherit`, never downgrading to `"pro"`), `select_architect_model`, and `LanguageServerClient` (`start_conversation`, `set_pinned`, `send_message`, headless fallback). | [PROJECT.md](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) |
+| [pr-03-vcs-bus-models-and-memory-modes](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) | Delivered `ARCHITECT_MODEL_PREFERENCE = ("gemini-3.1-pro-high", "claude-opus-4-6-thinking", "gemini-3.1-pro-low")`, `route`, `step_up` (`flash_lite -> flash -> inherit`, never downgrading to `"pro"`), `select_architect_model`, and `LanguageServerClient` (`start_conversation`, `set_pinned`, `send_message`, headless fallback). | [PROJECT.md](../pr-03-vcs-bus-models-and-memory-modes/PROJECT.md) |
 
 ## memory-modes (`scripts/memory_grad.py`, `memory/` templates)
 | Project | Scope | Context |

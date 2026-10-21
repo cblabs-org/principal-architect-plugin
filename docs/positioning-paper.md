@@ -12,7 +12,7 @@ The `principal-architect` skill proved its core orchestration design during the 
 
 However, remaining a **pure prompt-driven skill** leaves five structural gaps:
 1. **Guardrails and contract boundaries are advisory prose, not mechanical constraints:** Nothing mechanically prevents a Tier 3 Engineer from editing files outside its `WORKORDER.md` Strict Boundary Box or stopping before tests pass, nor prevents a Tier 2 Principal Architect from drifting into inline application code edits or silently altering the PR scope assigned by the Tier 1 Chief Architect.
-2. **Untapped model and token efficiency:** Without a deterministic contract engine and complexity router, frontier model tokens (`Gemini 4 Argon`, `Gemini 3.1 Pro`, `Claude Opus`) are burned on repetitive edit-compile-test loops, or output tokens are wasted double-writing narrative memory logs when an external memory system (`repo-memory-plugin`) is already harvesting session trajectories.
+2. **Untapped model and token efficiency:** Without a deterministic contract engine and complexity router, frontier model tokens (`Gemini 3.1 Pro`, `Claude Opus 4.6`) are burned on repetitive edit-compile-test loops, or output tokens are wasted double-writing narrative memory logs when an external memory system (`repo-memory-plugin`) is already harvesting session trajectories.
 3. **No distinction between Monitored (interactive) and Autonomous (unattended) execution:** When a boundary expansion or ambiguity arises, there is no mechanical toggle between asking the human immediately (`Monitored Mode`) vs. reliably escalating up the agent hierarchy (`Tier 3 Worker` $\to$ `Tier 2 PA` $\to$ `Tier 1 Chief` $\to$ `Human Attention Queue` in `Autonomous Mode`).
 4. **Lack of formalized Local-Git Floor + Multi-Machine / Multi-Harness GitHub handoffs:** Repositories without a GitHub remote need a 100% functional local Git floor (`vcs_mode: "local_git"`), while projects spanning multiple machines (e.g., planning on a desktop workstation vs. building/testing on a lab machine wired to an ESP32) or multiple agent harnesses (Antigravity, Claude Code, Gemini CLI) need seamless GitHub PR/Review/Issue synchronization (`vcs_mode: "github"`).
 5. **Zero IDE visibility or one-click conversation routing:** Across a 15-PR programme, the user has no visual DAG in the Antigravity AuxPane to see which items need human attention, track Git/GitHub PR states (`Local`, `Draft`, `Staged`, `Reviewed`, `Merged`), or activate the right conversation in one click.
@@ -67,7 +67,7 @@ principal-architect-plugin/                  # Git repository root (Dev / Repo l
             │   ├── escalation.py            # Monitored vs. Autonomous escalation & structural blocker engine
             │   ├── vcs_sync.py              # Local Git floor + optional GitHub PR/Review/Issue transport
             │   ├── memory_grad.py           # `external` (succinct no-op) vs. `builtin` 3-file index updater
-            │   ├── models.py                # Model tier & family routing (Argon / 3.1 Pro / Opus / Flash)
+            │   ├── models.py                # Model tier & family routing (3.1 Pro / Opus / Flash)
             │   ├── cockpit.py               # AuxPane HTTP + SSE backend server
             │   ├── common.py                # Fast enrollment check (<1ms fast-exit) & transcript reader
             │   ├── pre_invocation.py        # Role/WO contract push, compaction recovery, skill highlighting
@@ -143,7 +143,7 @@ To calibrate how many attempts an Execution Worker or PR Audit loop should be gr
 
 ---
 
-## Part 3: Dynamic Model Efficiency, Skills Preservation, & Calling Argon vs. Gemini 3.1 Pro
+## Part 3: Dynamic Model Efficiency, Skills Preservation, & Calling Gemini 3.1 Pro vs. Claude Opus vs. Flash Tiers
 
 ### 3.1 The 4-Criterion Framework: When & How to Constrain Skills, Rules, Tools, & MCPs
 
@@ -156,14 +156,14 @@ Earlier we assumed skill descriptions were negligible (~25 tokens each) and prop
 | **3. KV Prompt-Cache Prefix Stability (`Static Per-Repo Role Prefix` vs. `Dynamic Per-WO Rewriting`)** | • Dynamically rewriting `agents/pa-engineer.md`'s system prompt or `tools:`/`skills:` list before every single Work Order busts the LLM's KV prompt-cache prefix across consecutive Work Orders on the same model tier (`flash`). | **Never rewrite `agents/*.md` per Work Order.** Constrain statically at the **Role $\times$ Repo** level so all `pa-engineer` runs share an identical cached system prefix, and pass per-Work-Order `required_skills` pointers in the `PreInvocation` `userMessage` (after the cached system prefix). |
 | **4. Tool & MCP Blast Radius per Role** | • Each MCP server injects ~1,500–6,000 tokens of JSON Schema declarations.<br>• Builtin tools like `search_web`, `search_marketplace`, `ask_question`, and `invoke_subagent` invite drift or stalls inside `pa-engineer`. | • **`pa-engineer`:** Strip `invoke_subagent`, `ask_question`, `search_web`, `search_marketplace`; keep `inheritMcp: true` for build/hardware MCPs (`platformio`).<br>• **`pa-auditor`:** Strip all file-write tools and set **`inheritMcp: false`** (saves thousands of MCP schema tokens and enforces a strict read-only firewall). |
 
-### 3.2 Calling Gemini 4 Argon vs. Gemini 3.1 Pro vs. Flash Tiers
+### 3.2 Calling Gemini 3.1 Pro vs. Claude Opus 4.6 vs. Flash Tiers
 
 | Target Model Family | CLI Slugs (`agy models`) & UI Names | 1. How to Call for Top-Level Conversations (Chief, PR PA, Debugger) | 2. How to Call for Subagents (`invoke_subagent` / `agents/*.md`) |
 |---|---|---|---|
-| **Gemini 4 Argon** *(Frontier Architecture, Auditing, & Complex Coding)* | • CLI: `gemini-4-argon --effort high\|medium\|low`<br>• UI: `Gemini 4 Argon (High / Medium / Low)` | • **Interactive IDE:** Select `Gemini 4 Argon (High)` in the session model picker (or start via Language Server API with the Argon model ID).<br>• **Headless CLI:** `agy -p --model gemini-4-argon --effort high` | • **Pass `Model: "inherit"`** when the parent Architect session is running on Argon! (Passing `Model: "pro"` downgrades off Argon to the platform's generic `pro` default.) |
-| **Gemini 3.1 Pro** | • CLI: `gemini-3.1-pro --effort high\|low`<br>• UI: `Gemini 3.1 Pro (High / Low)` | • **Interactive IDE:** Select `Gemini 3.1 Pro (High)` in the session model picker.<br>• **Headless CLI:** `agy -p --model gemini-3.1-pro --effort high` | • **Pass `Model: "inherit"`** when the parent session is on Gemini 3.1 Pro (or `Model: "pro"` when stepping up from a Flash parent session). |
-| **Gemini 3.8 / 3.7 / 3.5 Flash (`standard` WOs)** | • CLI: `gemini-3.8-flash --effort high\|medium`<br>• Tier alias: `flash` | • `agentapi new-conversation --model flash` | • Pass **`Model: "flash"`** on `invoke_subagent`. |
-| **Gemini 3.5 / 3.1 Flash Lite (`mechanical` WOs)** | • CLI: `gemini-3.5-flash-lite`<br>• Tier alias: `flash_lite` | • `agentapi new-conversation --model flash_lite` | • Pass **`Model: "flash_lite"`** on `invoke_subagent`. |
+| **Gemini 3.1 Pro** *(Frontier Architecture, Auditing, & Complex Coding)* | • CLI: `gemini-3.1-pro --effort high\|low`<br>• UI: `Gemini 3.1 Pro (High / Low)` | • **Interactive IDE:** Select `Gemini 3.1 Pro (High)` in the session model picker.<br>• **Headless CLI:** `agy -p --model gemini-3.1-pro --effort high` | • **Pass `Model: "inherit"`** when the parent Architect session is running on Gemini 3.1 Pro (High) or Claude Opus! (Passing `Model: "pro"` downgrades off the parent's explicit model/thinking tier to the platform's generic `pro` default.) |
+| **Claude Opus 4.6 (Thinking)** | • CLI: `claude-opus-4-6-thinking`<br>• UI: `Claude Opus 4.6 (Thinking)` | • **Interactive IDE:** Select `Claude Opus 4.6 (Thinking)` in the session model picker.<br>• **Headless CLI:** `agy -p --model claude-opus-4-6-thinking` | • **Pass `Model: "inherit"`** when the parent session is on Claude Opus 4.6 (Thinking). |
+| **Gemini 2.5 Flash (`standard` WOs)** | • CLI: `gemini-2.5-flash`<br>• Tier alias: `flash` | • `agentapi new-conversation --model flash` | • Pass **`Model: "flash"`** on `invoke_subagent`. |
+| **Gemini 2.5 Flash Lite (`mechanical` WOs)** | • CLI: `gemini-2.5-flash-lite`<br>• Tier alias: `flash_lite` | • `agentapi new-conversation --model flash_lite` | • Pass **`Model: "flash_lite"`** on `invoke_subagent`. |
 
 ---
 

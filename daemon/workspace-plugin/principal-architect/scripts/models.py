@@ -19,8 +19,8 @@ Exported API Summary
 --------------------
 Constants & Type Aliases:
 - `ARCHITECT_MODEL_PREFERENCE`: Ordered tuple of preferred frontier model identifiers for Chief
-  and Principal Architect sessions (`gemini-4-argon-high`, `gemini-3.1-pro-high`,
-  `claude-opus-5-5-high`).
+  and Principal Architect sessions (`gemini-3.1-pro-high`, `claude-opus-4-6-thinking`,
+  `gemini-3.1-pro-low`).
 - `TransportFn`: Callable type alias `(endpoint, payload, headers) -> response_dict` for custom or
   mock Language Server RPC transport injection.
 
@@ -76,12 +76,12 @@ import state_db
 
 # Ordered frontier model preference tuple for Chief and Principal Architect sessions (SPEC §5.3).
 ARCHITECT_MODEL_PREFERENCE: tuple[str, ...] = (
-    "gemini-4-argon-high",
     "gemini-3.1-pro-high",
-    "claude-opus-5-5-high",
+    "claude-opus-4-6-thinking",
+    "gemini-3.1-pro-low",
 )
 
-# Single-step model tier promotion table; top tier stays at 'inherit' to avoid downgrading Argon.
+# Single-step model tier promotion table; top tier stays at 'inherit' to avoid downgrading a frontier Pro or Opus model.
 _STEP_UP_MAP: dict[str, str] = {
     "flash_lite": "flash",
     "flash": "inherit",
@@ -103,7 +103,7 @@ TransportFn = Callable[[str, dict[str, Any], dict[str, str]], dict[str, Any]]
 def step_up(tier: str) -> str:
     """Step up one model tier (`flash_lite -> flash -> inherit -> inherit`).
 
-    Never returns `"pro"` so a parent running on Argon or Opus is never downgraded.
+    Never returns `"pro"` so a parent running on a frontier Pro or Opus model is never downgraded.
 
     Args:
         tier: Current model tier identifier (`"flash_lite"`, `"flash"`, or `"inherit"`).

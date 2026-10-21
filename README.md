@@ -214,7 +214,7 @@ The global daemon bundles the **Principal Architect Cockpit** AuxPane sidecar (`
 - **Zone 1 — Top Header & Controls:**
   - Workspace selector (auto-switching on `window.sidecar.onWorkspaceChange`), live environment badges (`Git: GitHub | Local`, `Memory: repo-memory | Built-in`), and `[🔄 Sync]` button (`POST /api/sync`).
   - Interactive **`[👀 Monitored]` / `[🤖 Autonomous]`** segmented execution mode toggle (`POST /api/mode`).
-  - **Architect Model Selector** (`Gemini 4 Argon (High)`, `Gemini 3.1 Pro (High)`, `Claude Opus 5.5 (High)`).
+  - **Architect Model Selector** (`Gemini 3.1 Pro (High)`, `Claude Opus 4.6 (Thinking)`, `Gemini 3.1 Pro (Low)`).
 - **Zone 2 — `🔔 Human Attention Needed` Inbox:**
   - Prioritized action cards for pending human decisions:
     - **Plan Approval:** `[✅ Approve Plan]` (`POST /api/pr/approve-plan`) and `[💬 Open PA]`.

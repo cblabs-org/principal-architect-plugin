@@ -219,9 +219,9 @@ def test_sidecar_manifest_contract() -> None:
     assert sidecar_path.is_file()
 
     data = json.loads(sidecar_path.read_text(encoding="utf-8"))
-    assert data["command"] == "python3"
+    assert data["command"] == "sh"
     assert data["args"] == [
-        "${PLUGIN_ROOT}/workspace-plugin/principal-architect/scripts/cockpit.py",
+        "./run-cockpit.sh",
     ]
     assert data["has_web_ui"] is True
     assert data["restart_policy"] == "always"
@@ -398,6 +398,15 @@ def test_get_workspaces_state_and_static_routes(
             assert "<title>PROJECT.md</title>" in prev_html
             assert "Demo Feature Implementation" in prev_html
 
+        with urllib.request.urlopen(
+            f"{base_url}/api/preview?file={proj_preview_q}&format=text", timeout=5.0
+        ) as resp_prev_txt:
+            assert resp_prev_txt.status == 200
+            assert "text/plain" in resp_prev_txt.headers.get("Content-Type", "")
+            prev_txt = resp_prev_txt.read().decode("utf-8")
+            assert "Demo Feature Implementation" in prev_txt
+            assert "<!doctype html>" not in prev_txt.lower()
+
         # Missing ?file= returns 400
         status_prev_400, err_prev_400 = _http_get_json(f"{base_url}/api/preview")
         assert status_prev_400 == 400
@@ -521,13 +530,13 @@ def test_post_mutation_endpoints(
             {
                 "workspace": ws_str,
                 "mode": "autonomous",
-                "architect_model": "claude-opus-5-5-high",
+                "architect_model": "claude-opus-4-6-thinking",
             },
         )
         assert code == 200
         assert mode_res["ok"] is True
         assert mode_res["execution_mode"] == "autonomous"
-        assert mode_res["architect_model"] == "claude-opus-5-5-high"
+        assert mode_res["architect_model"] == "claude-opus-4-6-thinking"
 
         code_bad, bad_res = _http_post_json(
             f"{base_url}/api/mode",

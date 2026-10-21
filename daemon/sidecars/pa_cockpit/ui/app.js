@@ -22,7 +22,8 @@
  *     - showToast(message, isError): Render a transient status or error toast in Zone 1.
  *     - isOpenableConversationId(conversationId): Check whether a conversation ID is a real IDE thread vs synthetic fallback.
  *     - jumpToConversation(conversationId): Focus an agent thread in the host IDE sidebar.
- *     - buildSpecLinks(links): Build an inline row of clickable spec-file preview anchors.
+ *     - showSpecPreview(filePath, label): Show the inline spec-file preview overlay panel with content fetched from GET /api/preview?format=text.
+ *     - buildSpecLinks(links): Build an inline row of clickable spec-file preview buttons.
  *     - postJson(endpoint, payload): Execute a JSON POST request against the Cockpit API.
  *   Mutation Actions:
  *     - triggerSync(): Reconcile VCS trailers, audits, and receipts via POST /api/sync.
@@ -70,8 +71,7 @@
   };
 
   /**
-   * Canonical Antigravity Google Symbols wght300 24px SVG path data (`viewBox="0 -960 960 960"`).
-   * Matches `agent_ui_toolkit/src/icons/generated/*.tsx` and `LoadingSpinner.tsx`.
+   * Canonical Google Symbols wght300 24px SVG path data (`viewBox="0 -960 960 960"`).
    */
   const GOOGLE_SYMBOL_PATHS = {
     progress_activity:
@@ -115,7 +115,7 @@
   };
 
   /**
-   * Render an inline Google Symbol SVG matching Antigravity's `GoogleSymbol.tsx` / `LoadingSpinner.tsx`.
+   * Render an inline Google Symbol SVG for the Cockpit UI.
    * @param {keyof typeof GOOGLE_SYMBOL_PATHS} name - Google Symbol identifier.
    * @param {number} [size=12] - Icon width and height in pixels.
    * @param {string} [extraClass=""] - Optional CSS class names (e.g. "animate-spin").
@@ -229,10 +229,43 @@
   }
 
   /**
+   * Show the inline spec-file preview panel with content fetched from `/api/preview`.
+   * @param {string} filePath - Absolute filesystem path to preview.
+   * @param {string} label - Display label for the file (e.g. "PROGRAM.md").
+   * @returns {void}
+   */
+  async function showSpecPreview(filePath, label) {
+    const panel = document.getElementById("spec-preview-panel");
+    const titleEl = document.getElementById("spec-preview-title");
+    const pathEl = document.getElementById("spec-preview-path");
+    const contentEl = document.getElementById("spec-preview-content");
+    if (!panel || !titleEl || !pathEl || !contentEl) {
+      return;
+    }
+    titleEl.textContent = label;
+    pathEl.textContent = filePath;
+    contentEl.textContent = "Loading…";
+    panel.classList.remove("hidden");
+
+    try {
+      const resp = await fetch(`/api/preview?file=${encodeURIComponent(filePath)}&format=text`);
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        contentEl.textContent = `Error: ${errData.error || resp.statusText}`;
+        return;
+      }
+      contentEl.textContent = await resp.text();
+    } catch (err) {
+      contentEl.textContent = `Failed to load: ${err.message}`;
+    }
+  }
+
+  /**
    * Build an inline spec-file links row for Programme, PR, or Work Order cards.
-   * Each non-null entry in `links` produces a small clickable anchor with a document icon.
+   * Each non-null entry in `links` produces a small clickable button with a document icon
+   * that opens the file in the inline preview panel.
    * @param {Array<{ label: string, filePath: string | null | undefined }>} links - File link specs.
-   * @returns {HTMLDivElement} DOM element containing the spec link anchors.
+   * @returns {HTMLDivElement} DOM element containing the spec link buttons.
    */
   function buildSpecLinks(links) {
     const row = document.createElement("div");
@@ -241,15 +274,16 @@
       if (!filePath) {
         continue;
       }
-      const a = document.createElement("a");
-      a.className = "btn btn-spec-link";
-      a.href = `/api/preview?file=${encodeURIComponent(filePath)}`;
-      a.target = "_blank";
-      a.rel = "noopener";
-      a.innerHTML = `${iconSvg("description", 11)}<span>${escapeHtml(label)}</span>`;
-      a.title = filePath;
-      a.addEventListener("click", (evt) => evt.stopPropagation());
-      row.appendChild(a);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn btn-spec-link";
+      btn.innerHTML = `${iconSvg("description", 11)}<span>${escapeHtml(label)}</span>`;
+      btn.title = filePath;
+      btn.addEventListener("click", (evt) => {
+        evt.stopPropagation();
+        showSpecPreview(filePath, label);
+      });
+      row.appendChild(btn);
     }
     return row;
   }
@@ -1633,7 +1667,14 @@
       });
     }
 
-    // --- Step 3: Subscribe to Antigravity host workspace changes via window.sidecar ---
+    // --- Step 3: Bind spec-file preview panel close button ---
+    const previewClose = document.getElementById("spec-preview-close");
+    const previewPanel = document.getElementById("spec-preview-panel");
+    if (previewClose && previewPanel) {
+      previewClose.addEventListener("click", () => previewPanel.classList.add("hidden"));
+    }
+
+    // --- Step 4: Subscribe to Antigravity host workspace changes via window.sidecar ---
     if (
       window.sidecar &&
       typeof window.sidecar.onWorkspaceChange === "function"
