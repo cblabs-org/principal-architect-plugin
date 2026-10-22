@@ -174,6 +174,58 @@ def test_daemon_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert common.daemon_home() == expected
 
 
+def test_environment_generalisation_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify app_data_dir, cli_data_dir, cli_bin, agentapi_bin, and bin/env.sh loading."""
+    fake_home = tmp_path / "fake_home"
+    fake_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.delenv("ANTIGRAVITY_APP_DIR", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_CLI_DIR", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_CLI_BIN", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_AGENTAPI_BIN", raising=False)
+
+    daemon_dir = tmp_path / "pa-daemon"
+    (daemon_dir / "bin").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("PA_DAEMON_HOME", str(daemon_dir))
+
+    # 1. Default external paths when unset and no bin/env.sh exists
+    assert common.app_data_dir() == fake_home.resolve() / ".gemini" / "antigravity"
+    assert common.cli_data_dir() == fake_home.resolve() / ".gemini" / "antigravity-cli"
+    assert common.cli_bin() == "agy"
+
+    # 2. Optional <PA_DAEMON_HOME>/bin/env.sh provides defaults when process env is unset
+    custom_app = fake_home / ".gemini" / "custom-app"
+    (custom_app / "bin").mkdir(parents=True, exist_ok=True)
+    fake_agentapi = custom_app / "bin" / "agentapi"
+    fake_agentapi.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_agentapi.chmod(0o755)
+
+    env_sh = daemon_dir / "bin" / "env.sh"
+    env_sh.write_text(
+        "# Environment overrides\n"
+        'export ANTIGRAVITY_APP_DIR="$HOME/.gemini/custom-app"\n'
+        'export ANTIGRAVITY_CLI_DIR="$HOME/.gemini/custom-cli"\n'
+        'export ANTIGRAVITY_CLI_BIN="/opt/custom/bin/custom-cli"\n',
+        encoding="utf-8",
+    )
+
+    assert common.app_data_dir() == custom_app.resolve()
+    assert common.cli_data_dir() == (fake_home / ".gemini" / "custom-cli").resolve()
+    assert common.cli_bin() == "/opt/custom/bin/custom-cli"
+
+    # When agentapi is not on PATH, agentapi_bin falls back to <ANTIGRAVITY_APP_DIR>/bin/agentapi
+    monkeypatch.setenv("PATH", "/nonexistent")
+    assert common.agentapi_bin() == str(fake_agentapi.resolve())
+
+    # 3. Explicit process environment variables take precedence over bin/env.sh
+    explicit_app = tmp_path / "explicit-app"
+    explicit_app.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("ANTIGRAVITY_APP_DIR", str(explicit_app))
+    assert common.app_data_dir() == explicit_app.resolve()
+
+
 def test_is_repo_enrolled(daemon_home: Path, tmp_repo: Path, tmp_path: Path) -> None:
     """Verify is_repo_enrolled handles missing/malformed registries and correctly detects repos."""
     # Empty inputs

@@ -64,11 +64,19 @@ with zipfile.ZipFile(zip_path, "r") as zf:
     zf.extractall(unpack_dir)
 PYEOF
 
-# --- Step 3: Back up existing daemon state and copy extracted bundle in-place ---
+# --- Step 3: Back up existing daemon state and bin/env.sh and copy extracted bundle in-place ---
 STATE_BACKUP="${TMP_WORK_DIR}/state_backup"
+ENV_SH_BACKUP="${TMP_WORK_DIR}/env.sh"
+PA_ENV_BACKUP="${TMP_WORK_DIR}/pa.env"
 if [[ -d "${PA_DAEMON_HOME}/state" ]]; then
   mkdir -p "${STATE_BACKUP}"
   cp -a "${PA_DAEMON_HOME}/state/." "${STATE_BACKUP}/"
+fi
+if [[ -f "${PA_DAEMON_HOME}/bin/env.sh" ]]; then
+  cp -a "${PA_DAEMON_HOME}/bin/env.sh" "${ENV_SH_BACKUP}"
+fi
+if [[ -f "${PA_DAEMON_HOME}/bin/pa.env" ]]; then
+  cp -a "${PA_DAEMON_HOME}/bin/pa.env" "${PA_ENV_BACKUP}"
 fi
 
 mkdir -p "${PA_DAEMON_HOME}"
@@ -78,10 +86,18 @@ rm -rf "${PA_DAEMON_HOME}/bin" \
        "${PA_DAEMON_HOME}/workspace-plugin"
 cp -a "${UNPACK_DIR}/pa-daemon/." "${PA_DAEMON_HOME}/"
 
-# --- Step 4: Restore daemon state and ensure `state/registry.json` exists ---
+# --- Step 4: Restore daemon state/env.sh and ensure `state/registry.json` exists ---
 mkdir -p "${PA_DAEMON_HOME}/state"
 if [[ -d "${STATE_BACKUP}" ]]; then
   cp -a "${STATE_BACKUP}/." "${PA_DAEMON_HOME}/state/"
+fi
+if [[ -f "${ENV_SH_BACKUP}" ]]; then
+  mkdir -p "${PA_DAEMON_HOME}/bin"
+  cp -a "${ENV_SH_BACKUP}" "${PA_DAEMON_HOME}/bin/env.sh"
+fi
+if [[ -f "${PA_ENV_BACKUP}" ]]; then
+  mkdir -p "${PA_DAEMON_HOME}/bin"
+  cp -a "${PA_ENV_BACKUP}" "${PA_DAEMON_HOME}/bin/pa.env"
 fi
 
 if [[ ! -f "${PA_DAEMON_HOME}/state/registry.json" ]]; then

@@ -56,10 +56,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# --- Step 2: Back up existing daemon state prior to replacing bundle files ---
-if [[ -d "${PA_DAEMON_HOME}/state" ]]; then
+# --- Step 2: Back up existing daemon state and bin/env.sh prior to replacing bundle files ---
+if [[ -d "${PA_DAEMON_HOME}/state" || -f "${PA_DAEMON_HOME}/bin/env.sh" || -f "${PA_DAEMON_HOME}/bin/pa.env" ]]; then
   TMP_STATE_BACKUP="$(mktemp -d -t pa-daemon-state-XXXXXX)"
-  cp -a "${PA_DAEMON_HOME}/state/." "${TMP_STATE_BACKUP}/"
+  if [[ -d "${PA_DAEMON_HOME}/state" ]]; then
+    mkdir -p "${TMP_STATE_BACKUP}/state"
+    cp -a "${PA_DAEMON_HOME}/state/." "${TMP_STATE_BACKUP}/state/"
+  fi
+  if [[ -f "${PA_DAEMON_HOME}/bin/env.sh" ]]; then
+    cp -a "${PA_DAEMON_HOME}/bin/env.sh" "${TMP_STATE_BACKUP}/env.sh"
+  fi
+  if [[ -f "${PA_DAEMON_HOME}/bin/pa.env" ]]; then
+    cp -a "${PA_DAEMON_HOME}/bin/pa.env" "${TMP_STATE_BACKUP}/pa.env"
+  fi
 fi
 
 # --- Step 3: Copy `daemon/` bundle in-place into `PA_DAEMON_HOME` and strip caches ---
@@ -69,6 +78,9 @@ rm -rf "${PA_DAEMON_HOME}/bin" \
        "${PA_DAEMON_HOME}/skills" \
        "${PA_DAEMON_HOME}/workspace-plugin"
 cp -a "${REPO_ROOT}/daemon/." "${PA_DAEMON_HOME}/"
+if [[ -f "${REPO_ROOT}/LICENSE" ]]; then
+  cp -f "${REPO_ROOT}/LICENSE" "${PA_DAEMON_HOME}/LICENSE"
+fi
 
 # Strip any cached bytecode directories copied from the working tree
 find "${PA_DAEMON_HOME}" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
@@ -90,10 +102,18 @@ for rel in ("plugin.json", "workspace-plugin/principal-architect/plugin.json"):
         manifest_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PYEOF
 
-# --- Step 5: Restore backed-up daemon state and initialize default `registry.json` ---
+# --- Step 5: Restore backed-up daemon state/env.sh and initialize default `registry.json` ---
 mkdir -p "${PA_DAEMON_HOME}/state"
-if [[ -n "${TMP_STATE_BACKUP}" && -d "${TMP_STATE_BACKUP}" ]]; then
-  cp -a "${TMP_STATE_BACKUP}/." "${PA_DAEMON_HOME}/state/"
+if [[ -n "${TMP_STATE_BACKUP}" && -d "${TMP_STATE_BACKUP}/state" ]]; then
+  cp -a "${TMP_STATE_BACKUP}/state/." "${PA_DAEMON_HOME}/state/"
+fi
+if [[ -n "${TMP_STATE_BACKUP}" && -f "${TMP_STATE_BACKUP}/env.sh" ]]; then
+  mkdir -p "${PA_DAEMON_HOME}/bin"
+  cp -a "${TMP_STATE_BACKUP}/env.sh" "${PA_DAEMON_HOME}/bin/env.sh"
+fi
+if [[ -n "${TMP_STATE_BACKUP}" && -f "${TMP_STATE_BACKUP}/pa.env" ]]; then
+  mkdir -p "${PA_DAEMON_HOME}/bin"
+  cp -a "${TMP_STATE_BACKUP}/pa.env" "${PA_DAEMON_HOME}/bin/pa.env"
 fi
 
 if [[ ! -f "${PA_DAEMON_HOME}/state/registry.json" ]]; then

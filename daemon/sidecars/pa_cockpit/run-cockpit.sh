@@ -22,6 +22,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Script lives at <daemon_home>/sidecars/pa_cockpit/run-cockpit.sh
 DAEMON_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 export PA_DAEMON_HOME="${PA_DAEMON_HOME:-${DAEMON_DIR}}"
+for env_cand in "${PA_DAEMON_HOME}/bin/pa.env" "${PA_DAEMON_HOME}/bin/env.sh"; do
+  if [ -f "${env_cand}" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "${env_cand}"
+    set +a
+  fi
+done
 
 COCKPIT_PY="${PA_DAEMON_HOME}/workspace-plugin/principal-architect/scripts/cockpit.py"
 

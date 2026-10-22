@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "principal-architect-plugin"
 version = "0.1.0"
 description = "Mechanically enforced multi-tier orchestration plugin for Principal Architect workflows"
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2,<3",

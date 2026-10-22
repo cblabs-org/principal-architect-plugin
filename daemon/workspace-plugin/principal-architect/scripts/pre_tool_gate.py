@@ -115,6 +115,8 @@ FILE_MUTATION_TOOLS: frozenset[str] = frozenset(
         "replace_file_content",
         "edit_file",
         "multi_replace_file_content",
+        "sed_file",
+        "notebook_edit",
     }
 )
 
@@ -122,6 +124,7 @@ FILE_MUTATION_TOOLS: frozenset[str] = frozenset(
 _PATH_ARG_KEYS: tuple[str, ...] = (
     "TargetFile",
     "Path",
+    "NotebookPath",
     "file_path",
     "path",
     "FilePath",

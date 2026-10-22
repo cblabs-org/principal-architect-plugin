@@ -400,7 +400,7 @@ class LanguageServerClient:
         # --- Step 2: Attempt agentapi CLI or Language Server StartConversation RPC ---
         if self.is_connected():
             if self.transport is None and "PYTEST_CURRENT_TEST" not in os.environ:
-                agentapi_bin = shutil.which("agentapi")
+                agentapi_bin = shutil.which("agentapi") or common.agentapi_bin()
                 if agentapi_bin:
                     try:
                         tier_flag = "pro"
@@ -584,7 +584,7 @@ class LanguageServerClient:
         conv_id = str(conversation_id).strip()
         if self.is_connected() and conv_id and not conv_id.startswith("headless-"):
             if self.transport is None and "PYTEST_CURRENT_TEST" not in os.environ:
-                agentapi_bin = shutil.which("agentapi")
+                agentapi_bin = shutil.which("agentapi") or common.agentapi_bin()
                 if agentapi_bin:
                     try:
                         proc = subprocess.run(

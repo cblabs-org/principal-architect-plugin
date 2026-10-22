@@ -237,6 +237,7 @@ def _resolve_skill_paths(repo_root: Path, required_skills: Sequence[str]) -> lis
     real_root = Path(os.path.realpath(repo_root))
     d_home = common.daemon_home()
     user_home = Path(os.path.realpath(Path.home()))
+    app_dir = common.app_data_dir()
     plugins_root = user_home / ".gemini" / "config" / "plugins"
 
     # --- Step 2: Probe candidate SKILL.md locations in priority order for each slug ---
@@ -255,8 +256,8 @@ def _resolve_skill_paths(repo_root: Path, required_skills: Sequence[str]) -> lis
             d_home / "workspace-plugin" / "principal-architect" / "skills" / slug / "SKILL.md",
             user_home / ".gemini" / "config" / "skills" / slug / "SKILL.md",
             *plugin_skill_candidates,
-            user_home / ".gemini" / "antigravity" / "builtin" / "skills" / slug / "SKILL.md",
-            user_home / ".gemini" / "antigravity" / "builtin" / "contrib" / "skills" / slug / "SKILL.md",
+            app_dir / "builtin" / "skills" / slug / "SKILL.md",
+            app_dir / "builtin" / "contrib" / "skills" / slug / "SKILL.md",
         )
         chosen: Path | None = None
         for cand in candidates:

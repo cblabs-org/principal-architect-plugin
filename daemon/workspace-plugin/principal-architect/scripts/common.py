@@ -21,6 +21,11 @@ Exported API Summary:
 - find_repo_root: Locate the enclosing git repository root directory for a filesystem path.
 - workspace_dir: Resolve the active `principal-architect-workspace` path for a repository root.
 - daemon_home: Resolve the base directory for `pa-daemon` global state and configuration.
+- load_daemon_env: Load optional `<PA_DAEMON_HOME>/bin/env.sh` overrides into `os.environ`.
+- app_data_dir: Resolve the Antigravity application data directory (`ANTIGRAVITY_APP_DIR`).
+- cli_data_dir: Resolve the Antigravity CLI data directory (`ANTIGRAVITY_CLI_DIR`).
+- cli_bin: Resolve the Antigravity CLI executable name or path (`ANTIGRAVITY_CLI_BIN`).
+- agentapi_bin: Resolve the `agentapi` CLI executable path (`ANTIGRAVITY_AGENTAPI_BIN`).
 - activate_daemon_venv: Register `site-packages` from the daemon or repo `.venv` on `sys.path`.
 - is_repo_enrolled: Fast-exit check (< 1 ms) determining if any path belongs to an enrolled repo.
 - read_transcript: Parse a JSONL conversation transcript file into a list of step dictionaries.
@@ -35,6 +40,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import site
 import subprocess
 import sys
@@ -178,6 +184,148 @@ def daemon_home() -> Path:
     if env_val and env_val.strip():
         return Path(os.path.realpath(os.path.expanduser(env_val.strip())))
     return Path(os.path.realpath(Path.home())) / ".gemini" / "config" / "plugins" / "pa-daemon"
+
+
+# Matches simple `export KEY="VALUE"` or `KEY=VALUE` assignments in `bin/env.sh`.
+_ENV_ASSIGNMENT_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+
+
+def load_daemon_env(daemon_dir: str | Path | None = None) -> dict[str, str]:
+    """Load optional `<PA_DAEMON_HOME>/bin/{pa.env,env.sh}` overrides into `os.environ`.
+
+    Allows environment-specific deployment wrappers (such as custom `ANTIGRAVITY_APP_DIR`,
+    `ANTIGRAVITY_CLI_DIR`, `ANTIGRAVITY_CLI_BIN`, or `ANTIGRAVITY_AGENTAPI_BIN` paths) to
+    be inherited automatically even when Python hook entrypoints are spawned directly
+    without going through a shell wrapper. Explicit process environment variables take
+    precedence.
+
+    Args:
+        daemon_dir: Optional explicit `pa-daemon` directory override (defaults to `daemon_home()`).
+
+    Returns:
+        Dictionary of key-value pairs parsed from `bin/pa.env` or `bin/env.sh` (empty if absent).
+    """
+    # --- Step 1: Locate optional bin/pa.env or bin/env.sh inside the daemon directory ---
+    base_dir = Path(os.path.realpath(daemon_dir)) if daemon_dir is not None else daemon_home()
+    loaded: dict[str, str] = {}
+    home_str = str(Path.home())
+
+    for fname in ("pa.env", "env.sh"):
+        env_file = base_dir / "bin" / fname
+        if not env_file.is_file():
+            continue
+
+        # --- Step 2: Parse simple KEY=VALUE lines and populate unset os.environ keys ---
+        try:
+            raw_lines = env_file.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+
+        for raw_line in raw_lines:
+            stripped = raw_line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            match = _ENV_ASSIGNMENT_RE.match(stripped)
+            if not match:
+                continue
+            key, raw_val = match.group(1), match.group(2).strip()
+            if len(raw_val) >= 2 and raw_val[0] == raw_val[-1] and raw_val[0] in ('"', "'"):
+                val = raw_val[1:-1]
+            else:
+                val = raw_val.split("#", 1)[0].strip()
+            # Expand basic $HOME / ${HOME} / ~ tokens in path values
+            val = val.replace("${HOME}", home_str).replace("$HOME", home_str)
+            val = os.path.expanduser(val)
+            loaded[key] = val
+            if key not in os.environ or not os.environ[key].strip():
+                os.environ[key] = val
+    return loaded
+
+
+def app_data_dir() -> Path:
+    """Resolve the Antigravity application data directory (`ANTIGRAVITY_APP_DIR`).
+
+    Loads optional `<PA_DAEMON_HOME>/bin/env.sh` defaults first, honors the
+    `ANTIGRAVITY_APP_DIR` environment variable when set and non-empty, and otherwise
+    defaults to `~/.gemini/antigravity`.
+
+    Returns:
+        Canonical `Path` to the Antigravity application data directory.
+    """
+    load_daemon_env()
+    env_val = os.environ.get("ANTIGRAVITY_APP_DIR")
+    if env_val and env_val.strip():
+        return Path(os.path.realpath(os.path.expanduser(env_val.strip())))
+    return Path(os.path.realpath(Path.home())) / ".gemini" / "antigravity"
+
+
+def cli_data_dir() -> Path:
+    """Resolve the Antigravity CLI data directory (`ANTIGRAVITY_CLI_DIR`).
+
+    Loads optional `<PA_DAEMON_HOME>/bin/env.sh` defaults first, honors the
+    `ANTIGRAVITY_CLI_DIR` environment variable when set and non-empty, and otherwise
+    defaults to `~/.gemini/antigravity-cli`.
+
+    Returns:
+        Canonical `Path` to the Antigravity CLI data directory.
+    """
+    load_daemon_env()
+    env_val = os.environ.get("ANTIGRAVITY_CLI_DIR")
+    if env_val and env_val.strip():
+        return Path(os.path.realpath(os.path.expanduser(env_val.strip())))
+    return Path(os.path.realpath(Path.home())) / ".gemini" / "antigravity-cli"
+
+
+def cli_bin() -> str:
+    """Resolve the configured Antigravity CLI executable name or path (`ANTIGRAVITY_CLI_BIN`).
+
+    Loads optional `<PA_DAEMON_HOME>/bin/env.sh` defaults first, honors the
+    `ANTIGRAVITY_CLI_BIN` environment variable when set and non-empty, and otherwise
+    defaults to `"agy"`.
+
+    Returns:
+        Executable name or expanded filesystem path string for the Antigravity CLI.
+    """
+    load_daemon_env()
+    env_val = os.environ.get("ANTIGRAVITY_CLI_BIN")
+    if env_val and env_val.strip():
+        return os.path.expanduser(env_val.strip())
+    return "agy"
+
+
+def agentapi_bin() -> str | None:
+    """Resolve the `agentapi` CLI executable path if available.
+
+    Searches in precedence order:
+    1. `ANTIGRAVITY_AGENTAPI_BIN` environment variable (or `<PA_DAEMON_HOME>/bin/env.sh`)
+    2. `agentapi` on `PATH` via `shutil.which("agentapi")`
+    3. `<ANTIGRAVITY_APP_DIR>/bin/agentapi`
+
+    Returns:
+        Resolved executable path string if found and executable, or `None` otherwise.
+    """
+    # --- Step 1: Check explicit ANTIGRAVITY_AGENTAPI_BIN override ---
+    load_daemon_env()
+    env_val = os.environ.get("ANTIGRAVITY_AGENTAPI_BIN")
+    if env_val and env_val.strip():
+        expanded = os.path.expanduser(env_val.strip())
+        found_override = shutil.which(expanded)
+        if found_override:
+            return found_override
+        cand = Path(expanded)
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return str(cand)
+
+    # --- Step 2: Check PATH via shutil.which and fallback to <app_data_dir>/bin/agentapi ---
+    which_bin = shutil.which("agentapi")
+    if which_bin:
+        return which_bin
+
+    app_bin = app_data_dir() / "bin" / "agentapi"
+    if app_bin.is_file() and os.access(app_bin, os.X_OK):
+        return str(app_bin)
+
+    return None
 
 
 def activate_daemon_venv(daemon_dir: str | Path | None = None) -> bool:

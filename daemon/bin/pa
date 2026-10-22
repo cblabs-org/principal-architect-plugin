@@ -29,6 +29,14 @@ done
 BIN_DIR="$(cd -P "$(dirname "${SOURCE}")" && pwd)"
 RESOLVED_DAEMON_HOME="$(cd -P "${BIN_DIR}/.." && pwd)"
 export PA_DAEMON_HOME="${PA_DAEMON_HOME:-${RESOLVED_DAEMON_HOME}}"
+for env_cand in "${PA_DAEMON_HOME}/bin/pa.env" "${PA_DAEMON_HOME}/bin/env.sh"; do
+  if [[ -f "${env_cand}" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "${env_cand}"
+    set +a
+  fi
+done
 
 # --- Step 2: Clear macOS browser quarantine attribute on first run if present ---
 if [[ "$(uname -s)" == "Darwin" ]] && command -v xattr >/dev/null 2>&1; then

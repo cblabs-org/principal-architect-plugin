@@ -461,7 +461,7 @@ def test_hooks_json_schema() -> None:
     assert len(pre_tool) == 1
     assert (
         pre_tool[0]["matcher"]
-        == "write_to_file|write_file|replace_file_content|edit_file|multi_replace_file_content|run_command|invoke_subagent"
+        == "write_to_file|write_file|replace_file_content|edit_file|multi_replace_file_content|sed_file|notebook_edit|run_command|invoke_subagent"
     )
     assert pre_tool[0]["hooks"] == [
         {
