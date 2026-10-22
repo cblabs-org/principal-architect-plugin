@@ -306,39 +306,40 @@ def _is_pr_merged(
     git_trailers: dict[str, tuple[str, str | None]],
     repo_root: Path,
 ) -> bool:
-    """Determine whether a PR is merged into `base_branch` in Git or has terminal status.
+    """Determine whether a PR has been merged into the trunk (`main`) branch or closed.
 
     Args:
         proj_doc: Loaded `PROJECT.md` document for the Pull Request.
         work_orders: Reconciled Work Order dictionaries belonging to the Pull Request.
-        git_trailers: Mapping of `wo_id -> (commit_sha, verified_hash)` from local Git log.
+        git_trailers: Mapping of `wo_id -> (commit_sha, verified_hash)` from the trunk (`main`) branch.
         repo_root: Repository root `Path`.
 
     Returns:
-        `True` if the PR status is `GRADUATED`/`CLOSED`, all WOs appear in `HEAD` trailers,
-        or the PR branch is an ancestor of `base_branch`.
+        `True` if the PR status is `CLOSED`, all of its Work Order trailers appear on the trunk
+        branch (`main`), or all Work Orders are `COMPLETED` and the PR branch has diverged and
+        been merged into `base_branch`.
     """
-    # --- Step 1: Check explicit terminal status on PROJECT.md ---
+    # --- Step 1: Check explicit CLOSED status on PROJECT.md ---
     status_str = proj_doc.spec.status.value.upper()
-    if status_str in ("GRADUATED", "CLOSED"):
+    if status_str == "CLOSED":
         return True
 
     ch = proj_doc.spec.charter
     base_branch = ch.base_branch or "main"
 
-    # --- Step 2: Check if git trailers on HEAD contain all of this PR's work orders ---
+    # --- Step 2: Check if git trailers on the trunk branch contain all of this PR's work orders ---
     if work_orders:
-        all_wos_in_git = all(
+        all_wos_in_trunk = all(
             (wo.get("wo_id", "") in git_trailers or wo.get("wo_id", "").upper() in git_trailers)
             for wo in work_orders
         )
-        if all_wos_in_git:
+        if all_wos_in_trunk:
             return True
 
-    # --- Step 3: Check if git ancestry confirms the branch is merged into base_branch ---
-    if (repo_root / ".git").is_dir():
+    # --- Step 3: Check if a GRADUATED PR's branch commits are merged into base_branch ---
+    if status_str == "GRADUATED" and (repo_root / ".git").is_dir():
         for cand in (ch.branch, f"feat/{ch.slug}", ch.slug):
-            if not cand:
+            if not cand or cand == base_branch:
                 continue
             try:
                 res = common.run(
@@ -381,6 +382,7 @@ def build_workspace_state(
 
     db_file = ws_dir / ".state" / "state.db"
     git_trailers = pa_cli._scan_git_trailers(real_root)
+    trunk_trailers = pa_cli._scan_git_trailers(real_root, rev="main")
 
     # --- Step 2: Read environment configuration from StateDB ---
     with state_db.StateDB(db_file) as db:
@@ -698,7 +700,7 @@ def build_workspace_state(
                     _build_wo_entry(wdoc.spec.wo_id, wo_dir_name, None, wdoc)
                 )
 
-            is_merged = _is_pr_merged(proj_doc, work_orders, git_trailers, real_root)
+            is_merged = _is_pr_merged(proj_doc, work_orders, trunk_trailers, real_root)
             is_active = not is_merged and proj_doc.spec.status.value.upper() not in (
                 "GRADUATED",
                 "CLOSED",

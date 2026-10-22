@@ -24,6 +24,7 @@ Exported API Summary:
     _SCRIPTS_DIR: Absolute directory path containing the hook script modules.
     _SPAWN_HEADER_LINE_RE: Regex matching structured `PA_ROLE:`, `PR_ID:`, `WO_ID:`, and
         `PROGRAMME_ID:` spawn header lines.
+    _WO_ID_TOKEN_RE: Regex matching canonical Work Order identifiers (`WO-01.1`, `WO-02`, etc.).
   Public Functions:
     parse_spawn_header(text) -> dict[str, str]:
         Parse structured spawn header fields from prompt or transcript text.
@@ -72,6 +73,9 @@ _SPAWN_HEADER_LINE_RE = re.compile(
     r"^\s*(?:[>\-*]+\s*)?[\*_`]*\b(PA_ROLE|PR_ID|WO_ID|PROGRAMME_ID)\b[\*_`]*\s*:\s*(.+?)\s*$",
     re.IGNORECASE,
 )
+
+# Matches canonical Work Order identifiers (`WO-01`, `WO-01.2`, `WO-02.1a`, etc.).
+_WO_ID_TOKEN_RE = re.compile(r"\b(WO-\d+(?:\.\d+)?[a-z]?)\b", re.IGNORECASE)
 
 
 def parse_spawn_header(text: str) -> dict[str, str]:
@@ -160,6 +164,40 @@ def _extract_spawn_headers_from_payload_and_steps(
             and "programme_id" in merged
         ):
             break
+
+    # --- Step 3: Fall back to subagent type metadata and inline PR/WO tokens when PA_ROLE is omitted ---
+    if "role" not in merged:
+        for role_key in (
+            "subagentType",
+            "subagent_type",
+            "typeName",
+            "type_name",
+            "agentType",
+            "agent_type",
+            "agentName",
+            "agent_name",
+            "role",
+        ):
+            raw_role_val = payload.get(role_key)
+            if isinstance(raw_role_val, str) and raw_role_val.strip():
+                norm_role = pre_tool_gate._normalize_role(raw_role_val.strip())
+                if norm_role in ("chief", "pa", "engineer", "auditor", "debugger"):
+                    merged["role"] = norm_role
+                    break
+
+    if "role" in merged:
+        for text in candidates:
+            if "pr_id" not in merged:
+                m_pr = pre_tool_gate._PR_ID_TOKEN_RE.search(text)
+                if m_pr:
+                    merged["pr_id"] = m_pr.group(1).upper()
+            if "wo_id" not in merged:
+                m_wo = _WO_ID_TOKEN_RE.search(text)
+                if m_wo:
+                    merged["wo_id"] = m_wo.group(1).upper()
+            if "pr_id" in merged and "wo_id" in merged:
+                break
+
     return merged
 
 
@@ -396,7 +434,42 @@ def _build_architect_injection(
                 f"{esc.get('summary') or ''}"
             )
 
-    # --- Step 3: Append memory_mode instructions and builtin memory excerpts ---
+    # --- Step 3: Append role playbook & Split-Authority CLI guardrails ---
+    if role == "chief":
+        lines.append(
+            "### Role Playbook (`chief` — Tier 1 Chief Architect)\n"
+            "- **Owned Artifacts:** `programme-<slug>/PROGRAM.md` and **Part I (`PR Charter`)** "
+            "of `pr-<XX>-<slug>/PROJECT.md` (directly under workspace root, NEVER nested inside "
+            "`programme-<slug>/`).\n"
+            "- **Mandatory CLI Workflow:**\n"
+            "  1. Scaffold/update `PROGRAM.md`: `pa programme init <slug> --title \"<Title>\"`\n"
+            "  2. Author & lock each PR's Part I Charter (`charter_hash`): `pa programme charter "
+            "<PR-ID> --slug <pr-slug> --title \"<Title>\" --allowed-module <path> "
+            "--verification-command \"<cmd>\"`\n"
+            "  3. Dispatch Tier 2 Principal Architect: `pa pr start <PR-ID>` (do NOT hand-write "
+            "`PROJECT.md` without `pa programme charter`, and never author `WORKORDER.md` or "
+            "edit source code inline)."
+        )
+    elif role == "pa":
+        lines.append(
+            "### Role Playbook (`pa` — Tier 2 Principal Architect)\n"
+            "- **Owned Artifacts:** **Part II (`## 3. Implementation Plan & Work Order Breakdown`)** "
+            "and **Part III (`## 4. Outcome & Session Log`)** of `PROJECT.md`, plus **Part I** "
+            "of `wo<M>-<slug>/WORKORDER.md`.\n"
+            "- **Mechanical Guardrails (Rules R1, R1b, R2, R6):**\n"
+            "  - **NEVER** edit `PROGRAM.md` or Part I (`charter` YAML or Sections `## 1.`–`## 2.`) "
+            "of a locked `PROJECT.md`, and **NEVER** run `pa pr start`, `pa programme init`, or "
+            "`pa programme charter`.\n"
+            "  - Use `pa pr claim <PR-ID>` to check out the PR branch and sync state.\n"
+            "  - If `allowed_modules` or Part I Charter needs amendment, run "
+            "`pa escalate --to-chief --pr-id <PR-ID> --requested-file <path> --summary \"<reason>\"` "
+            "and wait for Chief resolution.\n"
+            "  - Validate and lock Work Orders (`spec_hash`) via `pa pr approve-plan <PR-ID>` "
+            "before dispatching `pa-engineer` via `invoke_subagent` (always begin `Prompt` with "
+            "`PA_ROLE: engineer`, `WO_ID: <WO-ID>`, `PR_ID: <PR-ID>`)."
+        )
+
+    # --- Step 4: Append memory_mode instructions and builtin memory excerpts ---
     if memory_mode == "external":
         lines.append(
             "Memory Mode: external — Use Succinct Write-Back Mode (defer codebase memory to "

@@ -481,11 +481,11 @@
     const latestAudit = pr.latest_audit;
 
     // --- Step 2: Check terminal graduation and merge states ---
-    if (st === "GRADUATED") {
-      return `${iconSvg("verified", 12)}<span>Graduated${ghNum}</span>`;
-    }
     if (pr.is_merged) {
       return `${iconSvg("verified", 12)}<span>Merged${ghNum}</span>`;
+    }
+    if (st === "GRADUATED") {
+      return `${iconSvg("verified", 12)}<span>Graduated${ghNum}</span>`;
     }
 
     // --- Step 3: Check Cold-Firewall audit verdicts and staging states ---

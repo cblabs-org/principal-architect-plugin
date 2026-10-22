@@ -2214,3 +2214,97 @@ def test_pa_cli_github_mode_lifecycle_with_mocked_gh(
     assert issue_out["issue_url"] == "https://github.com/example/repo/issues/99"
 
 
+def test_pa_pr_start_inherits_program_md_and_blocks_or_reuses_pa_session(
+    tmp_repo: Path,
+    daemon_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Verify `pa pr start` inherits PR metadata from PROGRAM.md, reuses pinned PA session, and blocks `PA_ROLE=pa`."""
+    import pa_cli
+
+    _ = daemon_home
+    monkeypatch.delenv("ANTIGRAVITY_LS_ADDRESS", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_CSRF_TOKEN", raising=False)
+
+    assert (
+        pa_cli.main(
+            [
+                "enroll",
+                str(tmp_repo),
+                "--vcs-mode",
+                "local_git",
+                "--memory-mode",
+                "external",
+            ]
+        )
+        == 0
+    )
+    ws_dir = common.workspace_dir(tmp_repo)
+
+    # 1. Create PROGRAM.md with PR-01 defined (`pr-01-custom-slug`, `allowed_modules: ["custom_dir/"]`)
+    prog_dir = ws_dir / "programme-demo"
+    prog_dir.mkdir(parents=True, exist_ok=True)
+    prog_md = prog_dir / "PROGRAM.md"
+    prog_spec = schemas.ProgramSpec(
+        programme_id="prog-demo",
+        title="Demo Programme",
+        base_branch="main",
+        status="APPROVED",
+        prs=[
+            schemas.PRNodeSpec(
+                id="PR-01",
+                slug="pr-01-custom-slug",
+                title="Custom PR From Program",
+                branch="feat/pr-01-custom-slug",
+                base_branch="main",
+                allowed_modules=["custom_dir/"],
+                required_skills=["house-style-documentation"],
+            )
+        ],
+    )
+    prog_md.write_text(
+        schemas.dump_document(
+            prog_spec,
+            [
+                schemas.Section("## 1. Programme Charter", "Vision.\n"),
+                schemas.Section("## 2. PR Topology", "DAG.\n"),
+                schemas.Section("## 3. Cross-PR Interfaces", "Contracts.\n"),
+            ],
+        ),
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=tmp_repo, check=True)
+    subprocess.run(["git", "commit", "-m", "Add PROGRAM.md"], cwd=tmp_repo, check=True)
+
+    # 2. Running `pa pr start PR-01` without --slug/--title inherits PR-01 from PROGRAM.md (not pr-01-feature)
+    capsys.readouterr()
+    assert pa_cli.main(["pr", "start", "PR-01", "--path", str(tmp_repo)]) == 0
+    out1 = json.loads(capsys.readouterr().out)
+    assert out1["pr_id"] == "PR-01"
+    assert out1["branch"] == "feat/pr-01-custom-slug"
+    proj_md = ws_dir / "pr-01-custom-slug" / "PROJECT.md"
+    assert proj_md.is_file()
+    proj_doc = schemas.load_project(proj_md)
+    assert proj_doc.spec.charter.allowed_modules == ["custom_dir/"]
+    assert proj_doc.spec.charter.required_skills == ["house-style-documentation"]
+
+    # 3. Mark the PA session pinned=1 and verify a second `pa pr start PR-01` reuses the existing session
+    with state_db.StateDB(ws_dir / ".state" / "state.db") as db:
+        db.update_session(out1["conversation_id"], pinned=1)
+
+    capsys.readouterr()
+    assert pa_cli.main(["pr", "start", "PR-01", "--path", str(tmp_repo)]) == 0
+    out2 = json.loads(capsys.readouterr().out)
+    assert out2["conversation_id"] == out1["conversation_id"]
+    assert out2["reused_existing_session"] is True
+
+    # 4. Calling `pa pr start`, `pa programme init`, or `pa programme charter` from inside `PA_ROLE=pa` fails with exit code 1
+    monkeypatch.setenv("PA_ROLE", "pa")
+    capsys.readouterr()
+    assert pa_cli.main(["pr", "start", "PR-01", "--path", str(tmp_repo)]) == 1
+    err_role = capsys.readouterr().err
+    assert "Role 'pa' cannot run 'pa pr start'" in err_role
+
+
+

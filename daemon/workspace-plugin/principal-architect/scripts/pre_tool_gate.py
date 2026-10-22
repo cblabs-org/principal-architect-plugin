@@ -29,11 +29,15 @@ Exported API Summary:
     _CMD_ARG_KEYS: Ordered tuple of tool argument keys inspected to extract a shell command string.
     _R6_GRADUATE_RE: Regex matching `pa pr graduate` or `gh pr merge` graduation commands.
     _PR_ID_TOKEN_RE: Regex matching canonical Pull Request identifiers (`PR-01`, `PR-02a`, etc.).
-    _R4_FORBIDDEN_GIT_GH_RE: Regex matching git branch/history and gh commands forbidden to workers.
+    _R4_FORBIDDEN_GIT_GH_RE: Regex matching git branch/history, gh, and pa lifecycle commands forbidden to workers.
+    _PA_FORBIDDEN_LIFECYCLE_CMD_RE: Regex matching Tier 1/human lifecycle commands forbidden to Tier 2 PAs.
     _R5_AUDITOR_MUTATING_CMD_RE: Regex matching mutating commands forbidden to auditors.
     _SAFE_REDIRECT_STRIP_RE: Regex matching benign fd-duplication and `/dev/null` redirections.
     _FILE_REDIRECT_RE: Regex matching shell output redirection operators (`>` / `>>`) and target.
     _COMMIT_MSG_QUOTED_RE: Regex matching quoted `-m` / `--message` flags in git commit commands.
+    _CANONICAL_PROGRAM_SUBPATH_RE: Regex matching canonical `programme-<slug>/PROGRAM.md` workspace subpath.
+    _CANONICAL_PROJECT_SUBPATH_RE: Regex matching canonical `pr-<XX>-<slug>/PROJECT.md` workspace subpath.
+    _CANONICAL_WORKORDER_SUBPATH_RE: Regex matching canonical `pr-<XX>-<slug>/wo<M>-<slug>/WORKORDER.md` subpath.
   Public Functions:
     resolve_repo_rel_path(repo_root, raw_path) -> tuple[bool, str, Path]:
         Resolve raw_path via os.path.realpath against repo_root and check containment.
@@ -64,6 +68,8 @@ Exported API Summary:
         Determine whether a shell command violates the R5 auditor read-only lockdown.
     _architect_cmd_mutates_outside_agents(cmd_str) -> str | None:
         Return the offending path if an architect shell command mutates files outside `.agents/`.
+    _cmd_mutates_protected_specs(role, cmd_str) -> str | None:
+        Return the offending spec path if a shell command mutates protected PA specs or hashes.
     _workspace_subpath(rel_posix, real_root, ws_dir) -> str | None:
         Return the path relative to the PA workspace directory if rel_posix resides inside it.
     _find_project_doc(ws_dir, pr_id) -> Any | None:
@@ -147,13 +153,19 @@ _R6_GRADUATE_RE = re.compile(
 # Matches canonical Pull Request identifiers such as `PR-01` or `PR-02a`.
 _PR_ID_TOKEN_RE = re.compile(r"\b(PR-\d+[a-z]?)\b", re.IGNORECASE)
 
-# Matches git history/branch manipulation and GitHub CLI commands forbidden under Rule R4.
+# Matches git history/branch manipulation, GitHub CLI, and PA lifecycle commands forbidden under Rule R4.
 _R4_FORBIDDEN_GIT_GH_RE = re.compile(
     r"\b(?:"
     r"git\s+(?:push|checkout|switch|branch|rebase|merge)\b"
     r"|git\s+reset\s+--hard\b"
     r"|gh\s+(?:pr|issue)\b"
+    r"|pa(?:\s+|_cli\.py\s+)(?:programme|pr)\b"
     r")"
+)
+
+# Matches Tier 1 / human lifecycle commands forbidden to Tier 2 `pa` sessions (`pa pr start`, `pa programme init|charter`).
+_PA_FORBIDDEN_LIFECYCLE_CMD_RE = re.compile(
+    r"\bpa(?:\s+|_cli\.py\s+)(?:programme\s+(?:init|charter)|pr\s+start)\b"
 )
 
 # Matches mutating git, gh, filesystem, or in-place sed commands forbidden under Rule R5.
@@ -180,6 +192,17 @@ _FILE_REDIRECT_RE = re.compile(r"(?:^|[^0-9<>])>{1,2}\s*(\S+)")
 # Matches quoted commit message flags (`-m "..."` or `--message '...'`) before keyword checks.
 _COMMIT_MSG_QUOTED_RE = re.compile(
     r"(?:-m|--message)\s+(?:\"[^\"]*\"|'[^']*')"
+)
+
+# Matches canonical `programme-<slug>/PROGRAM.md` workspace subpath.
+_CANONICAL_PROGRAM_SUBPATH_RE = re.compile(r"^programme-[a-z0-9-]+/PROGRAM\.md$")
+
+# Matches canonical `pr-<XX>-<slug>/PROJECT.md` workspace subpath directly under workspace root.
+_CANONICAL_PROJECT_SUBPATH_RE = re.compile(r"^pr-\d+[a-z]?-[a-z0-9-]+/PROJECT\.md$")
+
+# Matches canonical `pr-<XX>-<slug>/wo<M>-<slug>/WORKORDER.md` workspace subpath.
+_CANONICAL_WORKORDER_SUBPATH_RE = re.compile(
+    r"^pr-\d+[a-z]?-[a-z0-9-]+/wo\d+[a-z]?-[a-z0-9-]+/WORKORDER\.md$"
 )
 
 
@@ -542,7 +565,7 @@ def _architect_cmd_mutates_outside_agents(cmd_str: str) -> str | None:
         if cleaned and not cleaned.startswith(".agents/"):
             return cleaned
 
-    # --- Step 2: Check direct filesystem mutation verbs (rm, mv, cp, touch, tee) ---
+    # --- Step 2: Check direct filesystem mutation verbs (rm, mv, cp, touch, tee, sed -i) ---
     mut_match = re.search(
         r"\b(?:rm|mv|cp|touch|tee)\s+(?:-[a-zA-Z]+\s+)*([^\s;|>&]+)",
         scrubbed,
@@ -551,6 +574,76 @@ def _architect_cmd_mutates_outside_agents(cmd_str: str) -> str | None:
         target = mut_match.group(1).strip("'\"")
         if target and not target.startswith(".agents/") and not target.startswith("/dev/null"):
             return target
+    sed_match = re.search(
+        r"\bsed\s+(?:-[a-zA-Z]*i|--in-place)(?:=\S+)?\s+(?:'[^']*'|\"[^\"]*\"|\S+)\s+([^\s;|>&]+)",
+        scrubbed,
+    )
+    if sed_match:
+        target = sed_match.group(1).strip("'\"")
+        if target and not target.startswith(".agents/") and not target.startswith("/dev/null"):
+            return target
+    return None
+
+
+def _cmd_mutates_protected_specs(role: str, cmd_str: str) -> str | None:
+    """Detect shell commands that bypass `FILE_MUTATION_TOOLS` to mutate protected PA specs or hashes.
+
+    Prevents agents from using `rm`, `mv`, `cp`, `tee`, `truncate`, `sed -i`, file redirections,
+    or inline Python scripts (`compute_charter_hash` / `compute_spec_hash`) inside `run_command`
+    to bypass `Rule R1`, `Rule R1b`, or `Rule R3` hash/schema verification gates.
+
+    Args:
+        role: Normalized caller role (`"chief"`, `"pa"`, or `"engineer"`).
+        cmd_str: Raw shell command string executed via `run_command`.
+
+    Returns:
+        The offending target artifact path/description if a forbidden shell mutation is detected,
+        or `None` if the command is compliant.
+    """
+    # --- Step 1: Reject direct charter_hash / spec_hash forgery in subordinate shells ---
+    if not cmd_str:
+        return None
+    if role == "pa" and re.search(r"\bcompute_charter_hash\b", cmd_str):
+        return "PROJECT.md (charter_hash forgery via run_command)"
+    if role == "engineer" and re.search(r"\b(?:compute_spec_hash|compute_charter_hash)\b", cmd_str):
+        return "WORKORDER.md (spec_hash forgery via run_command)"
+
+    # --- Step 2: Determine protected spec filenames for the caller's Split-Authority tier ---
+    scrubbed = _SAFE_REDIRECT_STRIP_RE.sub("", cmd_str)
+    if role == "chief":
+        protected_names = ("WORKORDER.md",)
+    elif role == "pa":
+        protected_names = ("PROGRAM.md", "PROJECT.md")
+    elif role == "engineer":
+        protected_names = ("PROGRAM.md", "PROJECT.md", "WORKORDER.md")
+    else:
+        return None
+
+    # --- Step 3: Check shell redirects, destructive verbs, and in-place sed targeting specs ---
+    for target in _FILE_REDIRECT_RE.findall(scrubbed):
+        cleaned = target.strip("'\"")
+        for pname in protected_names:
+            if cleaned == pname or cleaned.endswith("/" + pname):
+                return cleaned
+
+    for pname in protected_names:
+        escaped = re.escape(pname)
+        if re.search(
+            rf"\b(?:rm|mv|cp|tee|truncate)\b[^\n;|]*\b{escaped}\b"
+            rf"|\bsed\s+(?:-[a-zA-Z]*i|--in-place)\b[^\n;|]*\b{escaped}\b",
+            scrubbed,
+        ):
+            return pname
+
+    # Also block `pa` or `engineer` from deleting entire `pr-*` or `programme-*` directories via `rm`
+    if role in ("pa", "engineer"):
+        rm_ws_match = re.search(
+            r"\brm\s+(?:-[a-zA-Z]+\s+)*([^\s;|>&]*(?:programme-|pr-\d+)[^\s;|>&]*)",
+            scrubbed,
+        )
+        if rm_ws_match:
+            return rm_ws_match.group(1).strip("'\"")
+
     return None
 
 
@@ -668,20 +761,37 @@ def _check_r6_graduation_gate(
         `None` if a valid `APPROVED` audit report matches `HEAD`, otherwise the finalized
         R6 governance decision dictionary.
     """
-    # --- Step 1: Resolve current git HEAD SHA and target PR identifier ---
+    # --- Step 1: Filter out quoted strings or --help lookups and resolve current git HEAD SHA ---
+    unquoted_cmd = re.sub(r"(?:\"[^\"]*\"|'[^']*')", "", cmd_str)
+    active_grad_segments = [
+        seg.strip()
+        for seg in re.split(r"(?:&&|\|\||[;|\n])", unquoted_cmd)
+        if _R6_GRADUATE_RE.search(seg)
+        and not re.search(r"(?:^|\s)(?:--help|-h)(?:\s|$)", seg)
+    ]
+    if not active_grad_segments:
+        return None
+
     import schemas
 
     res = runner(["git", "rev-parse", "HEAD"], cwd=real_root)
     head_sha = res.stdout.strip() if res.returncode == 0 and res.stdout.strip() else "HEAD"
 
-    m = _PR_ID_TOKEN_RE.search(cmd_str)
+    m = _PR_ID_TOKEN_RE.search(" ".join(active_grad_segments))
     target_pr_id = m.group(1).upper() if m else pr_id
     if not target_pr_id:
         proj_doc = _find_project_doc(ws_dir, None)
         if proj_doc is not None:
             target_pr_id = proj_doc.spec.charter.pr_id
 
-    # --- Step 2: Scan AUDIT-round-*.md files for an APPROVED verdict matching HEAD ---
+    # --- Step 2: Scan AUDIT-round-*.md files for an APPROVED verdict matching HEAD (or audit commit) ---
+    parent_res = runner(["git", "rev-parse", "HEAD~1"], cwd=real_root)
+    parent_sha = (
+        parent_res.stdout.strip()
+        if parent_res.returncode == 0 and parent_res.stdout.strip()
+        else ""
+    )
+
     for audit_path in sorted(ws_dir.glob("pr-*/AUDIT-round-*.md")):
         try:
             audit_doc = schemas.load_audit(audit_path)
@@ -690,12 +800,44 @@ def _check_r6_graduation_gate(
         report = audit_doc.spec
         if target_pr_id and report.pr_id.upper() != target_pr_id.upper():
             continue
-        if (
-            report.verdict == "APPROVED"
-            and head_sha != "HEAD"
-            and (head_sha.startswith(report.head_sha) or report.head_sha.startswith(head_sha))
-        ):
+        if report.verdict != "APPROVED" or head_sha == "HEAD" or not report.head_sha:
+            continue
+        if head_sha.startswith(report.head_sha) or report.head_sha.startswith(head_sha):
             return None
+
+        try:
+            pr_dir_rel = audit_path.parent.resolve().relative_to(real_root).as_posix()
+        except ValueError:
+            continue
+        allowed_audit_re = re.compile(rf"^{re.escape(pr_dir_rel)}/AUDIT-round-\d+\.md$")
+        proj_rel = f"{pr_dir_rel}/PROJECT.md"
+
+        if parent_sha and (
+            parent_sha.startswith(report.head_sha) or report.head_sha.startswith(parent_sha)
+        ):
+            diff_res = runner(["git", "diff", "--name-only", parent_sha, head_sha], cwd=real_root)
+            if diff_res.returncode == 0:
+                changed = [ln.strip() for ln in diff_res.stdout.splitlines() if ln.strip()]
+                if not changed or all(
+                    cf == proj_rel or bool(allowed_audit_re.match(cf)) for cf in changed
+                ):
+                    return None
+
+        anc_res = runner(
+            ["git", "merge-base", "--is-ancestor", report.head_sha, head_sha],
+            cwd=real_root,
+        )
+        if anc_res.returncode == 0:
+            diff_anc = runner(
+                ["git", "diff", "--name-only", report.head_sha, head_sha],
+                cwd=real_root,
+            )
+            if diff_anc.returncode == 0:
+                changed_anc = [ln.strip() for ln in diff_anc.stdout.splitlines() if ln.strip()]
+                if not changed_anc or all(
+                    cf == proj_rel or bool(allowed_audit_re.match(cf)) for cf in changed_anc
+                ):
+                    return None
 
     # --- Step 3: Escalate or block when no matching APPROVED AuditReport exists ---
     return _finalize_decision(
@@ -752,20 +894,86 @@ def _check_architect_file_gates(
             ),
         )
 
-    # --- Step 2: Enforce Chief Architect restriction against authoring WORKORDER.md (Rule R1) ---
+    # --- Step 2: Enforce canonical workspace paths and Chief Architect schema/scope rules ---
+    import schemas
+
     target_name = Path(ws_sub).name
+    if role == "chief" and target_name == "WORKORDER.md":
+        return _finalize_decision(
+            db,
+            session,
+            escalation.decide("R1", mode, {"path": rel_posix, "pr_id": pr_id}),
+        )
+
+    if target_name == "PROGRAM.md" and not _CANONICAL_PROGRAM_SUBPATH_RE.fullmatch(ws_sub):
+        return {
+            "permissionDecision": "deny",
+            "decision": "deny",
+            "rule": "R1",
+            "mode": mode,
+            "reason": (
+                f"Invalid PROGRAM.md path '{rel_posix}'. PROGRAM.md must reside at "
+                f"'.agents/plugins/principal-architect-workspace/programme-<slug>/PROGRAM.md' "
+                f"(use 'pa programme init <slug> --title \"...\"')."
+            ),
+        }
+    if target_name == "PROJECT.md" and not _CANONICAL_PROJECT_SUBPATH_RE.fullmatch(ws_sub):
+        return {
+            "permissionDecision": "deny",
+            "decision": "deny",
+            "rule": "R1",
+            "mode": mode,
+            "reason": (
+                f"Invalid PROJECT.md path '{rel_posix}'. PROJECT.md must reside directly under "
+                f"'.agents/plugins/principal-architect-workspace/pr-<XX>-<slug>/PROJECT.md' "
+                f"(never nested inside programme-<slug>/; use 'pa programme charter <PR-ID> "
+                f"--slug <slug> --title \"...\"')."
+            ),
+        }
+    if target_name == "WORKORDER.md" and not _CANONICAL_WORKORDER_SUBPATH_RE.fullmatch(ws_sub):
+        return {
+            "permissionDecision": "deny",
+            "decision": "deny",
+            "rule": "R1",
+            "mode": mode,
+            "reason": (
+                f"Invalid WORKORDER.md path '{rel_posix}'. WORKORDER.md must reside at "
+                f"'.agents/plugins/principal-architect-workspace/pr-<XX>-<slug>/wo<M>-<slug>/WORKORDER.md'."
+            ),
+        }
+
     if role == "chief":
-        if target_name == "WORKORDER.md":
-            return _finalize_decision(
-                db,
-                session,
-                escalation.decide("R1", mode, {"path": rel_posix, "pr_id": pr_id}),
+        if target_name in ("PROGRAM.md", "PROJECT.md"):
+            existing_text = (
+                real_target.read_text(encoding="utf-8") if real_target.is_file() else ""
             )
+            proposed_text = simulate_file_edit(existing_text, tool_name, args)
+            if proposed_text is not None:
+                try:
+                    fm_data, _ = schemas.parse_document(proposed_text)
+                    if target_name == "PROGRAM.md":
+                        schemas.ProgramSpec.model_validate(fm_data)
+                    else:
+                        schemas.ProjectSpec.model_validate(fm_data)
+                except Exception as exc:  # noqa: BLE001
+                    cli_hint = (
+                        "pa programme init <slug> --title \"...\""
+                        if target_name == "PROGRAM.md"
+                        else "pa programme charter <PR-ID> --slug <slug> --title \"...\""
+                    )
+                    return {
+                        "permissionDecision": "deny",
+                        "decision": "deny",
+                        "rule": "R1",
+                        "mode": mode,
+                        "reason": (
+                            f"Invalid {target_name} frontmatter schema at '{rel_posix}': {exc}. "
+                            f"Always scaffold and lock {target_name} using '{cli_hint}'."
+                        ),
+                    }
         return None
 
     # --- Step 3: Enforce PA restrictions on PROGRAM.md and locked Charters (Rule R1b) ---
-    import schemas
-
     if target_name == "PROGRAM.md":
         return _finalize_decision(
             db,
@@ -1008,7 +1216,7 @@ def _check_worker_gates(
     Returns:
         `None` if the tool call is permitted, or a finalized R3/R4 decision dictionary.
     """
-    # --- Step 1: Enforce Rule R4 git/gh command lockdown on run_command calls ---
+    # --- Step 1: Enforce Rule R4 git/gh command lockdown and R3 spec lock on run_command calls ---
     if tool_name == "run_command":
         scrubbed_cmd = _COMMIT_MSG_QUOTED_RE.sub("", cmd_str)
         if _R4_FORBIDDEN_GIT_GH_RE.search(scrubbed_cmd):
@@ -1019,6 +1227,22 @@ def _check_worker_gates(
                     "R4",
                     mode,
                     {"command": cmd_str, "pr_id": pr_id, "wo_id": wo_id},
+                ),
+            )
+        spec_mut = _cmd_mutates_protected_specs("engineer", cmd_str)
+        if spec_mut is not None:
+            return _finalize_decision(
+                db,
+                session,
+                escalation.decide(
+                    "R3",
+                    mode,
+                    {
+                        "path": spec_mut,
+                        "pr_id": pr_id,
+                        "wo_id": wo_id,
+                        "reason_code": "SPEC_LOCK_VIOLATION",
+                    },
                 ),
             )
         return None
@@ -1237,6 +1461,29 @@ def evaluate_pre_tool(
                 if arch_res is not None:
                     return arch_res
             elif tool_name == "run_command":
+                if role == "pa" and _PA_FORBIDDEN_LIFECYCLE_CMD_RE.search(cmd_str):
+                    return {
+                        "permissionDecision": "deny",
+                        "decision": "deny",
+                        "rule": "R1b",
+                        "mode": mode,
+                        "reason": (
+                            "Principal Architect (role=pa) cannot run 'pa pr start', "
+                            "'pa programme init', or 'pa programme charter' (which spawn "
+                            "duplicate architect conversations or overwrite locked Part I "
+                            "Charters). Use 'pa pr claim <PR-ID>' to check out the PR branch, "
+                            "'pa pr approve-plan <PR-ID>' to lock Work Orders, or "
+                            "'pa escalate --to-chief' if Part I Charter changes are needed."
+                        ),
+                    }
+                spec_mut = _cmd_mutates_protected_specs(role, cmd_str)
+                if spec_mut is not None:
+                    rule_id = "R1b" if role == "pa" else "R1"
+                    return _finalize_decision(
+                        db,
+                        session,
+                        escalation.decide(rule_id, mode, {"path": spec_mut, "pr_id": pr_id}),
+                    )
                 offending = _architect_cmd_mutates_outside_agents(cmd_str)
                 if offending is not None:
                     return _finalize_decision(

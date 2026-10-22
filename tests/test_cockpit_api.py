@@ -347,6 +347,8 @@ def test_get_workspaces_state_and_static_routes(
         assert len(state_payload["prs"]) == 1
         pr01 = state_payload["prs"][0]
         assert pr01["pr_id"] == "PR-01"
+        assert pr01["is_merged"] is False
+        assert pr01["is_active"] is True
         assert pr01["charter_locked"] is True
         assert pr01["charter_valid"] is True
         assert pr01["charter_hash"]

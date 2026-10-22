@@ -1260,6 +1260,21 @@ def test_pre_tool_gate_r5_auditor_and_r6_graduation(
     with StateDB(ws_dir / ".state" / "state.db") as db:
         db.set_config("execution_mode", "monitored")
 
+    # --help and quoted grep strings must never trigger Rule R6 even without an AuditReport
+    for non_grad_cmd in (
+        "pa pr graduate --help",
+        "pa status && pa pr graduate -h",
+        "git grep -n 'pa pr graduate' tests/",
+    ):
+        res_r6_help = pre_tool_gate.evaluate_pre_tool(
+            {
+                "conversationId": "conv-pa",
+                "toolCall": {"name": "run_command", "args": {"CommandLine": non_grad_cmd}},
+            },
+            repo_root=tmp_repo,
+        )
+        assert res_r6_help["permissionDecision"] == "allow", f"Unexpected R6 block for: {non_grad_cmd}"
+
     res_r6_mon = pre_tool_gate.evaluate_pre_tool(
         {
             "conversationId": "conv-pa",
@@ -1313,6 +1328,28 @@ def test_pre_tool_gate_r5_auditor_and_r6_graduation(
         repo_root=tmp_repo,
     )
     assert res_r6_approved["permissionDecision"] == "allow"
+
+    # Commit AUDIT-round-1.md (as `pa pr post-audit` does) and verify R6 still allows graduation
+    subprocess.run(
+        ["git", "add", str(audit_path.relative_to(tmp_repo))],
+        cwd=tmp_repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "audit(pr-02): round 1 — APPROVED"],
+        cwd=tmp_repo,
+        check=True,
+        capture_output=True,
+    )
+    res_r6_post_audit_commit = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-pa",
+            "toolCall": {"name": "run_command", "args": {"CommandLine": "pa pr graduate PR-02"}},
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_r6_post_audit_commit["permissionDecision"] == "allow"
 
     # Subprocess stdin/stdout round-trip on enrolled repo
     script_path = Path(pre_tool_gate.__file__).resolve()
@@ -2735,6 +2772,130 @@ def test_pr02_dogfood_workspace_specs_and_hashes() -> None:
         found_ids.append(wo_doc.spec.wo_id)
 
     assert found_ids == expected_ids
+
+
+def test_pre_tool_gate_blocks_rogue_pa_lifecycle_and_shell_spec_bypasses(
+    tmp_repo: Path, daemon_home: Path
+) -> None:
+    """Verify fixes for PA running `pa pr start`, bash `charter_hash`/`spec_hash` forgery, and nested `PROJECT.md` paths."""
+    ws_dir, proj_path, _ = _setup_enrolled_workspace(
+        tmp_repo, daemon_home, mode="autonomous"
+    )
+    ws_rel = str(ws_dir.relative_to(tmp_repo))
+
+    # 1. PA (`role=pa`) blocked from running `pa pr start`, `pa programme init`, or `pa programme charter`
+    for forbidden_pa_cmd in (
+        "pa pr start PR-02 --slug pr-02-override",
+        "pa programme init rogue --title 'Rogue'",
+        "pa programme charter PR-02 --allowed-module daemon/",
+    ):
+        res_pa_lc = pre_tool_gate.evaluate_pre_tool(
+            {
+                "conversationId": "conv-pa",
+                "toolCall": {"name": "run_command", "args": {"CommandLine": forbidden_pa_cmd}},
+            },
+            repo_root=tmp_repo,
+        )
+        assert res_pa_lc["permissionDecision"] == "deny"
+        assert res_pa_lc["rule"] == "R1b"
+        assert "pa pr claim" in res_pa_lc["reason"]
+
+    # 2. PA (`role=pa`) blocked from forging charter_hash, deleting pr-* dirs, or mutating PROJECT.md/PROGRAM.md via bash
+    for rogue_pa_bash in (
+        "python3 -c 'import schemas; schemas.compute_charter_hash(doc)'",
+        f"rm -rf {ws_rel}/pr-02-agents-and-dual-mode-hooks",
+        f"sed -i 's/src/all/' {proj_path.relative_to(tmp_repo)}",
+        f"echo hacked > {ws_rel}/programme-sample/PROGRAM.md",
+    ):
+        res_pa_bash = pre_tool_gate.evaluate_pre_tool(
+            {
+                "conversationId": "conv-pa",
+                "toolCall": {"name": "run_command", "args": {"CommandLine": rogue_pa_bash}},
+            },
+            repo_root=tmp_repo,
+        )
+        assert res_pa_bash["permissionDecision"] == "deny"
+        assert res_pa_bash["rule"] == "R1b"
+
+    # 3. Chief (`role=chief`) blocked from writing PROJECT.md nested inside programme-<slug>/ or without valid frontmatter
+    nested_proj_rel = f"{ws_rel}/programme-sample/pr-01-bad/PROJECT.md"
+    res_nested = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-chief",
+            "toolCall": {
+                "name": "write_file",
+                "args": {"Path": nested_proj_rel, "Content": "# Unvalidated markdown\n"},
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_nested["permissionDecision"] == "deny"
+    assert "never nested inside programme-<slug>/" in res_nested["reason"]
+
+    valid_proj_rel = f"{ws_rel}/pr-01-valid-path/PROJECT.md"
+    res_no_fm = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-chief",
+            "toolCall": {
+                "name": "write_file",
+                "args": {"Path": valid_proj_rel, "Content": "# Missing frontmatter\n"},
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_no_fm["permissionDecision"] == "deny"
+    assert "pa programme charter" in res_no_fm["reason"]
+
+    # 4. Worker (`role=engineer`) blocked from running `pa pr start` (R4) and forging `spec_hash` via bash (R3)
+    res_eng_pa_cmd = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-eng",
+            "toolCall": {"name": "run_command", "args": {"CommandLine": "pa pr start PR-02"}},
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_eng_pa_cmd["permissionDecision"] == "deny"
+    assert res_eng_pa_cmd["rule"] == "R4"
+
+    res_eng_hash_cmd = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-eng",
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": "python3 -c 'import schemas; schemas.compute_spec_hash(x)'"},
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_eng_hash_cmd["permissionDecision"] == "deny"
+    assert res_eng_hash_cmd["rule"] == "R3"
+
+
+def test_pre_invocation_subagent_type_fallback_and_role_playbook_injection(
+    tmp_repo: Path, daemon_home: Path
+) -> None:
+    """Verify PreInvocation binds subagent sessions via subagentType fallback and injects Role Playbook."""
+    ws_dir, _, _ = _setup_enrolled_workspace(tmp_repo, daemon_home, mode="autonomous")
+
+    res_inv = pre_invocation.evaluate_pre_invocation(
+        {
+            "conversationId": "conv-pa-no-header",
+            "subagentType": "pa-principal-architect",
+            "prompt": "You are the Tier 2 Principal Architect for PR-02. Decompose into Work Orders.",
+        },
+        repo_root=tmp_repo,
+    )
+    assert "injectSteps" in res_inv
+    injected_msg = res_inv["injectSteps"][0]["userMessage"]
+    assert "Role Playbook (`pa` — Tier 2 Principal Architect)" in injected_msg
+    assert "NEVER** run `pa pr start`" in injected_msg
+
+    with StateDB(ws_dir / ".state" / "state.db") as db:
+        bound = db.get_session("conv-pa-no-header")
+        assert bound is not None
+        assert bound["role"] == "pa"
+        assert bound["pr_id"] == "PR-02"
+
 
 
 

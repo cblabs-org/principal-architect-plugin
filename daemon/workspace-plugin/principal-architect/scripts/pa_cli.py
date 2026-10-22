@@ -72,6 +72,8 @@ Functions:
     Resolve `(real_root, ws_dir)` from a CLI path argument or return exit code `2`.
   - `_normalize_pr_id(raw_pr_id) -> str`: Normalize a PR identifier to `PR-NN[a-z]`.
   - `_normalize_pr_slug(pr_id_canonical, raw_slug) -> str`: Normalize a PR directory slug.
+  - `_reject_subordinate_caller_role(ws_dir, cmd_label) -> str | None`:
+    Block subordinate agent sessions (`pa`, `engineer`, `auditor`, `debugger`) from running Tier 1/human lifecycle commands.
   - `_cmd_sync(args, *, runner=common.run) -> int`: Handler for `pa sync`.
   - `_cmd_programme_init(args, *, runner=common.run) -> int`: Handler for `pa programme init`.
   - `_scaffold_or_update_project_charter(ws_dir, *, pr_id_raw, ...) -> tuple[Path, Path, Any, str]`:
@@ -1051,12 +1053,14 @@ _GIT_LOG_TRAILER_RE = re.compile(
 def _scan_git_trailers(
     repo_root: Path,
     *,
+    rev: str | None = None,
     runner: common.Runner = common.run,
 ) -> dict[str, tuple[str, str | None]]:
     """Scan local Git commit trailers for `PA-WorkOrder` and `PA-Verified-Hash`.
 
     Args:
         repo_root: Target git repository root `Path`.
+        rev: Optional Git revision or branch ref (e.g., `"main"`) to scan instead of `HEAD`.
         runner: Subprocess runner callable.
 
     Returns:
@@ -1074,8 +1078,11 @@ def _scan_git_trailers(
         "%(trailers:key=PA-WorkOrder,valueonly=true)%x00"
         "%(trailers:key=PA-Verified-Hash,valueonly=true)"
     )
+    log_cmd = ["git", "log", fmt_arg]
+    if rev:
+        log_cmd.append(rev)
     try:
-        res = runner(["git", "log", fmt_arg], cwd=repo_root)
+        res = runner(log_cmd, cwd=repo_root)
     except (OSError, subprocess.SubprocessError):
         return {}
 
@@ -2961,6 +2968,51 @@ def _normalize_pr_slug(pr_id_canonical: str, raw_slug: str | None) -> str:
     return f"{pr_prefix}-feature"
 
 
+def _reject_subordinate_caller_role(ws_dir: Path, cmd_label: str) -> str | None:
+    """Return an error string if the current process belongs to a subordinate agent session.
+
+    Prevents Tier 2 `pa`, Tier 3 `engineer`/`debugger`, and Tier 2b `auditor` sessions from
+    invoking Tier 1 or human lifecycle commands (`pa programme init`, `pa programme charter`,
+    `pa pr start`) that would overwrite locked Charters or spawn duplicate PA conversations.
+
+    Args:
+        ws_dir: Active Principal Architect workspace directory `Path`.
+        cmd_label: Human-readable CLI subcommand name (e.g., `"pa pr start"`).
+
+    Returns:
+        Descriptive error message string if the caller role is forbidden, or `None` if allowed.
+    """
+    import pre_tool_gate
+
+    caller_role = pre_tool_gate._normalize_role(os.environ.get("PA_ROLE"))
+    if not caller_role:
+        for env_key in (
+            "JETSKI_CONVERSATION_ID",
+            "ANTIGRAVITY_CONVERSATION_ID",
+            "PA_CONVERSATION_ID",
+            "CONVERSATION_ID",
+        ):
+            conv_id = (os.environ.get(env_key) or "").strip()
+            if not conv_id:
+                continue
+            db_file = ws_dir / ".state" / "state.db"
+            if db_file.is_file():
+                with state_db.StateDB(db_file) as db:
+                    sess = db.get_session(conv_id)
+                if sess is not None and sess.get("role"):
+                    caller_role = pre_tool_gate._normalize_role(str(sess["role"]))
+                    break
+
+    if caller_role in ("pa", "engineer", "auditor", "debugger"):
+        return (
+            f"Role '{caller_role}' cannot run '{cmd_label}' (which spawns new architect "
+            f"conversations or overwrites locked Part I Charters). Use 'pa pr claim <PR-ID>' "
+            f"to check out the PR branch, 'pa pr approve-plan <PR-ID>' to lock Work Orders, "
+            f"or 'pa escalate --to-chief' if Part I Charter changes are needed."
+        )
+    return None
+
+
 def _cmd_sync(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
     """Synchronize VCS commit trailers, audit reports, and specs into `.state/state.db`.
 
@@ -2998,11 +3050,16 @@ def _cmd_programme_init(args: argparse.Namespace, *, runner: common.Runner = com
     import models
     import schemas
 
-    # --- Step 1: Validate repository root, programme slug, and title ---
+    # --- Step 1: Validate repository root, caller role, programme slug, and title ---
     resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
     if isinstance(resolved, int):
         return resolved
     real_root, ws_dir = resolved
+
+    role_err = _reject_subordinate_caller_role(ws_dir, "pa programme init")
+    if role_err is not None:
+        print(f"Error: {role_err}", file=sys.stderr)
+        return 1
 
     raw_slug = str(args.slug or "").strip().lower()
     clean_slug = re.sub(r"^(programme-|prog-)", "", raw_slug).strip("-")
@@ -3120,7 +3177,7 @@ def _scaffold_or_update_project_charter(
     import schemas
     import vcs_sync
 
-    # --- Step 1: Normalize PR ID and resolve defaults from any existing PROJECT.md ---
+    # --- Step 1: Normalize PR ID and resolve defaults from existing PROJECT.md or PROGRAM.md ---
     pr_id_canonical = _normalize_pr_id(pr_id_raw)
     if not re.fullmatch(r"^PR-\d+[a-z]?$", pr_id_canonical):
         raise ValueError(f"Invalid PR ID '{pr_id_raw}' (expected format 'PR-01')")
@@ -3129,14 +3186,40 @@ def _scaffold_or_update_project_charter(
     if existing_doc is None and slug_arg:
         existing_dir, existing_doc = vcs_sync._find_pr_dir_and_project(ws_dir, slug_arg)
 
-    if existing_doc is not None:
-        slug = (
-            _normalize_pr_slug(pr_id_canonical, slug_arg)
-            if slug_arg
-            else existing_doc.spec.charter.slug
-        )
-    else:
+    matched_prog_doc: Any | None = None
+    matched_prog_node: Any | None = None
+    for cand_prog in sorted(ws_dir.glob("programme-*/PROGRAM.md")):
+        try:
+            pdoc = schemas.load_program(cand_prog)
+        except Exception:  # noqa: BLE001, S112
+            continue
+        if (
+            programme_id_arg
+            and pdoc.spec.programme_id.lower() != programme_id_arg.strip().lower()
+            and f"prog-{programme_id_arg.strip().lower()}" != pdoc.spec.programme_id.lower()
+        ):
+            continue
+        if matched_prog_doc is None:
+            matched_prog_doc = pdoc
+        for node in pdoc.spec.prs:
+            if node.id.upper() == pr_id_canonical.upper() or (
+                slug_arg and node.slug.lower() == _normalize_pr_slug(pr_id_canonical, slug_arg).lower()
+            ):
+                matched_prog_doc = pdoc
+                matched_prog_node = node
+                break
+        if matched_prog_node is not None:
+            break
+
+    old_slug = existing_doc.spec.charter.slug if existing_doc is not None else None
+    if slug_arg and slug_arg.strip():
         slug = _normalize_pr_slug(pr_id_canonical, slug_arg)
+    elif existing_doc is not None:
+        slug = existing_doc.spec.charter.slug
+    elif matched_prog_node is not None and matched_prog_node.slug:
+        slug = _normalize_pr_slug(pr_id_canonical, matched_prog_node.slug)
+    else:
+        slug = _normalize_pr_slug(pr_id_canonical, None)
 
     title = (
         title_arg.strip()
@@ -3144,28 +3227,45 @@ def _scaffold_or_update_project_charter(
         else (
             existing_doc.spec.charter.title
             if existing_doc is not None
-            else f"Charter for {pr_id_canonical}"
+            else (
+                matched_prog_node.title
+                if (matched_prog_node is not None and matched_prog_node.title)
+                else f"Charter for {pr_id_canonical}"
+            )
         )
     )
     if len(title) < 5:
         title = f"{pr_id_canonical} — {title}"
 
-    branch = (
-        branch_arg.strip()
-        if (branch_arg and branch_arg.strip())
-        else (
-            existing_doc.spec.charter.branch
-            if existing_doc is not None
-            else f"feat/{slug}"
-        )
-    )
+    if branch_arg and branch_arg.strip():
+        branch = branch_arg.strip()
+    elif existing_doc is not None:
+        # When --slug changes a default `feat/<old_slug>` charter without explicit --branch,
+        # keep the branch name synchronized with the updated slug.
+        if old_slug and slug != old_slug and existing_doc.spec.charter.branch == f"feat/{old_slug}":
+            branch = f"feat/{slug}"
+        else:
+            branch = existing_doc.spec.charter.branch
+    elif matched_prog_node is not None and matched_prog_node.branch:
+        branch = matched_prog_node.branch
+    else:
+        branch = f"feat/{slug}"
+
     base_branch = (
         base_branch_arg.strip()
         if (base_branch_arg and base_branch_arg.strip())
         else (
             existing_doc.spec.charter.base_branch
             if existing_doc is not None
-            else "main"
+            else (
+                matched_prog_node.base_branch
+                if (matched_prog_node is not None and matched_prog_node.base_branch)
+                else (
+                    matched_prog_doc.spec.base_branch
+                    if (matched_prog_doc is not None and matched_prog_doc.spec.base_branch)
+                    else "main"
+                )
+            )
         )
     )
     allowed_modules = (
@@ -3174,7 +3274,11 @@ def _scaffold_or_update_project_charter(
         else (
             list(existing_doc.spec.charter.allowed_modules)
             if existing_doc is not None
-            else ["src/"]
+            else (
+                list(matched_prog_node.allowed_modules)
+                if (matched_prog_node is not None and matched_prog_node.allowed_modules)
+                else ["src/"]
+            )
         )
     )
     verification_floor = (
@@ -3192,7 +3296,11 @@ def _scaffold_or_update_project_charter(
         else (
             list(existing_doc.spec.charter.depends_on)
             if existing_doc is not None
-            else []
+            else (
+                list(matched_prog_node.depends_on)
+                if matched_prog_node is not None
+                else []
+            )
         )
     )
     required_skills = (
@@ -3201,7 +3309,11 @@ def _scaffold_or_update_project_charter(
         else (
             list(existing_doc.spec.charter.required_skills)
             if existing_doc is not None
-            else []
+            else (
+                list(matched_prog_node.required_skills)
+                if matched_prog_node is not None
+                else []
+            )
         )
     )
 
@@ -3211,23 +3323,21 @@ def _scaffold_or_update_project_charter(
         programme_id = raw_prog if raw_prog.startswith("prog-") else f"prog-{raw_prog}"
     elif existing_doc is not None and existing_doc.spec.charter.programme_id:
         programme_id = existing_doc.spec.charter.programme_id
+    elif matched_prog_doc is not None:
+        programme_id = matched_prog_doc.spec.programme_id
     else:
-        for cand_prog in sorted(ws_dir.glob("programme-*/PROGRAM.md")):
-            try:
-                pdoc = schemas.load_program(cand_prog)
-                programme_id = pdoc.spec.programme_id
-                break
-            except Exception:  # noqa: BLE001, S112
-                continue
-        if programme_id is None:
-            programme_id = "prog-default"
+        programme_id = "prog-default"
 
     # --- Step 2: Scaffold PROJECT.md from template if missing and lock Part I Charter ---
-    pr_dir = (
-        existing_dir
-        if (existing_doc is not None and existing_dir.is_dir())
-        else (ws_dir / slug)
-    )
+    target_pr_dir = ws_dir / slug
+    if existing_doc is not None and existing_dir.is_dir():
+        if slug_arg and existing_dir != target_pr_dir and not target_pr_dir.exists():
+            shutil.move(str(existing_dir), str(target_pr_dir))
+            pr_dir = target_pr_dir
+        else:
+            pr_dir = existing_dir
+    else:
+        pr_dir = target_pr_dir
     pr_dir.mkdir(parents=True, exist_ok=True)
     proj_md = pr_dir / "PROJECT.md"
 
@@ -3339,11 +3449,16 @@ def _cmd_programme_charter(
     """
     import vcs_sync
 
-    # --- Step 1: Scaffold or update PROJECT.md Part I Charter ---
+    # --- Step 1: Validate caller role and scaffold or update PROJECT.md Part I Charter ---
     resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
     if isinstance(resolved, int):
         return resolved
     real_root, ws_dir = resolved
+
+    role_err = _reject_subordinate_caller_role(ws_dir, "pa programme charter")
+    if role_err is not None:
+        print(f"Error: {role_err}", file=sys.stderr)
+        return 1
 
     try:
         _, proj_md, proj_doc, c_hash = _scaffold_or_update_project_charter(
@@ -3402,17 +3517,32 @@ def _cmd_pr_start(args: argparse.Namespace, *, runner: common.Runner = common.ru
     import schemas
     import vcs_sync
 
-    # --- Step 1: Locate or scaffold PROJECT.md and verify charter_hash ---
+    # --- Step 1: Validate caller role, locate or scaffold PROJECT.md, and verify charter_hash ---
     resolved = _resolve_repo_root_and_ws(str(args.path), runner=runner)
     if isinstance(resolved, int):
         return resolved
     real_root, ws_dir = resolved
 
+    role_err = _reject_subordinate_caller_role(ws_dir, "pa pr start")
+    if role_err is not None:
+        print(f"Error: {role_err}", file=sys.stderr)
+        return 1
+
     pr_id_canonical = _normalize_pr_id(str(args.pr_id))
     pr_dir, proj_doc = vcs_sync._find_pr_dir_and_project(ws_dir, str(args.pr_id))
 
     if proj_doc is None:
-        if args.title or args.slug or args.allowed_module or args.branch:
+        has_prog_entry = False
+        for cand_prog in sorted(ws_dir.glob("programme-*/PROGRAM.md")):
+            try:
+                pdoc = schemas.load_program(cand_prog)
+            except Exception:  # noqa: BLE001, S112
+                continue
+            if any(node.id.upper() == pr_id_canonical.upper() for node in pdoc.spec.prs):
+                has_prog_entry = True
+                break
+
+        if has_prog_entry or args.title or args.slug or args.allowed_module or args.branch:
             try:
                 pr_dir, _, proj_doc, _ = _scaffold_or_update_project_charter(
                     ws_dir,
@@ -3435,7 +3565,8 @@ def _cmd_pr_start(args: argparse.Namespace, *, runner: common.Runner = common.ru
             )
             return 1
     elif (
-        args.title
+        args.slug
+        or args.title
         or args.branch
         or args.base_branch
         or args.allowed_module
@@ -3475,7 +3606,7 @@ def _cmd_pr_start(args: argparse.Namespace, *, runner: common.Runner = common.ru
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    # --- Step 3: Start (and JIT-pin) Tier 2 Principal Architect session ---
+    # --- Step 3: Start (or reuse active) Tier 2 Principal Architect session ---
     proj_rel = proj_md.resolve().relative_to(real_root).as_posix()
     pa_prompt = (
         f"PA_ROLE: pa\n"
@@ -3485,6 +3616,49 @@ def _cmd_pr_start(args: argparse.Namespace, *, runner: common.Runner = common.ru
         f"- Branch: `{ch.branch}` (base: `{ch.base_branch}`)\n"
         f"- Allowed Modules: {', '.join(ch.allowed_modules)}\n"
     )
+
+    db_file = ws_dir / ".state" / "state.db"
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+    existing_pa_session: dict[str, Any] | None = None
+    with state_db.StateDB(db_file) as db:
+        cur = db.conn.execute(
+            """
+            SELECT * FROM sessions
+            WHERE role = 'pa' AND UPPER(pr_id) = UPPER(?) AND pinned = 1
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (pr_id_canonical,),
+        )
+        row = cur.fetchone()
+        if row is not None:
+            existing_pa_session = dict(row)
+
+    no_spawn = bool(getattr(args, "no_spawn", False))
+    if no_spawn or existing_pa_session is not None:
+        conv_id = (
+            str(existing_pa_session["conversation_id"])
+            if existing_pa_session is not None
+            else None
+        )
+        pinned_flag = (
+            bool(existing_pa_session.get("pinned"))
+            if existing_pa_session is not None
+            else False
+        )
+        out_payload: dict[str, Any] = {
+            "pr_id": pr_id_canonical,
+            "branch": ch.branch,
+            "base_branch": ch.base_branch,
+            "head_sha": head_sha,
+            "conversation_id": conv_id,
+            "pinned": pinned_flag,
+            "bridge_prompt": pa_prompt,
+            "reused_existing_session": existing_pa_session is not None,
+        }
+        print(json.dumps(out_payload, indent=2))
+        return 0
+
     ls_res = models.LanguageServerClient().start_conversation(
         title=f"📐 [{pr_id_canonical}] {ch.title}",
         prompt=pa_prompt,
@@ -3493,8 +3667,6 @@ def _cmd_pr_start(args: argparse.Namespace, *, runner: common.Runner = common.ru
         pin=True,
     )
 
-    db_file = ws_dir / ".state" / "state.db"
-    db_file.parent.mkdir(parents=True, exist_ok=True)
     with state_db.StateDB(db_file) as db:
         db.bind_session(
             str(ls_res["conversation_id"]),
@@ -3749,29 +3921,44 @@ def _head_matches_audited_sha(
         return True
 
     # --- Step 2: Check if HEAD~1 matches audited_sha and HEAD only touched audit/project docs ---
-    parent_res = runner(["git", "rev-parse", "HEAD~1"], cwd=real_root)
-    if parent_res.returncode != 0 or not parent_res.stdout.strip():
-        return False
-
-    parent_sha = parent_res.stdout.strip()
-    if not _sha_matches(parent_sha, audited_sha):
-        return False
-
-    diff_res = runner(
-        ["git", "diff", "--name-only", parent_sha, current_head_sha],
-        cwd=real_root,
-    )
-    if diff_res.returncode != 0:
-        return False
-
-    changed_files = [ln.strip() for ln in diff_res.stdout.splitlines() if ln.strip()]
-    if not changed_files:
-        return True
-
     pr_dir_rel = pr_dir.resolve().relative_to(real_root).as_posix()
     allowed_audit_re = re.compile(rf"^{re.escape(pr_dir_rel)}/AUDIT-round-\d+\.md$")
     proj_rel = f"{pr_dir_rel}/PROJECT.md"
-    return all(cf == proj_rel or bool(allowed_audit_re.match(cf)) for cf in changed_files)
+
+    parent_res = runner(["git", "rev-parse", "HEAD~1"], cwd=real_root)
+    if parent_res.returncode == 0 and parent_res.stdout.strip():
+        parent_sha = parent_res.stdout.strip()
+        if _sha_matches(parent_sha, audited_sha):
+            diff_res = runner(
+                ["git", "diff", "--name-only", parent_sha, current_head_sha],
+                cwd=real_root,
+            )
+            if diff_res.returncode == 0:
+                changed_files = [ln.strip() for ln in diff_res.stdout.splitlines() if ln.strip()]
+                if not changed_files or all(
+                    cf == proj_rel or bool(allowed_audit_re.match(cf)) for cf in changed_files
+                ):
+                    return True
+
+    # --- Step 3: Check if audited_sha is an ancestor and only audit/project docs changed ---
+    if audited_sha and audited_sha != "HEAD":
+        anc_res = runner(
+            ["git", "merge-base", "--is-ancestor", audited_sha, current_head_sha],
+            cwd=real_root,
+        )
+        if anc_res.returncode == 0:
+            diff_anc = runner(
+                ["git", "diff", "--name-only", audited_sha, current_head_sha],
+                cwd=real_root,
+            )
+            if diff_anc.returncode == 0:
+                changed_anc = [ln.strip() for ln in diff_anc.stdout.splitlines() if ln.strip()]
+                if not changed_anc or all(
+                    cf == proj_rel or bool(allowed_audit_re.match(cf)) for cf in changed_anc
+                ):
+                    return True
+
+    return False
 
 
 def _cmd_pr_graduate(
@@ -4471,6 +4658,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="CMD",
         help="Verification floor command (repeatable).",
+    )
+    p_pr_start.add_argument(
+        "--no-spawn",
+        action="store_true",
+        help="Prepare branch and verify PROJECT.md without spawning a new PA conversation.",
     )
     p_pr_start.add_argument(
         "--path",
