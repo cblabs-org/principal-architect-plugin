@@ -915,6 +915,7 @@ def test_install_and_uninstall_scripts_isolated_tmp_path(
     env = dict(os.environ)
     env["PA_DAEMON_HOME"] = str(daemon_home)
     env["PA_BIN_DIR"] = str(bin_dir)
+    env["PA_SKIP_VENV"] = "1"
     env["PATH"] = f"{Path(sys.executable).parent}:{env.get('PATH', '')}"
 
     # 1. Run install.sh into isolated PA_DAEMON_HOME and PA_BIN_DIR
@@ -951,11 +952,18 @@ def test_install_and_uninstall_scripts_isolated_tmp_path(
     # Verify daemon `.venv` interpreter selection via `bin/pa` wrapper (Issue #7 regression):
     # Create a daemon `.venv/bin/python3` wrapper delegating to the active test interpreter while
     # placing a broken `python3` stub first on PATH (simulating PEP 668 system Python without pydantic).
+    # CRITICAL: Remove any `.venv` directory or symlink before writing so `write_text` never
+    # follows a `.venv/bin/python3` symlink into the host Python installation.
+    shutil.rmtree(daemon_home / ".venv", ignore_errors=True)
     daemon_venv_bin = daemon_home / ".venv" / "bin"
     daemon_venv_bin.mkdir(parents=True, exist_ok=True)
     daemon_venv_py = daemon_venv_bin / "python3"
+    if daemon_venv_py.exists() or daemon_venv_py.is_symlink():
+        daemon_venv_py.unlink()
+    assert not daemon_venv_py.is_symlink()
+    py_path_str = os.pathsep.join(sys.path)
     daemon_venv_py.write_text(
-        f'#!/usr/bin/env bash\nexec "{sys.executable}" "$@"\n',
+        f'#!/usr/bin/env bash\nexport PYTHONPATH="{py_path_str}"\nexec "{sys.executable}" "$@"\n',
         encoding="utf-8",
     )
     daemon_venv_py.chmod(0o755)

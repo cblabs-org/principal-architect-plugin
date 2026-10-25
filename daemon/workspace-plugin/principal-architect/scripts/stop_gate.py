@@ -581,8 +581,12 @@ def _evaluate_auditor_stop(
         report = audit_doc.spec
         if pr_id and report.pr_id.upper() != pr_id.upper():
             continue
-        if head_sha and (
-            head_sha.startswith(report.head_sha) or report.head_sha.startswith(head_sha)
+        if head_sha and common.head_matches_audited_sha(
+            real_root,
+            audit_path.parent,
+            head_sha,
+            report.head_sha,
+            runner=runner,
         ):
             return {}
 

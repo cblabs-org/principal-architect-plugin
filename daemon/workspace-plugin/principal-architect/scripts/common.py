@@ -33,6 +33,8 @@ Exported API Summary:
 - templates_dir: Return the absolute path to the Markdown document templates directory.
 - render_template: Substitute `{{name}}` placeholders in a template string from a value mapping.
 - render_template_file: Load a named template file from `templates_dir()` and render it.
+- sha_matches: Check whether two Git commit SHAs match (supporting >=7-char prefixes).
+- head_matches_audited_sha: Check whether `current_head_sha` matches `audited_sha` directly or via audit/PROJECT.md commits.
 """
 
 from __future__ import annotations
@@ -352,24 +354,27 @@ def activate_daemon_venv(daemon_dir: str | Path | None = None) -> bool:
 
     # --- Step 2: Locate matching site-packages directories and register via site.addsitedir ---
     py_tag = f"python{sys.version_info.major}.{sys.version_info.minor}"
-    activated = False
+    exact_matches: list[Path] = []
+    fallback_matches: list[Path] = []
     for venv_dir in candidates:
         if not venv_dir.is_dir():
             continue
-        sp_candidates: list[Path] = [
+        for exact_sp in (
             venv_dir / "lib" / py_tag / "site-packages",
             venv_dir / "Lib" / "site-packages",
-        ]
+        ):
+            if exact_sp.is_dir() and exact_sp not in exact_matches:
+                exact_matches.append(exact_sp)
         lib_dir = venv_dir / "lib"
         if lib_dir.is_dir():
             for child in sorted(lib_dir.glob("python*/site-packages")):
-                if child not in sp_candidates:
-                    sp_candidates.append(child)
-        for sp in sp_candidates:
-            if sp.is_dir():
-                site.addsitedir(str(sp))
-                activated = True
-    return activated
+                if child not in exact_matches and child not in fallback_matches:
+                    fallback_matches.append(child)
+
+    selected = exact_matches if exact_matches else fallback_matches
+    for sp in selected:
+        site.addsitedir(str(sp))
+    return bool(selected)
 
 
 def is_repo_enrolled(workspace_paths: Sequence[str | Path]) -> bool:
@@ -554,3 +559,92 @@ def render_template_file(template_name: str, values: Mapping[str, Any] | None = 
         raise FileNotFoundError(f"Template file not found: {p}")
     text = p.read_text(encoding="utf-8")
     return render_template(text, values or {})
+
+
+def sha_matches(sha_a: str, sha_b: str) -> bool:
+    """Return True if two Git commit SHAs match (supporting >=7-char short SHA prefixes).
+
+    Args:
+        sha_a: First hex commit SHA string.
+        sha_b: Second hex commit SHA string.
+
+    Returns:
+        `True` if both SHAs are at least 7 characters and one is a prefix of the other.
+    """
+    a = sha_a.strip().lower()
+    b = sha_b.strip().lower()
+    if len(a) < 7 or len(b) < 7:
+        return False
+    return a == b or a.startswith(b) or b.startswith(a)
+
+
+def head_matches_audited_sha(
+    real_root: Path,
+    pr_dir: Path,
+    current_head_sha: str,
+    audited_sha: str,
+    *,
+    runner: Runner = run,
+) -> bool:
+    """Verify `audited_sha` matches `current_head_sha` (or ancestor when only audit/PROJECT.md changed).
+
+    In `local_git` mode (and default `pa pr post-audit` runs), recording the Cold-Firewall
+    `AuditReport` creates a new commit on top of the very `HEAD` SHA (`audited_sha`) that the
+    auditor evaluated. To prevent that audit-recording commit (or subsequent `PROJECT.md`
+    status/ledger updates) from invalidating its own `head_sha` match during `PreToolUse`
+    Rule R6, `Stop` gate auditor evaluation, or `pa pr graduate`, this function accepts
+    `current_head_sha` when the diff from `audited_sha` to `current_head_sha` touches
+    exclusively `AUDIT-round-<K>.md` and/or `PROJECT.md` inside `pr_dir`.
+
+    Args:
+        real_root: Canonical repository root `Path`.
+        pr_dir: Pull Request workspace directory `Path`.
+        current_head_sha: Current `git rev-parse HEAD` commit SHA.
+        audited_sha: `head_sha` recorded inside the `AuditReport`.
+        runner: Subprocess runner callable.
+
+    Returns:
+        `True` if `current_head_sha` matches `audited_sha` directly or via audit/PROJECT.md-only commits.
+    """
+    # --- Step 1: Check direct SHA match against current HEAD ---
+    if sha_matches(current_head_sha, audited_sha):
+        return True
+    if not current_head_sha or current_head_sha == "HEAD" or len(audited_sha.strip()) < 7:
+        return False
+
+    try:
+        pr_dir_rel = pr_dir.resolve().relative_to(real_root.resolve()).as_posix()
+    except ValueError:
+        return False
+    allowed_audit_re = re.compile(rf"^{re.escape(pr_dir_rel)}/AUDIT-round-\d+\.md$")
+    proj_rel = f"{pr_dir_rel}/PROJECT.md"
+
+    def _diff_only_touches_audit_or_project(base_ref: str) -> bool:
+        diff_res = runner(
+            ["git", "diff", "--name-only", base_ref, current_head_sha],
+            cwd=real_root,
+        )
+        if diff_res.returncode != 0:
+            return False
+        changed_files = [ln.strip() for ln in diff_res.stdout.splitlines() if ln.strip()]
+        if not changed_files:
+            return True
+        return all(cf == proj_rel or bool(allowed_audit_re.match(cf)) for cf in changed_files)
+
+    # --- Step 2: Check if HEAD~1 matches audited_sha and HEAD only touched audit/project docs ---
+    parent_res = runner(["git", "rev-parse", "HEAD~1"], cwd=real_root)
+    if parent_res.returncode == 0 and parent_res.stdout.strip():
+        parent_sha = parent_res.stdout.strip()
+        if sha_matches(parent_sha, audited_sha):
+            return _diff_only_touches_audit_or_project(parent_sha)
+
+    # --- Step 3: Check if audited_sha is an ancestor of HEAD with only audit/project doc diffs ---
+    anc_res = runner(
+        ["git", "merge-base", "--is-ancestor", audited_sha.strip(), current_head_sha],
+        cwd=real_root,
+    )
+    if anc_res.returncode == 0:
+        return _diff_only_touches_audit_or_project(audited_sha.strip())
+
+    return False
+

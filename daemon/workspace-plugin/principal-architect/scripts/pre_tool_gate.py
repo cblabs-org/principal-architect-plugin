@@ -785,13 +785,6 @@ def _check_r6_graduation_gate(
             target_pr_id = proj_doc.spec.charter.pr_id
 
     # --- Step 2: Scan AUDIT-round-*.md files for an APPROVED verdict matching HEAD (or audit commit) ---
-    parent_res = runner(["git", "rev-parse", "HEAD~1"], cwd=real_root)
-    parent_sha = (
-        parent_res.stdout.strip()
-        if parent_res.returncode == 0 and parent_res.stdout.strip()
-        else ""
-    )
-
     for audit_path in sorted(ws_dir.glob("pr-*/AUDIT-round-*.md")):
         try:
             audit_doc = schemas.load_audit(audit_path)
@@ -800,44 +793,18 @@ def _check_r6_graduation_gate(
         report = audit_doc.spec
         if target_pr_id and report.pr_id.upper() != target_pr_id.upper():
             continue
-        if report.verdict != "APPROVED" or head_sha == "HEAD" or not report.head_sha:
-            continue
-        if head_sha.startswith(report.head_sha) or report.head_sha.startswith(head_sha):
-            return None
-
-        try:
-            pr_dir_rel = audit_path.parent.resolve().relative_to(real_root).as_posix()
-        except ValueError:
-            continue
-        allowed_audit_re = re.compile(rf"^{re.escape(pr_dir_rel)}/AUDIT-round-\d+\.md$")
-        proj_rel = f"{pr_dir_rel}/PROJECT.md"
-
-        if parent_sha and (
-            parent_sha.startswith(report.head_sha) or report.head_sha.startswith(parent_sha)
-        ):
-            diff_res = runner(["git", "diff", "--name-only", parent_sha, head_sha], cwd=real_root)
-            if diff_res.returncode == 0:
-                changed = [ln.strip() for ln in diff_res.stdout.splitlines() if ln.strip()]
-                if not changed or all(
-                    cf == proj_rel or bool(allowed_audit_re.match(cf)) for cf in changed
-                ):
-                    return None
-
-        anc_res = runner(
-            ["git", "merge-base", "--is-ancestor", report.head_sha, head_sha],
-            cwd=real_root,
-        )
-        if anc_res.returncode == 0:
-            diff_anc = runner(
-                ["git", "diff", "--name-only", report.head_sha, head_sha],
-                cwd=real_root,
+        if (
+            report.verdict == "APPROVED"
+            and head_sha != "HEAD"
+            and common.head_matches_audited_sha(
+                real_root,
+                audit_path.parent,
+                head_sha,
+                report.head_sha,
+                runner=runner,
             )
-            if diff_anc.returncode == 0:
-                changed_anc = [ln.strip() for ln in diff_anc.stdout.splitlines() if ln.strip()]
-                if not changed_anc or all(
-                    cf == proj_rel or bool(allowed_audit_re.match(cf)) for cf in changed_anc
-                ):
-                    return None
+        ):
+            return None
 
     # --- Step 3: Escalate or block when no matching APPROVED AuditReport exists ---
     return _finalize_decision(
