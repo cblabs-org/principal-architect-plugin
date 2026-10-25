@@ -2190,7 +2190,7 @@ def test_parse_spawn_header_and_turn1_session_binding(
     )
     assert "injectSteps" in res_t1
     assert len(res_t1["injectSteps"]) == 1
-    injected_msg = res_t1["injectSteps"][0]["userMessage"]
+    injected_msg = res_t1["injectSteps"][0]["systemMessage"]["systemMessage"]
     assert "WO-02.1" in injected_msg
     assert "PR-02" in injected_msg
     assert "src/allowed.py" in injected_msg
@@ -2206,7 +2206,7 @@ def test_parse_spawn_header_and_turn1_session_binding(
         assert sess["programme_id"] == "prog-sample"
         assert sess["last_checkpoint_step"] == 2
 
-    # Turn 2: Append normal steps without CHECKPOINT or rewind -> returns {} (no duplicate injection)
+    # Turn 2: Append normal steps without CHECKPOINT or rewind -> returns {} (no duplicate injection even with invocationNum=1)
     turn2_steps = [
         *turn1_steps,
         {"step_index": 2, "type": "TOOL_CALL", "content": "read_file"},
@@ -2220,6 +2220,7 @@ def test_parse_spawn_header_and_turn1_session_binding(
         {
             "conversationId": "conv-new-worker",
             "transcriptPath": str(transcript_file),
+            "invocationNum": 1,
         },
         repo_root=tmp_repo,
     )
@@ -2343,7 +2344,7 @@ def test_pre_invocation_memory_mode_builtin_vs_external_separation(
         {"conversationId": "conv-pa", "invocationNum": 1},
         repo_root=tmp_repo,
     )
-    pa_builtin_msg = res_pa_builtin["injectSteps"][0]["userMessage"]
+    pa_builtin_msg = res_pa_builtin["injectSteps"][0]["systemMessage"]["systemMessage"]
     assert "Full Distillation Mode" in pa_builtin_msg
     assert "ALPHA_BETA_GAMMA" in pa_builtin_msg
     assert "SRC_INDEX_MARKER" in pa_builtin_msg
@@ -2353,7 +2354,7 @@ def test_pre_invocation_memory_mode_builtin_vs_external_separation(
         {"conversationId": "conv-eng", "invocationNum": 1},
         repo_root=tmp_repo,
     )
-    eng_builtin_msg = res_eng_builtin["injectSteps"][0]["userMessage"]
+    eng_builtin_msg = res_eng_builtin["injectSteps"][0]["systemMessage"]["systemMessage"]
     assert "Full Distillation Mode (memory_mode=builtin)" in eng_builtin_msg
 
     # 2. memory_mode = "external": completely omits MEMORY.md & MODULE_INDEX.md and instructs Succinct Mode
@@ -2366,7 +2367,7 @@ def test_pre_invocation_memory_mode_builtin_vs_external_separation(
         {"conversationId": "conv-pa", "invocationNum": 1},
         repo_root=tmp_repo,
     )
-    pa_ext_msg = res_pa_external["injectSteps"][0]["userMessage"]
+    pa_ext_msg = res_pa_external["injectSteps"][0]["systemMessage"]["systemMessage"]
     assert "Succinct Write-Back Mode" in pa_ext_msg
     assert "ALPHA_BETA_GAMMA" not in pa_ext_msg
     assert "SRC_INDEX_MARKER" not in pa_ext_msg
@@ -2377,7 +2378,7 @@ def test_pre_invocation_memory_mode_builtin_vs_external_separation(
         {"conversationId": "conv-eng", "invocationNum": 1},
         repo_root=tmp_repo,
     )
-    eng_ext_msg = res_eng_external["injectSteps"][0]["userMessage"]
+    eng_ext_msg = res_eng_external["injectSteps"][0]["systemMessage"]["systemMessage"]
     assert "Succinct Mode (memory_mode=external)" in eng_ext_msg
     assert "ALPHA_BETA_GAMMA" not in eng_ext_msg
 

@@ -16,8 +16,8 @@ Plays the context-hydration and session-binding role in the Split-Authority enfo
   unbound `conversationId` instances.
 - Detects context window compaction (`CHECKPOINT` step) and user step-rewind on
   `transcript.jsonl` to re-arm context injection automatically.
-- Generates role-specific persistent `{"injectSteps": [{"userMessage": "..."}]}` payloads
-  enforcing the strict `memory_mode` boundary (`builtin` vs `external`).
+- Generates role-specific persistent `{"injectSteps": [{"systemMessage": {"systemMessage": "..."}}]}`
+  payloads enforcing the strict `memory_mode` boundary (`builtin` vs `external`).
 
 Exported API Summary:
   Constants & Compiled Regexes:
@@ -43,9 +43,9 @@ Exported API Summary:
     _find_active_program_doc(ws_dir, programme_id) -> Any | None:
         Locate the active PROGRAM.md matching programme_id or fall back to the first programme doc.
     _build_architect_injection(*, role, session, ws_dir, db, execution_mode, memory_mode) -> str:
-        Build the persistent userMessage context block for chief or pa roles.
+        Build the persistent systemMessage context block for chief or pa roles.
     _build_engineer_injection(*, session, real_root, ws_dir, execution_mode, memory_mode) -> str:
-        Build the persistent userMessage contract block for the pa-engineer role.
+        Build the persistent systemMessage contract block for the pa-engineer role.
 """
 
 from __future__ import annotations
@@ -328,7 +328,7 @@ def _build_architect_injection(
     execution_mode: str,
     memory_mode: str,
 ) -> str:
-    """Build the persistent `userMessage` context block for `chief` or `pa` roles.
+    """Build the persistent `systemMessage` context block for `chief` or `pa` roles.
 
     Args:
         role: Normalized architect role (`"chief"` or `"pa"`).
@@ -339,7 +339,7 @@ def _build_architect_injection(
         memory_mode: Active memory mode (`"builtin"` or `"external"`).
 
     Returns:
-        Formatted markdown string for the `injectSteps` `userMessage` payload.
+        Formatted markdown string for the `injectSteps` `systemMessage` payload.
     """
     # --- Step 1: Initialize context header and load active Programme / PR metadata ---
     pr_id = str(session.get("pr_id") or "").strip() or None
@@ -431,7 +431,7 @@ def _build_engineer_injection(
     execution_mode: str,
     memory_mode: str,
 ) -> str:
-    """Build the persistent `userMessage` contract block for `pa-engineer`.
+    """Build the persistent `systemMessage` contract block for `pa-engineer`.
 
     Args:
         session: Active session row mapping from `state.db`.
@@ -528,7 +528,7 @@ def evaluate_pre_invocation(
         runner: Subprocess runner callable used to locate the git repository root.
 
     Returns:
-        Hook response dictionary containing `{"injectSteps": [{"userMessage": "..."}]}`
+        Hook response dictionary containing `{"injectSteps": [{"systemMessage": {"systemMessage": "..."}}]}`
         when Turn 1 binding, compaction, or step rewind triggers context injection, or `{}`.
     """
     # --- Step 1: Fast-exit check for unenrolled workspaces (< 1 ms) ---
@@ -607,14 +607,8 @@ def evaluate_pre_invocation(
                 session = db.update_session(conv_id, **missing_updates) or session
 
             prev_cp = session.get("last_checkpoint_step")
-            inv_num = (
-                payload.get("invocationNum")
-                if "invocationNum" in payload
-                else payload.get("invocation_num")
-            )
             should_inject = bool(
                 prev_cp is None
-                or inv_num == 1
                 or (latest_cp is not None and int(latest_cp) > int(prev_cp))
                 or (steps and step_watermark < int(prev_cp))
             )
@@ -663,7 +657,7 @@ def evaluate_pre_invocation(
                 f"`execution_mode={execution_mode}`, `memory_mode={memory_mode}`)"
             )
 
-        return {"injectSteps": [{"userMessage": msg_text}]}
+        return {"injectSteps": [{"systemMessage": {"systemMessage": msg_text}}]}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
