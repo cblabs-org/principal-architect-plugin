@@ -1298,6 +1298,19 @@ def test_pre_tool_gate_r5_auditor_and_r6_graduation(
     assert res_r6_auto["rule"] == "R6"
     assert res_r6_auto["permissionDecision"] == "deny"
 
+    # Pure --help/-h queries on `pa pr graduate` must NOT trigger R6
+    res_r6_help = pre_tool_gate.evaluate_pre_tool(
+        {
+            "conversationId": "conv-pa",
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": "git status -s && pa status && pa pr graduate --help"},
+            },
+        },
+        repo_root=tmp_repo,
+    )
+    assert res_r6_help["permissionDecision"] == "allow"
+
     # Write an APPROVED AuditReport matching current HEAD SHA and verify R6 allows graduation
     head_sha = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -1329,7 +1342,8 @@ def test_pre_tool_gate_r5_auditor_and_r6_graduation(
     )
     assert res_r6_approved["permissionDecision"] == "allow"
 
-    # Commit AUDIT-round-1.md (as `pa pr post-audit` does) and verify R6 still allows graduation
+    # Committing the audit report (as `pa pr post-audit` does) advances HEAD so report.head_sha == HEAD~1;
+    # R6 must still allow graduation when the diff only touches AUDIT-round-*.md / PROJECT.md.
     subprocess.run(
         ["git", "add", str(audit_path.relative_to(tmp_repo))],
         cwd=tmp_repo,
@@ -2089,6 +2103,22 @@ def test_stop_gate_auditor_requires_audit_report_for_current_head(
     audit_path.write_text(
         schemas.dump_document(valid_audit, [schemas.Section("## Audit Summary", "Findings.\n")]),
         encoding="utf-8",
+    )
+    assert (
+        stop_gate.evaluate_stop(
+            {"conversationId": "conv-auditor", "terminationReason": "NO_TOOL_CALL"},
+            repo_root=tmp_repo,
+        )
+        == {}
+    )
+
+    # Committing AUDIT-round-1.md (as `pa pr post-audit` does) advances HEAD so valid_audit.head_sha == HEAD~1;
+    # auditor stop gate must still recognize the published audit and return {}.
+    subprocess.run(["git", "add", str(audit_path)], cwd=tmp_repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "audit(pr-02): round 1 — CHANGES_REQUESTED"],
+        cwd=tmp_repo,
+        check=True,
     )
     assert (
         stop_gate.evaluate_stop(
@@ -2887,7 +2917,7 @@ def test_pre_invocation_subagent_type_fallback_and_role_playbook_injection(
         repo_root=tmp_repo,
     )
     assert "injectSteps" in res_inv
-    injected_msg = res_inv["injectSteps"][0]["userMessage"]
+    injected_msg = res_inv["injectSteps"][0]["systemMessage"]["systemMessage"]
     assert "Role Playbook (`pa` — Tier 2 Principal Architect)" in injected_msg
     assert "NEVER** run `pa pr start`" in injected_msg
 

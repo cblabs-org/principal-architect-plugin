@@ -3882,11 +3882,7 @@ def _sha_matches(sha_a: str, sha_b: str) -> bool:
     Returns:
         `True` if both SHAs are at least 7 characters and one is a prefix of the other.
     """
-    a = sha_a.strip().lower()
-    b = sha_b.strip().lower()
-    if len(a) < 7 or len(b) < 7:
-        return False
-    return a == b or a.startswith(b) or b.startswith(a)
+    return common.sha_matches(sha_a, sha_b)
 
 
 def _head_matches_audited_sha(
@@ -3916,49 +3912,13 @@ def _head_matches_audited_sha(
     Returns:
         `True` if `current_head_sha` matches `audited_sha` directly or via an audit-only commit.
     """
-    # --- Step 1: Check direct SHA match against current HEAD ---
-    if _sha_matches(current_head_sha, audited_sha):
-        return True
-
-    # --- Step 2: Check if HEAD~1 matches audited_sha and HEAD only touched audit/project docs ---
-    pr_dir_rel = pr_dir.resolve().relative_to(real_root).as_posix()
-    allowed_audit_re = re.compile(rf"^{re.escape(pr_dir_rel)}/AUDIT-round-\d+\.md$")
-    proj_rel = f"{pr_dir_rel}/PROJECT.md"
-
-    parent_res = runner(["git", "rev-parse", "HEAD~1"], cwd=real_root)
-    if parent_res.returncode == 0 and parent_res.stdout.strip():
-        parent_sha = parent_res.stdout.strip()
-        if _sha_matches(parent_sha, audited_sha):
-            diff_res = runner(
-                ["git", "diff", "--name-only", parent_sha, current_head_sha],
-                cwd=real_root,
-            )
-            if diff_res.returncode == 0:
-                changed_files = [ln.strip() for ln in diff_res.stdout.splitlines() if ln.strip()]
-                if not changed_files or all(
-                    cf == proj_rel or bool(allowed_audit_re.match(cf)) for cf in changed_files
-                ):
-                    return True
-
-    # --- Step 3: Check if audited_sha is an ancestor and only audit/project docs changed ---
-    if audited_sha and audited_sha != "HEAD":
-        anc_res = runner(
-            ["git", "merge-base", "--is-ancestor", audited_sha, current_head_sha],
-            cwd=real_root,
-        )
-        if anc_res.returncode == 0:
-            diff_anc = runner(
-                ["git", "diff", "--name-only", audited_sha, current_head_sha],
-                cwd=real_root,
-            )
-            if diff_anc.returncode == 0:
-                changed_anc = [ln.strip() for ln in diff_anc.stdout.splitlines() if ln.strip()]
-                if not changed_anc or all(
-                    cf == proj_rel or bool(allowed_audit_re.match(cf)) for cf in changed_anc
-                ):
-                    return True
-
-    return False
+    return common.head_matches_audited_sha(
+        real_root,
+        pr_dir,
+        current_head_sha,
+        audited_sha,
+        runner=runner,
+    )
 
 
 def _cmd_pr_graduate(
