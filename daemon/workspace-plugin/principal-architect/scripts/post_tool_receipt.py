@@ -356,6 +356,9 @@ def evaluate_post_tool(
 
         # --- Step 3: Invalidate receipts on file mutation tool calls (SPEC §7.3.1) ---
         if tool_name in pre_tool_gate.FILE_MUTATION_TOOLS:
+            raw_path = pre_tool_gate._extract_target_path(args)
+            if pre_tool_gate.is_host_artifact_path(raw_path, real_root):
+                return {}
             if not wo_id:
                 wo_doc = pre_tool_gate._find_bound_workorder(ws_dir, pr_id or None, None)
                 if wo_doc is not None:

@@ -48,9 +48,10 @@
  *     - renderZone3Dag(state): Partition and render Zone 3.1 Active Development and Zone 3.2 Historical & Merged DAGs.
  *     - renderFullState(state): Orchestrate a full re-render across Zones 1, 2, and 3.
  *   SSE Lifecycle & Workspace Initialization:
+ *     - normalizeWorkspacePath(raw): Normalize a workspace URI or path and match it to an enrolled repo root.
  *     - fetchWorkspaceState(): Fetch a point-in-time snapshot from GET /api/state.
  *     - connectEventStream(): Open and manage the EventSource connection to GET /api/events.
- *     - setActiveWorkspace(uriOrPath): Switch the active workspace and rebind state/SSE streams.
+ *     - setActiveWorkspace(uriOrPath, options): Switch the active workspace and rebind state/SSE streams.
  *     - initWorkspaces(): Load enrolled workspaces from GET /api/workspaces on startup.
  *     - bindUiControls(): Attach DOM event listeners to Zone 1 controls and window.sidecar hooks.
  */
@@ -62,6 +63,7 @@
   const stateStore = {
     workspaces: [], // Enrolled repository metadata records from GET /api/workspaces.
     activeWorkspace: "", // Repository root path or file:// URI currently displayed.
+    hostWorkspaceReceived: false, // True once the host IDE or user explicitly selected a workspace.
     latestState: null, // Most recent workspace state payload from /api/state or SSE.
     lastRenderedStateJson: "", // Serialized JSON of last rendered state to skip no-op DOM rebuilds.
     eventSource: null, // Active EventSource instance subscribed to /api/events.
@@ -500,6 +502,17 @@
     }
     if (st === "IN_PROGRESS" || st === "RUNNING") {
       return `${iconSvg("progress_activity", 12, "animate-spin")}<span class="animate-shimmer-text">In Progress${ghNum}</span>`;
+    }
+    const workOrders = Array.isArray(pr.work_orders) ? pr.work_orders : [];
+    const anyWoStarted = workOrders.some((w) => {
+      const wst = String(w.status || "PENDING").toUpperCase();
+      return wst === "IN_PROGRESS" || wst === "RUNNING" || wst === "COMPLETED";
+    });
+    if (st === "APPROVED") {
+      if (anyWoStarted) {
+        return `${iconSvg("progress_activity", 12, "animate-spin")}<span class="animate-shimmer-text">In Progress${ghNum}</span>`;
+      }
+      return `${iconSvg("check_circle", 12)}<span>Plan Approved${ghNum}</span>`;
     }
     if (pr.github_pr) {
       return `${iconSvg("pending", 12)}<span>Draft PR #${escapeHtml(pr.github_pr)}</span>`;
@@ -1124,8 +1137,17 @@
       rightBadges.appendChild(woCountBadge);
     }
 
+    const anyWoStarted = workOrders.some((w) => {
+      const wst = String(w.status || "PENDING").toUpperCase();
+      return wst === "IN_PROGRESS" || wst === "RUNNING" || wst === "COMPLETED";
+    });
+    const effectivePillStatus = pr.is_merged
+      ? "merged"
+      : String(pr.status || "").toUpperCase() === "APPROVED" && anyWoStarted
+        ? "in_progress"
+        : pr.status;
     const statusBadge = document.createElement("span");
-    statusBadge.className = `status-pill ${statusClass(pr.is_merged ? "merged" : pr.status)}`;
+    statusBadge.className = `status-pill ${statusClass(effectivePillStatus)}`;
     statusBadge.innerHTML = formatPrStatusBadge(pr);
     rightBadges.appendChild(statusBadge);
 
@@ -1528,41 +1550,81 @@
   }
 
   /**
-   * Switch the active workspace URI or path, sync the selector dropdown, and refresh state/SSE.
-   * @param {string | string[]} uriOrPath - Workspace URI array from host bridge or path string.
-   * @returns {void}
+   * Normalize a workspace URI or filesystem path and match it against enrolled repositories.
+   * @param {string | string[] | null | undefined} raw - Raw workspace URI (`file:///...`) or path.
+   * @returns {string} Canonical repository root path (without `file://` prefix or trailing slash).
    */
-  function setActiveWorkspace(uriOrPath) {
-    // --- Step 1: Normalize workspace candidate from string or array ---
+  function normalizeWorkspacePath(raw) {
+    // --- Step 1: Extract first workspace string and strip file:// scheme and trailing slashes ---
     let candidate = "";
-    if (Array.isArray(uriOrPath)) {
-      candidate = String(uriOrPath[0] || "").trim();
-    } else if (typeof uriOrPath === "string") {
-      candidate = uriOrPath.trim();
+    if (Array.isArray(raw)) {
+      candidate = String(raw[0] || "").trim();
+    } else if (typeof raw === "string") {
+      candidate = raw.trim();
     }
     if (!candidate) {
-      return;
+      return "";
+    }
+    const stripped = candidate.replace(/^file:\/\//, "").replace(/\/+$/, "");
+    if (!stripped) {
+      return "";
     }
 
-    const normCandidate = candidate.replace(/^file:\/\//, "");
-    const normCurrent = String(stateStore.activeWorkspace || "").replace(/^file:\/\//, "");
+    // --- Step 2: Match exact or subdirectory path against enrolled workspaces ---
+    for (const ws of stateStore.workspaces || []) {
+      const root = String(ws.repo_root || ws.uri || "")
+        .replace(/^file:\/\//, "")
+        .replace(/\/+$/, "");
+      if (root && (stripped === root || stripped.startsWith(`${root}/`))) {
+        return root;
+      }
+    }
+    return stripped;
+  }
+
+  /**
+   * Switch the active workspace URI or path, sync the selector dropdown, and refresh state/SSE.
+   * @param {string | string[]} uriOrPath - Workspace URI array from host bridge or path string.
+   * @param {{ fromHost?: boolean }} [options={}] - Optional origin flags.
+   * @returns {void}
+   */
+  function setActiveWorkspace(uriOrPath, options = {}) {
+    // --- Step 1: Normalize workspace candidate from string or array ---
+    const normCandidate = normalizeWorkspacePath(uriOrPath);
+    if (!normCandidate) {
+      return;
+    }
+    if (options.fromHost) {
+      stateStore.hostWorkspaceReceived = true;
+    }
+
+    const normCurrent = normalizeWorkspacePath(stateStore.activeWorkspace);
     if (normCandidate === normCurrent && stateStore.eventSource) {
+      const selectEl = document.getElementById("workspace-select");
+      if (selectEl && selectEl.value !== normCandidate) {
+        selectEl.value = normCandidate;
+      }
       return;
     }
 
     // --- Step 2: Update stateStore and ensure option exists in workspace dropdown ---
-    stateStore.activeWorkspace = candidate;
+    stateStore.activeWorkspace = normCandidate;
     stateStore.lastRenderedStateJson = "";
     const selectEl = document.getElementById("workspace-select");
     if (selectEl) {
-      const hasOption = Array.from(selectEl.options).some((o) => o.value === candidate);
-      if (!hasOption) {
+      const matchingOpt = Array.from(selectEl.options).find(
+        (o) => normalizeWorkspacePath(o.value) === normCandidate
+      );
+      if (!matchingOpt) {
         const opt = document.createElement("option");
-        opt.value = candidate;
-        opt.textContent = candidate.replace(/^file:\/\//, "");
+        opt.value = normCandidate;
+        const slug = normCandidate.split("/").filter(Boolean).pop() || normCandidate;
+        opt.textContent = `${slug} (${normCandidate})`;
         selectEl.appendChild(opt);
+        selectEl.value = normCandidate;
+      } else {
+        selectEl.value = matchingOpt.value;
       }
-      selectEl.value = candidate;
     }
 
     // --- Step 3: Trigger immediate state fetch and reconnect SSE stream ---
@@ -1575,10 +1637,44 @@
    * @returns {Promise<void>}
    */
   async function initWorkspaces() {
-    // --- Step 1: Fetch enrolled workspaces list from Cockpit backend ---
+    // --- Step 1: Query host bridge for current workspace URI and conversation ID ---
     const selectEl = document.getElementById("workspace-select");
+    let hostWs = normalizeWorkspacePath(stateStore.activeWorkspace);
+    if (
+      !hostWs &&
+      window.sidecar &&
+      typeof window.sidecar.getWorkspaceUris === "function"
+    ) {
+      try {
+        const uris = await Promise.race([
+          window.sidecar.getWorkspaceUris(),
+          new Promise((resolve) => setTimeout(() => resolve(null), 150)),
+        ]);
+        const resolvedHost = normalizeWorkspacePath(uris);
+        if (resolvedHost) {
+          hostWs = resolvedHost;
+          stateStore.hostWorkspaceReceived = true;
+        }
+      } catch (_err) {
+        // Proceed with backend fallback when host bridge RPC is unavailable.
+      }
+    }
+
+    const convId =
+      window.sidecar && typeof window.sidecar.conversationId === "string"
+        ? window.sidecar.conversationId.trim()
+        : "";
+    const params = new URLSearchParams();
+    if (convId) {
+      params.set("conversation_id", convId);
+    }
+    if (hostWs) {
+      params.set("workspace", hostWs);
+    }
+    const qs = params.toString();
+
     try {
-      const resp = await fetch("/api/workspaces");
+      const resp = await fetch(`/api/workspaces${qs ? `?${qs}` : ""}`);
       const data = await resp.json();
       const workspaces = Array.isArray(data.workspaces) ? data.workspaces : [];
       stateStore.workspaces = workspaces;
@@ -1602,9 +1698,18 @@
         }
       }
 
-      // --- Step 3: Activate initial workspace and start SSE stream ---
-      const initialWs =
-        data.active_workspace || (workspaces[0] && workspaces[0].repo_root) || "";
+      // --- Step 3: Activate initial workspace (preserving any host-selected workspace) ---
+      const currentHostWs = normalizeWorkspacePath(
+        stateStore.activeWorkspace || hostWs
+      );
+      const isEnrolledHostWs =
+        currentHostWs &&
+        workspaces.some(
+          (ws) => normalizeWorkspacePath(ws.repo_root || ws.uri) === currentHostWs
+        );
+      const initialWs = isEnrolledHostWs
+        ? currentHostWs
+        : data.active_workspace || (workspaces[0] && workspaces[0].repo_root) || currentHostWs || "";
       if (initialWs) {
         setActiveWorkspace(initialWs);
       } else {
@@ -1662,7 +1767,7 @@
     if (wsSelect) {
       wsSelect.addEventListener("change", (ev) => {
         if (ev.target && ev.target.value) {
-          setActiveWorkspace(ev.target.value);
+          setActiveWorkspace(ev.target.value, { fromHost: true });
         }
       });
     }
@@ -1679,7 +1784,9 @@
       window.sidecar &&
       typeof window.sidecar.onWorkspaceChange === "function"
     ) {
-      window.sidecar.onWorkspaceChange((uri) => setActiveWorkspace(uri));
+      window.sidecar.onWorkspaceChange((uri) =>
+        setActiveWorkspace(uri, { fromHost: true })
+      );
     }
   }
 

@@ -806,6 +806,29 @@ def test_pre_tool_gate_r1_and_r1b_architect_gates(
     assert res_chief_wo["rule"] == "R1"
     assert res_chief_wo["permissionDecision"] == "deny"
 
+    # Host brain/<conversation-id>/ artifact writes (e.g. .url.json bookmarks) are exempted from R1/R3
+    brain_artifact_path = str(
+        daemon_home.parent
+        / "brain"
+        / "60552a78-b648-4e7f-acc5-43103c03f0a6"
+        / "GitHub PR 1 - sample.url.json"
+    )
+    for conv_id in ("conv-chief", "conv-pa", "conv-eng"):
+        res_artifact = pre_tool_gate.evaluate_pre_tool(
+            {
+                "conversationId": conv_id,
+                "toolCall": {
+                    "name": "write_file",
+                    "args": {
+                        "Path": brain_artifact_path,
+                        "Content": '{"url": "https://example.com/pull/1"}\n',
+                    },
+                },
+            },
+            repo_root=tmp_repo,
+        )
+        assert res_artifact["permissionDecision"] == "allow"
+
     prog_rel = str((ws_dir / "programme-sample" / "PROGRAM.md").relative_to(tmp_repo))
     res_chief_prog = pre_tool_gate.evaluate_pre_tool(
         {
@@ -2302,7 +2325,7 @@ def test_pre_invocation_checkpoint_compaction_and_rewind_reinjection(
     tmp_repo: Path, daemon_home: Path
 ) -> None:
     """Verify CHECKPOINT compaction and step-count rewind trigger context re-injection."""
-    ws_dir, _, _ = _setup_enrolled_workspace(tmp_repo, daemon_home, mode="monitored")
+    ws_dir, proj_path, _ = _setup_enrolled_workspace(tmp_repo, daemon_home, mode="monitored")
     db_file = ws_dir / ".state" / "state.db"
 
     transcript_file = tmp_repo / "compaction_transcript.jsonl"
@@ -2366,6 +2389,42 @@ def test_pre_invocation_checkpoint_compaction_and_rewind_reinjection(
         == {}
     )
 
+    # 1b. Post-compaction progression (12 total steps, still with CHECKPOINT at 10) updates watermark to 12 without re-injecting
+    post_cp_steps = [
+        *checkpoint_steps,
+        *[
+            {"step_index": 11 + idx, "type": "PLANNER_RESPONSE", "content": f"Post-CP {idx}"}
+            for idx in range(5)
+        ],
+    ]
+    transcript_file.write_text(
+        "\n".join(json.dumps(s) for s in post_cp_steps) + "\n",
+        encoding="utf-8",
+    )
+    assert (
+        pre_invocation.evaluate_pre_invocation(
+            {"conversationId": "conv-eng", "transcriptPath": str(transcript_file)},
+            repo_root=tmp_repo,
+        )
+        == {}
+    )
+    with StateDB(db_file) as db:
+        assert db.get_session("conv-eng")["last_checkpoint_step"] == 12
+
+    # 1c. Post-compaction step rewind (from 12 steps back to 11 steps, still after CHECKPOINT=10) triggers re-injection
+    post_cp_rewound = post_cp_steps[:11]
+    transcript_file.write_text(
+        "\n".join(json.dumps(s) for s in post_cp_rewound) + "\n",
+        encoding="utf-8",
+    )
+    res_post_cp_rewind = pre_invocation.evaluate_pre_invocation(
+        {"conversationId": "conv-eng", "transcriptPath": str(transcript_file)},
+        repo_root=tmp_repo,
+    )
+    assert "injectSteps" in res_post_cp_rewind
+    with StateDB(db_file) as db:
+        assert db.get_session("conv-eng")["last_checkpoint_step"] == 11
+
     # 2. Rewind transcript back to 3 steps (no CHECKPOINT) -> triggers re-injection and updates watermark to 3
     rewound_steps = initial_steps[:3]
     transcript_file.write_text(
@@ -2379,6 +2438,35 @@ def test_pre_invocation_checkpoint_compaction_and_rewind_reinjection(
     assert "injectSteps" in res_rewind
     with StateDB(db_file) as db:
         assert db.get_session("conv-eng")["last_checkpoint_step"] == 3
+
+    # 3. When pr_id is unbound (e.g. chief session) and PR-01 is GRADUATED while PR-02 is IN_PROGRESS,
+    # _find_active_project_doc prefers the non-GRADUATED PR-02 rather than returning PR-01 alphabetically.
+    pr01_dir = ws_dir / "pr-01-graduated-first"
+    pr01_dir.mkdir(parents=True, exist_ok=True)
+    pr02_doc = schemas.load_project(proj_path)
+    pr01_spec = pr02_doc.spec.model_copy(deep=True)
+    pr01_spec.charter.pr_id = "PR-01"
+    pr01_spec.charter.slug = "pr-01-graduated-first"
+    pr01_spec.charter.title = "Graduated First PR"
+    pr01_spec.status = schemas.PRState.GRADUATED
+    pr01_sections = [schemas.Section(s.heading, s.body) for s in pr02_doc.sections]
+    pr01_spec.charter.charter_hash = schemas.compute_charter_hash(
+        pr01_spec.charter, pr01_sections
+    )
+    (pr01_dir / "PROJECT.md").write_text(
+        schemas.dump_document(pr01_spec, pr01_sections),
+        encoding="utf-8",
+    )
+
+    with StateDB(db_file) as db:
+        db.update_session("conv-chief", pr_id=None, last_checkpoint_step=None)
+
+    res_chief_active = pre_invocation.evaluate_pre_invocation(
+        {"conversationId": "conv-chief"},
+        repo_root=tmp_repo,
+    )
+    chief_msg = res_chief_active["injectSteps"][0]["systemMessage"]["systemMessage"]
+    assert "- **Active PR:** `PR-02` (pr-02-agents-and-dual-mode-hooks)" in chief_msg
 
 
 def test_pre_invocation_memory_mode_builtin_vs_external_separation(
