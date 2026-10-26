@@ -24,7 +24,9 @@ Constants:
 Functions:
   - `_repo_ui_dir() -> Path`: Return the repository's default Cockpit UI asset directory.
   - `_resolve_daemon_home(daemon_home=None) -> Path`: Resolve the active `pa-daemon` home path.
-  - `_list_enrolled_workspaces(daemon_home) -> tuple[...]`: List enrolled repos and active path.
+  - `_workspace_last_activity_ns(repo_root, ws_dir) -> int`: Latest mtime across workspace state/specs.
+  - `_match_workspace_by_conversation(workspaces, conversation_id) -> str | None`: Match repo by session.
+  - `_list_enrolled_workspaces(daemon_home, *, conversation_id=None, preferred_workspace=None) -> tuple[...]`: List enrolled repos and active path.
   - `_resolve_workspace(raw_workspace, daemon_home) -> Path`: Resolve a URI/path to a repo root.
   - `_parse_json_list_str(raw) -> list[str]`: Parse a JSON list or sequence into stripped strings.
   - `_format_dt(val) -> str | None`: Format an optional datetime or string as ISO 8601.
@@ -163,13 +165,117 @@ def _resolve_daemon_home(daemon_home: str | Path | None = None) -> Path:
     return common.daemon_home()
 
 
+def _workspace_last_activity_ns(repo_root: str | Path, ws_dir: str | Path) -> int:
+    """Return the latest filesystem modification timestamp (in ns) for an enrolled workspace.
+
+    Args:
+        repo_root: Enrolled repository root path.
+        ws_dir: Principal Architect workspace directory path for `repo_root`.
+
+    Returns:
+        Highest `st_mtime_ns` observed across `.state/state.db`, `.state/state.db-wal`, and
+        workspace Markdown specs (or `0` when no files exist).
+    """
+    # --- Step 1: Collect state database and Markdown spec paths ---
+    ws_path = Path(ws_dir)
+    candidates: list[Path] = [
+        ws_path / ".state" / "state.db",
+        ws_path / ".state" / "state.db-wal",
+    ]
+    if ws_path.is_dir():
+        candidates.extend(ws_path.rglob("*.md"))
+    else:
+        candidates.append(Path(repo_root))
+
+    # --- Step 2: Return maximum st_mtime_ns across existing files ---
+    best_ns = 0
+    for cand in candidates:
+        try:
+            st = cand.stat()
+            if st.st_mtime_ns > best_ns:
+                best_ns = st.st_mtime_ns
+        except OSError:
+            continue
+    return best_ns
+
+
+def _match_workspace_by_conversation(
+    workspaces: Sequence[Mapping[str, Any]],
+    conversation_id: str,
+) -> str | None:
+    """Resolve an enrolled `repo_root` bound to or referenced by `conversation_id`.
+
+    Args:
+        workspaces: Sequence of normalized workspace metadata dictionaries.
+        conversation_id: Active IDE conversation UUID from `window.sidecar.conversationId`.
+
+    Returns:
+        Matching `repo_root` string if `conversation_id` is bound in `.state/state.db` or its
+        conversation transcript references an enrolled repository path, otherwise `None`.
+    """
+    # --- Step 1: Check each enrolled workspace's StateDB sessions and repo_config tables ---
+    conv_clean = conversation_id.strip()
+    if not conv_clean or not workspaces:
+        return None
+
+    for ws in workspaces:
+        ws_dir = Path(str(ws.get("workspace_dir") or ""))
+        db_file = ws_dir / ".state" / "state.db"
+        if not db_file.is_file():
+            continue
+        try:
+            with state_db.StateDB(db_file) as db:
+                if db.get_session(conv_clean) is not None:
+                    return str(ws["repo_root"])
+                cur = db.conn.execute(
+                    "SELECT 1 FROM repo_config WHERE value = ? LIMIT 1",
+                    (conv_clean,),
+                )
+                if cur.fetchone() is not None:
+                    return str(ws["repo_root"])
+        except Exception:  # noqa: BLE001, S112
+            continue
+
+    # --- Step 2: Fall back to scanning the conversation transcript for enrolled repo paths ---
+    transcript_path = (
+        common.app_data_dir()
+        / "brain"
+        / conv_clean
+        / ".system_generated"
+        / "logs"
+        / "transcript.jsonl"
+    )
+    if transcript_path.is_file():
+        try:
+            raw_head = transcript_path.read_text(encoding="utf-8", errors="ignore")[:65536]
+            best_repo: str | None = None
+            best_pos = -1
+            for ws in workspaces:
+                r_root = str(ws["repo_root"])
+                pos = raw_head.find(r_root)
+                if pos != -1 and (best_pos == -1 or pos < best_pos):
+                    best_pos = pos
+                    best_repo = r_root
+            if best_repo is not None:
+                return best_repo
+        except OSError:
+            pass
+
+    return None
+
+
 def _list_enrolled_workspaces(
     daemon_home: Path,
+    *,
+    conversation_id: str | None = None,
+    preferred_workspace: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], str | None]:
     """Read `<daemon_home>/state/registry.json` and list enrolled repositories.
 
     Args:
         daemon_home: Resolved `pa-daemon` home directory containing `state/registry.json`.
+        conversation_id: Optional IDE `conversationId` used to select the bound repository.
+        preferred_workspace: Optional workspace URI or path pushed by the IDE host bridge.
 
     Returns:
         A 3-tuple `(workspaces_list, raw_repos, active_workspace)` where `workspaces_list`
@@ -197,10 +303,22 @@ def _list_enrolled_workspaces(
             }
         )
 
-    # --- Step 3: Resolve the active default workspace from environment or first entry ---
+    # --- Step 3: Resolve the active default workspace from host URI, conversation, env, or latest activity ---
     active_workspace: str | None = None
+
+    if preferred_workspace and preferred_workspace.strip():
+        cleaned_pref = os.path.realpath(common._strip_file_uri(preferred_workspace.strip()))
+        for ws in workspaces:
+            ws_root = str(ws["repo_root"])
+            if cleaned_pref == ws_root or cleaned_pref.startswith(ws_root + os.sep):
+                active_workspace = ws_root
+                break
+
+    if active_workspace is None and conversation_id and conversation_id.strip():
+        active_workspace = _match_workspace_by_conversation(workspaces, conversation_id)
+
     default_env = os.environ.get("PA_DEFAULT_WORKSPACE", "").strip()
-    if default_env:
+    if active_workspace is None and default_env:
         cleaned_default = os.path.realpath(common._strip_file_uri(default_env))
         for ws in workspaces:
             if ws["repo_root"] == cleaned_default:
@@ -214,7 +332,15 @@ def _list_enrolled_workspaces(
             active_workspace = cleaned_default
 
     if active_workspace is None and workspaces:
-        active_workspace = workspaces[0]["repo_root"]
+        # Prefer the workspace with the most recent state.db or spec file activity
+        best_ws = max(
+            workspaces,
+            key=lambda w: (
+                _workspace_last_activity_ns(w["repo_root"], w["workspace_dir"]),
+                str(w.get("enrolled_at") or ""),
+            ),
+        )
+        active_workspace = str(best_ws["repo_root"])
 
     return workspaces, raw_repos, active_workspace
 
@@ -327,7 +453,7 @@ def _is_pr_merged(
     ch = proj_doc.spec.charter
     base_branch = ch.base_branch or "main"
 
-    # --- Step 2: Check if git trailers on the trunk branch contain all of this PR's work orders ---
+    # --- Step 2: Check if git trailers or completed WO commits on trunk contain all work orders ---
     if work_orders:
         all_wos_in_trunk = all(
             (wo.get("wo_id", "") in git_trailers or wo.get("wo_id", "").upper() in git_trailers)
@@ -335,6 +461,27 @@ def _is_pr_merged(
         )
         if all_wos_in_trunk:
             return True
+
+        if (repo_root / ".git").is_dir() and all(
+            str(wo.get("status", "")).upper() == "COMPLETED" and bool(wo.get("commit_sha"))
+            for wo in work_orders
+        ):
+            all_commits_in_main = True
+            for wo in work_orders:
+                sha = str(wo.get("commit_sha") or "").strip()
+                try:
+                    res = common.run(
+                        ["git", "merge-base", "--is-ancestor", sha, "main"],
+                        cwd=repo_root,
+                    )
+                    if res.returncode != 0:
+                        all_commits_in_main = False
+                        break
+                except (OSError, RuntimeError):
+                    all_commits_in_main = False
+                    break
+            if all_commits_in_main:
+                return True
 
     # --- Step 3: Check if a GRADUATED PR's branch commits are merged into base_branch ---
     if status_str == "GRADUATED" and (repo_root / ".git").is_dir():
@@ -733,6 +880,50 @@ def build_workspace_state(
                 }
             )
 
+        # --- Step 4b: Reconcile Programme PR summary entries and overall Programme status ---
+        prs_by_id: dict[str, dict[str, Any]] = {
+            str(p["pr_id"]).upper(): p for p in prs if p.get("pr_id")
+        }
+        for prog in programmes:
+            prog_id_upper = str(prog.get("programme_id") or "").upper()
+            prog_pr_entries = prog.get("prs") or []
+            for p_entry in prog_pr_entries:
+                pid = str(p_entry.get("id") or "").upper()
+                live_pr = prs_by_id.get(pid)
+                if live_pr is not None:
+                    p_entry["status"] = live_pr["status"]
+                    if live_pr.get("github_pr") is not None:
+                        p_entry["github_pr"] = live_pr["github_pr"]
+
+            linked_live_prs = [
+                p
+                for p in prs
+                if str(p.get("programme_id") or "").upper() == prog_id_upper
+                or any(
+                    str(pe.get("id") or "").upper() == str(p.get("pr_id") or "").upper()
+                    for pe in prog_pr_entries
+                )
+            ]
+            if linked_live_prs:
+                all_done = all(
+                    bool(lp.get("is_merged"))
+                    or str(lp.get("status") or "").upper() in ("GRADUATED", "CLOSED")
+                    for lp in linked_live_prs
+                )
+                any_started = any(
+                    bool(lp.get("is_merged"))
+                    or str(lp.get("status") or "PLANNED").upper() != "PLANNED"
+                    or bool(lp.get("work_orders"))
+                    for lp in linked_live_prs
+                )
+                curr_prog_st = str(prog.get("status") or "DRAFT").upper()
+                if all_done and len(linked_live_prs) >= len(prog_pr_entries):
+                    prog["status"] = "COMPLETED"
+                    prog["is_completed"] = True
+                    prog["is_active"] = False
+                elif any_started and curr_prog_st == "DRAFT":
+                    prog["status"] = "IN_PROGRESS"
+
         # --- Step 5: Load open and historical escalations from StateDB ---
         raw_escalations = db.open_escalations()
         escalations: list[dict[str, Any]] = []
@@ -1067,8 +1258,12 @@ class CockpitRequestHandler(BaseHTTPRequestHandler):
 
         # --- Step 3: Serve `/api/workspaces` from the global Registry ---
         if route == "/api/workspaces":
+            conv_id = (query.get("conversation_id") or [None])[0]
+            pref_ws = (query.get("workspace") or [None])[0]
             workspaces, raw_repos, active_ws = _list_enrolled_workspaces(
-                self.server.daemon_home
+                self.server.daemon_home,
+                conversation_id=conv_id,
+                preferred_workspace=pref_ws,
             )
             self._send_json(
                 200,

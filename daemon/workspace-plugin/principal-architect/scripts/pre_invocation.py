@@ -310,7 +310,11 @@ def _resolve_skill_paths(repo_root: Path, required_skills: Sequence[str]) -> lis
 
 
 def _find_active_project_doc(ws_dir: Path, pr_id: str | None) -> Any | None:
-    """Locate the active `PROJECT.md` matching `pr_id` or fallback to the first `pr-*/PROJECT.md`.
+    """Locate the active `PROJECT.md` matching `pr_id` or fallback to the active/latest `pr-*/PROJECT.md`.
+
+    When `pr_id` is omitted or not yet bound (e.g. for a Tier 1 `chief` session), prefers
+    the first non-`GRADUATED` `PROJECT.md` in `ws_dir`, falling back to the most recent
+    (`loaded[-1]`) `PROJECT.md` when all Pull Requests have already graduated.
 
     Args:
         ws_dir: Path to the `principal-architect-workspace` workspace directory.
@@ -325,16 +329,27 @@ def _find_active_project_doc(ws_dir: Path, pr_id: str | None) -> Any | None:
     if doc is not None:
         return doc
 
+    loaded: list[Any] = []
     for path in sorted(ws_dir.glob("pr-*/PROJECT.md")):
         try:
-            return schemas.load_project(path)
+            cand = schemas.load_project(path)
         except Exception:  # noqa: BLE001, S112
             continue
-    return None
+        if pr_id and cand.spec.charter.pr_id.upper() == pr_id.upper():
+            return cand
+        loaded.append(cand)
+
+    if not loaded:
+        return None
+
+    for cand in loaded:
+        if cand.spec.status != schemas.PRState.GRADUATED:
+            return cand
+    return loaded[-1]
 
 
 def _find_active_program_doc(ws_dir: Path, programme_id: str | None) -> Any | None:
-    """Locate the active `PROGRAM.md` matching `programme_id` or first `programme-*/PROGRAM.md`.
+    """Locate the active `PROGRAM.md` matching `programme_id` or active/latest `programme-*/PROGRAM.md`.
 
     Args:
         ws_dir: Path to the `principal-architect-workspace` workspace directory.
@@ -355,7 +370,12 @@ def _find_active_program_doc(ws_dir: Path, programme_id: str | None) -> Any | No
         if programme_id and doc.spec.programme_id.lower() == programme_id.lower():
             return doc
         loaded.append(doc)
-    return loaded[0] if loaded else None
+    if not loaded:
+        return None
+    for cand in loaded:
+        if str(cand.spec.status).upper() != "COMPLETED":
+            return cand
+    return loaded[-1]
 
 
 def _build_architect_injection(
@@ -647,7 +667,7 @@ def evaluate_pre_invocation(
     t_path = payload.get("transcriptPath") or payload.get("transcript_path")
     steps = common.read_transcript(common._strip_file_uri(str(t_path))) if t_path else []
     latest_cp = common.latest_checkpoint_step(steps)
-    step_watermark = latest_cp if latest_cp is not None else len(steps)
+    step_watermark = max(len(steps), latest_cp) if latest_cp is not None else len(steps)
 
     # --- Step 3: Bind new session or detect compaction / step rewind on existing session ---
     with state_db.StateDB(db_file) as db:

@@ -38,9 +38,12 @@ Exported API Summary:
     _CANONICAL_PROGRAM_SUBPATH_RE: Regex matching canonical `programme-<slug>/PROGRAM.md` workspace subpath.
     _CANONICAL_PROJECT_SUBPATH_RE: Regex matching canonical `pr-<XX>-<slug>/PROJECT.md` workspace subpath.
     _CANONICAL_WORKORDER_SUBPATH_RE: Regex matching canonical `pr-<XX>-<slug>/wo<M>-<slug>/WORKORDER.md` subpath.
+    _HOST_BRAIN_ARTIFACT_RE: Regex matching host IDE `brain/<conversation-id>/` artifact and scratch paths.
   Public Functions:
     resolve_repo_rel_path(repo_root, raw_path) -> tuple[bool, str, Path]:
         Resolve raw_path via os.path.realpath against repo_root and check containment.
+    is_host_artifact_path(raw_path, real_root) -> bool:
+        Return True if raw_path resolves outside real_root inside a host brain/<id>/ artifact directory.
     matches_pattern(rel_posix, pattern) -> bool:
         Check whether a repo-relative POSIX path matches an exact path, prefix, or glob pattern.
     matches_any_pattern(rel_posix, patterns) -> bool:
@@ -205,6 +208,9 @@ _CANONICAL_WORKORDER_SUBPATH_RE = re.compile(
     r"^pr-\d+[a-z]?-[a-z0-9-]+/wo\d+[a-z]?-[a-z0-9-]+/WORKORDER\.md$"
 )
 
+# Matches host IDE `brain/<conversation-id>/` artifact and scratch directory paths.
+_HOST_BRAIN_ARTIFACT_RE = re.compile(r"/brain/[0-9a-fA-F-]{8,}/")
+
 
 def resolve_repo_rel_path(repo_root: Path | str, raw_path: str) -> tuple[bool, str, Path]:
     """Resolve `raw_path` via `os.path.realpath` against `repo_root`.
@@ -233,6 +239,31 @@ def resolve_repo_rel_path(repo_root: Path | str, raw_path: str) -> tuple[bool, s
     if real_root in real_target.parents:
         return True, real_target.relative_to(real_root).as_posix(), real_target
     return False, str(raw_path), real_target
+
+
+def is_host_artifact_path(raw_path: str, real_root: Path) -> bool:
+    """Return `True` if `raw_path` resolves outside `real_root` inside a host `brain/<id>/` directory.
+
+    Host IDE runtimes write conversation-scoped markdown reports, `.url.json` bookmarks,
+    and `scratch/` files into `<appDataDir>/brain/<conversation-id>/` via `write_file` and
+    `edit_file`. Those host artifact paths live outside the enrolled repository and must
+    not trigger repository file-boundary gates (`R1` / `R3`) or invalidate Work Order
+    verification receipts.
+
+    Args:
+        raw_path: Raw target file path string from the tool call arguments.
+        real_root: Canonical path to the enrolled repository root.
+
+    Returns:
+        `True` if `raw_path` resolves outside `real_root` and inside a `brain/<conversation-id>/`
+        artifact directory, otherwise `False`.
+    """
+    if not raw_path or not raw_path.strip():
+        return False
+    inside_repo, _, real_target = resolve_repo_rel_path(real_root, raw_path)
+    if inside_repo:
+        return False
+    return bool(_HOST_BRAIN_ARTIFACT_RE.search(real_target.as_posix()))
 
 
 def matches_pattern(rel_posix: str, pattern: str) -> bool:
@@ -848,6 +879,8 @@ def _check_architect_file_gates(
         `None` if the file edit is permitted, or a finalized R1/R1b decision dictionary.
     """
     # --- Step 1: Verify target path resolves inside the PA workspace directory (Rule R1) ---
+    if is_host_artifact_path(raw_path, real_root):
+        return None
     inside_repo, rel_posix, real_target = resolve_repo_rel_path(real_root, raw_path)
     ws_sub = _workspace_subpath(rel_posix, real_root, ws_dir) if inside_repo else None
     if not inside_repo or ws_sub is None:
@@ -1217,6 +1250,8 @@ def _check_worker_gates(
     # --- Step 2: Resolve canonical path and block traversal outside repo_root (Rule R3) ---
     if tool_name not in FILE_MUTATION_TOOLS:
         return None
+    if is_host_artifact_path(raw_path, real_root):
+        return None
 
     inside_repo, rel_posix, real_target = resolve_repo_rel_path(real_root, raw_path)
     if not inside_repo:
@@ -1383,6 +1418,24 @@ def evaluate_pre_tool(
             or payload.get("woId")
             or payload.get("wo_id")
         )
+
+        if session is None and conversation_id and not role:
+            is_chief_cmd = bool(
+                tool_name == "run_command"
+                and _PA_FORBIDDEN_LIFECYCLE_CMD_RE.search(cmd_str)
+            )
+            is_chief_file = False
+            if tool_name in FILE_MUTATION_TOOLS and raw_path:
+                in_repo, rel_p, _ = resolve_repo_rel_path(real_root, raw_path)
+                if in_repo:
+                    sub_p = _workspace_subpath(rel_p, real_root, ws_dir)
+                    if sub_p and _CANONICAL_PROGRAM_SUBPATH_RE.match(sub_p):
+                        is_chief_file = True
+            if is_chief_cmd or is_chief_file:
+                role = "chief"
+                session = db.bind_session(
+                    conversation_id, role=role, pr_id=pr_id, wo_id=wo_id
+                )
 
         # Rule R6: Graduation Audit Gate (applies regardless of role)
         if tool_name == "run_command" and _R6_GRADUATE_RE.search(cmd_str):

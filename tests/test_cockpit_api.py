@@ -1113,3 +1113,85 @@ def test_install_and_uninstall_scripts_isolated_tmp_path(
     assert res_un2.returncode == 0
 
 
+def test_multi_workspace_selection_programme_reconciliation_and_merge_detection(
+    tmp_path: Path,
+    tmp_repo: Path,
+    daemon_home: Path,
+) -> None:
+    """Verify multi-workspace active_workspace selection, Programme status reconciliation, and commit-ancestry merge detection."""
+    ws1 = _seed_enrolled_workspace(tmp_repo, daemon_home)
+
+    repo2 = tmp_path / "repo_secondary"
+    repo2.mkdir(parents=True)
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo2, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo2, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo2, check=True)
+    (repo2 / "src").mkdir(parents=True, exist_ok=True)
+    (repo2 / "src" / "core.py").write_text("x = 2\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo2, check=True)
+    subprocess.run(["git", "commit", "-m", "init repo2"], cwd=repo2, check=True, capture_output=True)
+    head_sha_repo2 = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo2,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    ws2 = _seed_enrolled_workspace(repo2, daemon_home)
+    with state_db.StateDB(ws2 / ".state" / "state.db") as db2:
+        db2.bind_session("conv-chief-repo2", role="chief", programme_id="prog-cockpit-demo")
+
+    # Mark PR-01 in repo2 as GRADUATED with a completed Work Order whose commit_sha is on main
+    proj2_path = ws2 / "pr-01-demo-feature" / "PROJECT.md"
+    proj2_doc = schemas.load_project(proj2_path)
+    proj2_doc.spec.status = schemas.PRState.GRADUATED
+    proj2_doc.spec.work_orders[0].status = schemas.WorkOrderStatus.COMPLETED
+    proj2_path.write_text(
+        schemas.dump_document(proj2_doc.spec, proj2_doc.sections),
+        encoding="utf-8",
+    )
+
+    wo2_path = ws2 / "pr-01-demo-feature" / "wo1-core" / "WORKORDER.md"
+    wo2_doc = schemas.load_workorder(wo2_path)
+    wo2_doc.spec.status = schemas.WorkOrderStatus.COMPLETED
+    wo2_doc.spec.completion = schemas.CompletionReport(
+        status=schemas.WorkOrderStatus.COMPLETED,
+        attempt_num=1,
+        commit_sha=head_sha_repo2,
+        receipt_id="rcpt-repo2",
+        verification_summary="All unit tests passed.",
+    )
+    wo2_path.write_text(
+        schemas.dump_document(wo2_doc.spec, wo2_doc.sections),
+        encoding="utf-8",
+    )
+
+    _ = ws1
+    with running_cockpit_server(daemon_home) as (_, base_url):
+        # 1. Conversation ID resolves active_workspace to repo2 even though tmp_repo was enrolled first
+        status, ws_conv = _http_get_json(
+            f"{base_url}/api/workspaces?conversation_id=conv-chief-repo2"
+        )
+        assert status == 200
+        assert ws_conv["active_workspace"] == str(repo2.resolve())
+
+        # 2. Explicit workspace query parameter resolves active_workspace
+        ws_param = urllib.parse.quote(f"file://{tmp_repo.resolve()}", safe="")
+        status, ws_pref = _http_get_json(
+            f"{base_url}/api/workspaces?workspace={ws_param}"
+        )
+        assert status == 200
+        assert ws_pref["active_workspace"] == str(tmp_repo.resolve())
+
+        # 3. In repo2, PR-01 is detected as merged via commit_sha ancestry on main, and Programme is reconciled to COMPLETED
+        repo2_param = urllib.parse.quote(str(repo2.resolve()), safe="")
+        status, st2 = _http_get_json(f"{base_url}/api/state?workspace={repo2_param}")
+        assert status == 200
+        assert st2["prs"][0]["is_merged"] is True
+        assert st2["programmes"][0]["status"] == "COMPLETED"
+        assert st2["programmes"][0]["is_completed"] is True
+        assert st2["programmes"][0]["prs"][0]["status"] == "GRADUATED"
+
+
+
