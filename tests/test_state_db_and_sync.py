@@ -387,8 +387,10 @@ def test_state_db_constants() -> None:
         "verification_receipts",
         "escalations",
         "attention_queue",
+        "session_state",
+        "session_decisions",
     )
-    assert SCHEMA_VERSION == 1
+    assert SCHEMA_VERSION == 2
     ts = utc_now_iso()
     assert ts.endswith("Z")
     assert "T" in ts
@@ -406,7 +408,7 @@ def test_state_db_table_schemas_and_pragmas(tmp_path: Path) -> None:
         assert cur.fetchone()[0] == 5000
 
         cur = db.conn.execute("PRAGMA user_version;")
-        assert cur.fetchone()[0] == 1
+        assert cur.fetchone()[0] == 2
 
         # Check table schemas
         expected_columns = {
@@ -462,6 +464,22 @@ def test_state_db_table_schemas_and_pragmas(tmp_path: Path) -> None:
                 "status",
                 "created_at",
             },
+            "session_state": {
+                "conversation_id",
+                "wo_id",
+                "dispatch_status",
+                "subagent_conv_id",
+                "dispatched_at",
+                "completed_at",
+                "result_summary",
+            },
+            "session_decisions": {
+                "id",
+                "conversation_id",
+                "decision_type",
+                "summary",
+                "created_at",
+            },
         }
 
         for table, cols in expected_columns.items():
@@ -473,7 +491,7 @@ def test_state_db_table_schemas_and_pragmas(tmp_path: Path) -> None:
     with StateDB(db_file) as db:
         db.init()
         cur = db.conn.execute("PRAGMA user_version;")
-        assert cur.fetchone()[0] == 1
+        assert cur.fetchone()[0] == 2
 
 
 def test_state_db_repo_config(tmp_path: Path) -> None:

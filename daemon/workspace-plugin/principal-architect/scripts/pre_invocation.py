@@ -43,9 +43,13 @@ Exported API Summary:
         Locate the active PROJECT.md matching pr_id or fall back to the first PR project doc.
     _find_active_program_doc(ws_dir, programme_id) -> Any | None:
         Locate the active PROGRAM.md matching programme_id or fall back to the first programme doc.
+    _build_role_anchor(role, pr_id, wo_id) -> str:
+        Build a succinct role-identity paragraph for compaction/rewind re-injection.
+    _build_session_state_injection(db, conversation_id) -> str:
+        Build operational state context from session_state and session_decisions tables.
     _build_architect_injection(*, role, session, ws_dir, db, execution_mode, memory_mode) -> str:
         Build the persistent systemMessage context block for chief or pa roles.
-    _build_engineer_injection(*, session, real_root, ws_dir, execution_mode, memory_mode) -> str:
+    _build_engineer_injection(*, session, real_root, ws_dir, db, execution_mode, memory_mode) -> str:
         Build the persistent systemMessage contract block for the pa-engineer role.
 """
 
@@ -378,6 +382,125 @@ def _find_active_program_doc(ws_dir: Path, programme_id: str | None) -> Any | No
     return loaded[-1]
 
 
+def _build_role_anchor(role: str, pr_id: str | None, wo_id: str | None) -> str:
+    """Build a succinct role-identity paragraph reminding the agent what it IS and what it must NOT do.
+
+    Injected at the top of every compaction/rewind re-injection to prevent role drift
+    (e.g. Chief Architect drifting into hands-on implementation).
+
+    Args:
+        role: Normalized Split-Authority role ('chief', 'pa', 'engineer', 'auditor', 'debugger').
+        pr_id: Optional active Pull Request identifier.
+        wo_id: Optional active Work Order identifier.
+
+    Returns:
+        Formatted markdown role-identity anchor string.
+    """
+    # --- Step 1: Return role-specific identity anchor as a markdown blockquote ---
+    if role == "chief":
+        return (
+            "> **You are `chief` (Tier 1 Chief Architect).** Your scope: programme vision, PR charters,\n"
+            "> and `allowed_modules` boundaries. You do NOT edit source code, write WORKORDER.md,\n"
+            "> dispatch engineers, or run `pa pr claim`. For full CLI reference, read the\n"
+            "> `principal-architect` skill."
+        )
+    if role == "pa":
+        return (
+            f"> **You are `pa` (Tier 2 Principal Architect) for {pr_id or 'unbound PR'}.** Your scope:\n"
+            "> decompose the locked PR Charter into Work Orders, dispatch `pa-engineer` subagents,\n"
+            "> orchestrate audit and graduation. You do NOT edit source code, run tests directly,\n"
+            "> modify PROGRAM.md, or edit Part I of PROJECT.md. If boundary changes are needed,\n"
+            "> escalate via `pa escalate --to-chief`. For full CLI reference, read the\n"
+            "> `principal-architect` skill."
+        )
+    if role == "engineer":
+        return (
+            f"> **You are `engineer` (Tier 3 Worker) for {wo_id or 'unbound WO'}.** Your scope:\n"
+            "> implement the bound Work Order within `allowed_files`, run `pa wo verify`, and\n"
+            "> complete the Completion Report. You do NOT create new Work Orders, edit PROJECT.md,\n"
+            "> or modify files outside your boundary. For escalation, use `pa escalate --to-pa`."
+        )
+    if role == "auditor":
+        return (
+            f"> **You are `auditor` (Tier 2b Cold-Firewall Auditor) for {pr_id or 'unbound PR'}.**\n"
+            "> Your scope: read-only evaluation of the cumulative PR diff. You do NOT edit source\n"
+            "> code or modify any spec files. Publish your verdict via `pa pr post-audit`."
+        )
+    # --- Step 2: Fallback for debugger and any other roles ---
+    return (
+        f"> **You are `{role}` for {pr_id or '-'} / {wo_id or '-'}.** Refer to the\n"
+        "> `principal-architect` skill for your role boundaries."
+    )
+
+
+def _build_session_state_injection(
+    db: state_db.StateDB,
+    conversation_id: str,
+) -> str:
+    """Build operational state context from session_state and session_decisions tables.
+
+    Queries the state database for WO dispatch tracking and session decisions,
+    formatting them into a concise markdown block for post-compaction injection.
+
+    Args:
+        db: Open StateDB connection.
+        conversation_id: PA session conversation UUID.
+
+    Returns:
+        Formatted markdown string with execution progress table and decisions list,
+        or empty string if no session state exists.
+    """
+    # --- Step 1: Query session_state rows and build execution progress table ---
+    if not conversation_id:
+        return ""
+
+    state_rows = db.get_session_state(conversation_id)
+    decision_rows = db.get_session_decisions(conversation_id)
+
+    if not state_rows and not decision_rows:
+        return ""
+
+    parts: list[str] = []
+
+    if state_rows:
+        status_emoji = {
+            "completed": "✅",
+            "dispatched": "🔄",
+            "pending": "⏳",
+            "escalated": "⚠️",
+            "blocked": "⚠️",
+        }
+        table_lines = [
+            "### Execution Progress (session state)",
+            "| WO | Status | Dispatched | Result |",
+            "|---|---|---|---|",
+        ]
+        for row in state_rows:
+            raw_status = str(row.get("dispatch_status") or "pending").lower()
+            emoji = status_emoji.get(raw_status, "⏳")
+            wo = row.get("wo_id") or "—"
+            dispatched = row.get("dispatched_at") or "—"
+            # Truncate timestamp to HH:MM if it looks like ISO
+            if dispatched != "—" and "T" in dispatched:
+                dispatched = dispatched.split("T")[1][:5]
+            result = row.get("result_summary") or "—"
+            table_lines.append(
+                f"| {wo} | {emoji} {raw_status} | {dispatched} | {result} |"
+            )
+        parts.append("\n".join(table_lines))
+
+    # --- Step 2: Query session_decisions and append decision list ---
+    if decision_rows:
+        decision_lines = ["### Session Decisions"]
+        for row in decision_rows:
+            dtype = row.get("decision_type") or "decision"
+            summary = row.get("summary") or ""
+            decision_lines.append(f"- [{dtype}] {summary}")
+        parts.append("\n".join(decision_lines))
+
+    return "\n\n".join(parts)
+
+
 def _build_architect_injection(
     *,
     role: str,
@@ -400,16 +523,16 @@ def _build_architect_injection(
     Returns:
         Formatted markdown string for the `injectSteps` `systemMessage` payload.
     """
-    # --- Step 1: Initialize context header and load active Programme / PR metadata ---
+    # --- Step 1: Initialize role anchor, context header, and load active Programme / PR metadata ---
     pr_id = str(session.get("pr_id") or "").strip() or None
     programme_id = str(session.get("programme_id") or "").strip() or None
 
-    lines: list[str] = [
-        (
-            f"## Principal Architect Active Context (`role={role}`, "
-            f"`execution_mode={execution_mode}`, `memory_mode={memory_mode}`)"
-        )
-    ]
+    role_anchor = _build_role_anchor(role, pr_id, None)
+    lines: list[str] = [role_anchor]
+    lines.append(
+        f"## Principal Architect Active Context (`role={role}`, "
+        f"`execution_mode={execution_mode}`, `memory_mode={memory_mode}`)"
+    )
 
     prog_doc = _find_active_program_doc(ws_dir, programme_id)
     if prog_doc is not None:
@@ -514,6 +637,11 @@ def _build_architect_injection(
             if extracted:
                 lines.append(f"### Module Index (MODULE_INDEX.md)\n{extracted}")
 
+    # --- Step 5: Append operational session state for compaction resilience ---
+    session_state_block = _build_session_state_injection(db, str(session.get("conversation_id", "")))
+    if session_state_block:
+        lines.append(session_state_block)
+
     return "\n\n".join(lines)
 
 
@@ -522,6 +650,7 @@ def _build_engineer_injection(
     session: Mapping[str, Any],
     real_root: Path,
     ws_dir: Path,
+    db: state_db.StateDB,
     execution_mode: str,
     memory_mode: str,
 ) -> str:
@@ -531,6 +660,7 @@ def _build_engineer_injection(
         session: Active session row mapping from `state.db`.
         real_root: Canonical path to the repository root.
         ws_dir: Path to the `principal-architect-workspace` workspace directory.
+        db: Open `StateDB` connection for querying session state.
         execution_mode: Active execution mode (`"monitored"` or `"autonomous"`).
         memory_mode: Active memory mode (`"builtin"` or `"external"`).
 
@@ -739,6 +869,7 @@ def evaluate_pre_invocation(
                 session=session,
                 real_root=real_root,
                 ws_dir=ws_dir,
+                db=db,
                 execution_mode=execution_mode,
                 memory_mode=memory_mode,
             )
