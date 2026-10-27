@@ -874,12 +874,14 @@ def load_workorder_tolerant(path: str | Path) -> tuple[Document[WorkOrderSpec], 
     spec = WorkOrderSpec.model_validate(fm_data)
     doc = Document(spec=spec, sections=sections, path=p)
 
-    # --- Step 6: Check required Part I sections and Completion Report ---
+    # --- Step 6: Check required Part I sections and ensure Completion Report ---
     part1 = _part1_workorder_sections(sections)
     if not part1:
         raise ValueError("WORKORDER.md requires at least one Part I H2 section")
     if doc.section("## Completion Report") is None:
-        raise ValueError("WORKORDER.md is missing required H2 section '## Completion Report'")
+        warnings.append("synthesized missing '## Completion Report' section")
+        sections = list(sections) + [Section("## Completion Report", "\n_No completion report recorded._\n")]
+        doc = Document(spec=spec, sections=sections, path=p)
     return doc, warnings
 
 
