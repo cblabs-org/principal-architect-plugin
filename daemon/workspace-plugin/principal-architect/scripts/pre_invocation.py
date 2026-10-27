@@ -675,6 +675,9 @@ def _build_engineer_injection(
     attempt_num = int(session.get("attempt_num") or 1)
     structural_failures = int(session.get("structural_failures") or 0)
 
+    # --- Step 1a: Prepend role-identity anchor for compaction resilience ---
+    role_anchor = _build_role_anchor("engineer", pr_id, wo_id)
+
     wo_doc = pre_tool_gate._find_bound_workorder(ws_dir, pr_id, wo_id)
     if wo_doc is None:
         write_back_line = (
@@ -684,12 +687,13 @@ def _build_engineer_injection(
             else "Write-Back Mode: Full Distillation Mode (memory_mode=builtin) — "
             "populate decisions_made and dead_ends in Completion Report while prompt cache is warm."
         )
-        return (
+        fallback = (
             f"## Worker Execution Contract (`role=engineer`, `wo_id={wo_id or 'unbound'}`, "
             f"`pr_id={pr_id or 'unbound'}`, `execution_mode={execution_mode}`)\n\n"
             f"- Retry Budget: attempt {attempt_num} (structural_failures: {structural_failures})\n"
             f"- {write_back_line}"
         )
+        return f"{role_anchor}\n\n{fallback}"
 
     # --- Step 2: Format Work Order boundary box, verification floor, and skill paths ---
     wspec = wo_doc.spec
@@ -698,6 +702,7 @@ def _build_engineer_injection(
     part1_headings = ", ".join(s.heading for s in part1_sections if s.heading)
 
     lines: list[str] = [
+        role_anchor,
         (
             f"## Worker Execution Contract (`WO_ID={wspec.wo_id}`, `PR_ID={wspec.pr_id}`, "
             f"`complexity={wspec.complexity.value}`, `execution_mode={execution_mode}`)"
@@ -732,7 +737,12 @@ def _build_engineer_injection(
             "decisions_made and dead_ends in Completion Report while prompt cache is warm."
         )
 
-    return "\n".join(lines)
+    # --- Step 4: Append operational session state for compaction resilience ---
+    session_state_block = _build_session_state_injection(db, str(session.get("conversation_id", "")))
+    if session_state_block:
+        lines.append(session_state_block)
+
+    return "\n\n".join(lines)
 
 
 def evaluate_pre_invocation(

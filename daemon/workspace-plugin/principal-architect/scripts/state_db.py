@@ -950,9 +950,9 @@ class StateDB:
         # --- Step 1: Generate completed_at timestamp ---
         now = utc_now_iso()
 
-        # --- Step 2: Update the matching row with terminal status ---
+        # --- Step 2: Upsert the row — UPDATE if exists, INSERT otherwise ---
         with self.conn:
-            self.conn.execute(
+            cur = self.conn.execute(
                 """
                 UPDATE session_state
                 SET dispatch_status = ?, completed_at = ?, result_summary = ?
@@ -960,6 +960,16 @@ class StateDB:
                 """,
                 (status, now, result_summary, conversation_id, wo_id),
             )
+            if cur.rowcount == 0:
+                # No prior track_dispatch() for this pair — insert a minimal row
+                self.conn.execute(
+                    """
+                    INSERT INTO session_state (conversation_id, wo_id, dispatched_at,
+                                               dispatch_status, completed_at, result_summary)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (conversation_id, wo_id, now, status, now, result_summary),
+                )
 
         # --- Step 3: Fetch and return the updated row ---
         cur = self.conn.execute(
@@ -967,7 +977,10 @@ class StateDB:
             (conversation_id, wo_id),
         )
         row = cur.fetchone()
-        assert row is not None
+        if row is None:
+            raise RuntimeError(
+                f"session_state row missing after upsert for ({conversation_id}, {wo_id})"
+            )
         return dict(row)
 
     def get_session_state(self, conversation_id: str) -> list[dict[str, Any]]:

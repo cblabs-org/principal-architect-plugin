@@ -891,7 +891,8 @@ def repair_document_yaml(
     """Write canonical YAML back to disk, stripping legacy/unknown fields.
 
     Serializes the validated Pydantic ``spec`` and preserved Markdown
-    ``sections`` via ``dump_document()`` and overwrites the file at ``path``.
+    ``sections`` via ``dump_document()`` and overwrites the file at ``path``
+    only if the content differs from what is already on disk.
 
     Args:
         path: Filesystem path to overwrite.
@@ -899,9 +900,13 @@ def repair_document_yaml(
         sections: Preserved Markdown sections.
 
     Returns:
-        True if file was written successfully.
+        True if file was written (content changed), False if already canonical.
     """
-    Path(path).write_text(dump_document(spec, sections), encoding="utf-8")
+    p = Path(path)
+    canonical = dump_document(spec, sections)
+    if p.exists() and p.read_text(encoding="utf-8") == canonical:
+        return False
+    p.write_text(canonical, encoding="utf-8")
     return True
 
 

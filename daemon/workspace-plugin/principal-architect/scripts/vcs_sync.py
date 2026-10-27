@@ -986,10 +986,14 @@ def _derive_pr_status(
     runner: common.Runner = common.run,
     *,
     latest_audit_verdict: str | None = None,
-) -> schemas.PRState | None:
+) -> tuple[schemas.PRState | None, bool]:
     """Derive canonical PR status from WO composition + VCS merge evidence.
 
-    Returns the derived status, or None if the current status should not change.
+    Returns a tuple of (derived_status, is_merged).  ``derived_status`` is the
+    new PRState if it differs from current and is a valid forward transition,
+    or ``None`` if no change is warranted.  ``is_merged`` indicates whether the
+    PR branch is an ancestor of its base branch.
+
     Never regresses from GRADUATED or ARCHIVED. Does NOT auto-promote to GRADUATED —
     returns attention_queue signals instead.
 
@@ -1000,18 +1004,17 @@ def _derive_pr_status(
         latest_audit_verdict: Optional audit verdict string ('APPROVED' or 'CHANGES_REQUESTED').
 
     Returns:
-        Derived PRState if it differs from current and is a valid forward transition,
-        or None if no change is warranted.
+        Tuple of (derived PRState or None, is_merged bool).
     """
     # --- Step 1: Guard terminal states — never regress from GRADUATED or ARCHIVED ---
     current = proj_doc.spec.status
     if current in (schemas.PRState.GRADUATED, schemas.PRState.ARCHIVED):
-        return None
+        return None, False
 
     # --- Step 2: Analyze WO composition ---
     wos = proj_doc.spec.work_orders
     if not wos:
-        return None
+        return None, False
 
     all_completed = all(w.status == schemas.WorkOrderStatus.COMPLETED for w in wos)
     any_in_progress = any(w.status == schemas.WorkOrderStatus.IN_PROGRESS for w in wos)
@@ -1026,7 +1029,7 @@ def _derive_pr_status(
 
     # If merged but not yet GRADUATED, signal via attention_queue (not auto-promote)
     if is_merged and current != schemas.PRState.GRADUATED:
-        return None
+        return None, is_merged
 
     # --- Step 4: Derive forward-only status transitions ---
     if (
@@ -1034,25 +1037,25 @@ def _derive_pr_status(
         and all_completed
         and current != schemas.PRState.AUDIT_APPROVED
     ):
-        return schemas.PRState.AUDIT_APPROVED
+        return schemas.PRState.AUDIT_APPROVED, is_merged
 
-    if latest_audit_verdict == "CHANGES_REQUESTED":
-        return schemas.PRState.CHANGES_REQUESTED
+    if latest_audit_verdict == "CHANGES_REQUESTED" and current != schemas.PRState.AUDIT_APPROVED:
+        return schemas.PRState.CHANGES_REQUESTED, is_merged
 
     if all_completed and current in (
         schemas.PRState.PLANNED,
         schemas.PRState.APPROVED,
         schemas.PRState.IN_PROGRESS,
     ):
-        return schemas.PRState.STAGED_FOR_AUDIT
+        return schemas.PRState.STAGED_FOR_AUDIT, is_merged
 
     if (any_in_progress or any_escalated) and current in (
         schemas.PRState.PLANNED,
         schemas.PRState.APPROVED,
     ):
-        return schemas.PRState.IN_PROGRESS
+        return schemas.PRState.IN_PROGRESS, is_merged
 
-    return None
+    return None, is_merged
 
 
 def _local_sync_state(
@@ -1266,7 +1269,7 @@ def _local_sync_state(
                     if audit_trailer and audit_trailer.get("audit_verdict"):
                         latest_verdict = str(audit_trailer["audit_verdict"]).upper()
 
-                    derived_status = _derive_pr_status(
+                    derived_status, is_merged = _derive_pr_status(
                         proj_doc,
                         real_root,
                         runner=runner,
@@ -1278,11 +1281,9 @@ def _local_sync_state(
                         project_modified = True
 
                     # Check for ungraduated merged branches → attention_queue
-                    branch = proj_doc.spec.charter.branch
-                    base_branch = proj_doc.spec.charter.base_branch
                     if (
-                        proj_doc.spec.status != schemas.PRState.GRADUATED
-                        and _is_branch_merged(real_root, branch, base_branch, runner=runner)
+                        is_merged
+                        and proj_doc.spec.status != schemas.PRState.GRADUATED
                     ):
                         attn_id = f"attn_ungraduated_{pr_id_upper}"
                         existing = db.conn.execute(
@@ -1298,26 +1299,8 @@ def _local_sync_state(
                                 item_id=attn_id,
                             )
 
-                    # Check for all-completed WOs with stale status
-                    wos = proj_doc.spec.work_orders
-                    if (
-                        wos
-                        and all(w.status == schemas.WorkOrderStatus.COMPLETED for w in wos)
-                        and proj_doc.spec.status in (schemas.PRState.PLANNED, schemas.PRState.APPROVED, schemas.PRState.IN_PROGRESS)
-                    ):
-                        attn_id = f"attn_stale_status_{pr_id_upper}"
-                        existing = db.conn.execute(
-                            "SELECT 1 FROM attention_queue WHERE item_id = ? AND status = 'OPEN'",
-                            (attn_id,),
-                        ).fetchone()
-                        if existing is None:
-                            db.enqueue(
-                                kind="stale_pr_status",
-                                title=f"{pr_id_upper}: All WOs completed but PR status is {proj_doc.spec.status.value}",
-                                priority=5,
-                                pr_id=pr_id_upper,
-                                item_id=attn_id,
-                            )
+                    # (Stale-status detection is handled by _derive_pr_status promoting
+                    # to STAGED_FOR_AUDIT; no separate attention_queue check needed.)
 
                     if project_modified:
                         proj_md.write_text(
