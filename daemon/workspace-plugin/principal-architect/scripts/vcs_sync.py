@@ -950,6 +950,114 @@ def _infer_pr_id_from_wo_id(wo_id: str) -> str:
     return "PR-00"
 
 
+def _is_branch_merged(
+    repo_root: Path,
+    branch: str,
+    base_branch: str,
+    runner: common.Runner = common.run,
+) -> bool:
+    """Check whether `branch` is an ancestor of `base_branch` (i.e., merged).
+
+    Uses `git merge-base --is-ancestor` to detect both `git merge` and `gh pr merge`.
+
+    Args:
+        repo_root: Path to the Git repository root.
+        branch: The feature branch name to check.
+        base_branch: The target base branch (e.g., 'main').
+        runner: Subprocess execution callable.
+
+    Returns:
+        True if `branch` exists and is an ancestor of `base_branch`; False otherwise.
+    """
+    # --- Step 1: Run git merge-base --is-ancestor and interpret returncode ---
+    try:
+        result = runner(
+            ["git", "merge-base", "--is-ancestor", branch, base_branch],
+            cwd=repo_root,
+        )
+        return result.returncode == 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _derive_pr_status(
+    proj_doc: schemas.Document[schemas.ProjectSpec],
+    repo_root: Path,
+    runner: common.Runner = common.run,
+    *,
+    latest_audit_verdict: str | None = None,
+) -> tuple[schemas.PRState | None, bool]:
+    """Derive canonical PR status from WO composition + VCS merge evidence.
+
+    Returns a tuple of (derived_status, is_merged).  ``derived_status`` is the
+    new PRState if it differs from current and is a valid forward transition,
+    or ``None`` if no change is warranted.  ``is_merged`` indicates whether the
+    PR branch is an ancestor of its base branch.
+
+    Never regresses from GRADUATED or ARCHIVED. Does NOT auto-promote to GRADUATED —
+    returns attention_queue signals instead.
+
+    Args:
+        proj_doc: Loaded and validated PROJECT.md document.
+        repo_root: Path to the Git repository root.
+        runner: Subprocess execution callable.
+        latest_audit_verdict: Optional audit verdict string ('APPROVED' or 'CHANGES_REQUESTED').
+
+    Returns:
+        Tuple of (derived PRState or None, is_merged bool).
+    """
+    # --- Step 1: Guard terminal states — never regress from GRADUATED or ARCHIVED ---
+    current = proj_doc.spec.status
+    if current in (schemas.PRState.GRADUATED, schemas.PRState.ARCHIVED):
+        return None, False
+
+    # --- Step 2: Analyze WO composition ---
+    wos = proj_doc.spec.work_orders
+    if not wos:
+        return None, False
+
+    all_completed = all(w.status == schemas.WorkOrderStatus.COMPLETED for w in wos)
+    any_in_progress = any(w.status == schemas.WorkOrderStatus.IN_PROGRESS for w in wos)
+    any_escalated = any(
+        w.status in (schemas.WorkOrderStatus.ESCALATED_TO_PA, schemas.WorkOrderStatus.BLOCKED)
+        for w in wos
+    )
+
+    # --- Step 3: Check VCS merge evidence ---
+    charter = proj_doc.spec.charter
+    is_merged = _is_branch_merged(repo_root, charter.branch, charter.base_branch, runner)
+
+    # If merged but not yet GRADUATED, signal via attention_queue (not auto-promote)
+    if is_merged and current != schemas.PRState.GRADUATED:
+        return None, is_merged
+
+    # --- Step 4: Derive forward-only status transitions ---
+    if (
+        latest_audit_verdict == "APPROVED"
+        and all_completed
+        and current != schemas.PRState.AUDIT_APPROVED
+    ):
+        return schemas.PRState.AUDIT_APPROVED, is_merged
+
+    if latest_audit_verdict == "CHANGES_REQUESTED" and current != schemas.PRState.AUDIT_APPROVED:
+        return schemas.PRState.CHANGES_REQUESTED, is_merged
+
+    if all_completed and current in (
+        schemas.PRState.PLANNED,
+        schemas.PRState.APPROVED,
+        schemas.PRState.IN_PROGRESS,
+    ):
+        return schemas.PRState.STAGED_FOR_AUDIT, is_merged
+
+    if (any_in_progress or any_escalated) and current in (
+        schemas.PRState.PLANNED,
+        schemas.PRState.APPROVED,
+    ):
+        return schemas.PRState.IN_PROGRESS, is_merged
+
+    return None, is_merged
+
+
 def _local_sync_state(
     repo_root: str | Path,
     *,
@@ -994,6 +1102,7 @@ def _local_sync_state(
     count_receipts = 0
     count_audits = 0
     count_wos = 0
+    repair_log: list[str] = []
     processed_wo_ids: set[str] = set()
 
     # --- Step 2: Open state.db and scan every pr-* directory in the workspace ---
@@ -1011,7 +1120,13 @@ def _local_sync_state(
                     try:
                         proj_doc = schemas.load_project(proj_md)
                     except Exception:  # noqa: BLE001
-                        proj_doc = None
+                        try:
+                            proj_doc, proj_warnings = schemas.load_project_tolerant(proj_md)
+                            for w in proj_warnings:
+                                repair_log.append(f"{proj_md.name}: {w}")
+                            schemas.repair_document_yaml(proj_md, proj_doc.spec, proj_doc.sections)
+                        except Exception:  # noqa: BLE001
+                            proj_doc = None
 
                 # --- Step 3: Reconcile WORKORDER.md receipts and open escalations ---
                 wo_docs_by_id: dict[str, schemas.Document[schemas.WorkOrderSpec]] = {}
@@ -1021,7 +1136,14 @@ def _local_sync_state(
                     try:
                         wdoc = schemas.load_workorder(wo_md)
                     except Exception:  # noqa: BLE001, S112
-                        continue
+                        # --- Tolerant fallback: parse with lenient schema, repair in-place ---
+                        try:
+                            wdoc, warnings = schemas.load_workorder_tolerant(wo_md)
+                            for w in warnings:
+                                repair_log.append(f"{wo_md.name}: {w}")
+                            schemas.repair_document_yaml(wo_md, wdoc.spec, wdoc.sections)
+                        except Exception:  # noqa: BLE001, S112
+                            continue
                     wo_key = wdoc.spec.wo_id.upper()
                     wo_docs_by_id[wo_key] = wdoc
                     processed_wo_ids.add(wo_key)
@@ -1139,6 +1261,47 @@ def _local_sync_state(
 
                         count_wos += 1
 
+                    # --- Step 4b: Derive PR status from WO composition + VCS evidence ---
+                    # Get latest audit verdict for this PR
+                    pr_id_upper = proj_doc.spec.charter.pr_id.upper()
+                    latest_verdict: str | None = None
+                    audit_trailer = audit_trailer_map.get(pr_id_upper)
+                    if audit_trailer and audit_trailer.get("audit_verdict"):
+                        latest_verdict = str(audit_trailer["audit_verdict"]).upper()
+
+                    derived_status, is_merged = _derive_pr_status(
+                        proj_doc,
+                        real_root,
+                        runner=runner,
+                        latest_audit_verdict=latest_verdict,
+                    )
+
+                    if derived_status is not None and derived_status != proj_doc.spec.status:
+                        proj_doc.spec.status = derived_status
+                        project_modified = True
+
+                    # Check for ungraduated merged branches → attention_queue
+                    if (
+                        is_merged
+                        and proj_doc.spec.status != schemas.PRState.GRADUATED
+                    ):
+                        attn_id = f"attn_ungraduated_{pr_id_upper}"
+                        existing = db.conn.execute(
+                            "SELECT 1 FROM attention_queue WHERE item_id = ? AND status = 'OPEN'",
+                            (attn_id,),
+                        ).fetchone()
+                        if existing is None:
+                            db.enqueue(
+                                kind="ungraduated_merge",
+                                title=f"{pr_id_upper}: Branch merged but not graduated — run `pa pr graduate {pr_id_upper}`",
+                                priority=5,
+                                pr_id=pr_id_upper,
+                                item_id=attn_id,
+                            )
+
+                    # (Stale-status detection is handled by _derive_pr_status promoting
+                    # to STAGED_FOR_AUDIT; no separate attention_queue check needed.)
+
                     if project_modified:
                         proj_md.write_text(
                             schemas.dump_document(proj_doc.spec, proj_doc.sections),
@@ -1213,6 +1376,7 @@ def _local_sync_state(
         "synced_wos": count_wos,
         "trailers_found": len(trailers),
         "last_vcs_sync_at": sync_ts,
+        "repairs": repair_log,
     }
 
 

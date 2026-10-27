@@ -6,13 +6,13 @@ Module: daemon/workspace-plugin/principal-architect/scripts/state_db.py
 Repo-local SQLite `StateDB` and global atomic repository enrollment `Registry`
 for the Principal Architect Split-Authority workflow engine.
 
-Implements SPEC §6.5 (5 tables in WAL mode with `busy_timeout=5000` and
-`PRAGMA user_version=1`) and Charter R5 global repository registry with atomic
+Implements SPEC §6.5 (7 tables in WAL mode with `busy_timeout=5000` and
+`PRAGMA user_version=2`) and Charter R5 global repository registry with atomic
 temporary-file replacements (`tempfile.NamedTemporaryFile` + `os.fsync` +
 `os.replace`).
 
 Exported API Summary:
-- TABLES: Ordered tuple of the 5 canonical SQLite table names in `state.db`.
+- TABLES: Ordered tuple of the 7 canonical SQLite table names in `state.db`.
 - SCHEMA_VERSION: Integer schema version (`PRAGMA user_version`) for `state.db`.
 - utc_now_iso: Return the current UTC timestamp formatted as ISO 8601 with trailing `'Z'`.
 - StateDB: Repo-local SQLite state database in WAL mode for persistent workflow coordination.
@@ -23,7 +23,7 @@ Exported API Summary:
     - StateDB.__enter__: Enter the context manager and return `self`.
     - StateDB.__exit__: Exit the context manager and close the SQLite connection.
   - Schema & Mode Management:
-    - StateDB.init: Create the 5 SPEC §6.5 tables idempotently and set `PRAGMA user_version=1`.
+    - StateDB.init: Create the 7 SPEC §6.5 tables idempotently and set `PRAGMA user_version`.
     - StateDB.get_config: Retrieve a configuration string by key from `repo_config`.
     - StateDB.set_config: Insert or update a configuration key-value pair in `repo_config`.
     - StateDB.get_all_config: Return all key-value pairs from `repo_config` as a dictionary.
@@ -44,6 +44,12 @@ Exported API Summary:
     - StateDB.enqueue: Insert a prioritized item into `attention_queue`.
     - StateDB.dequeue: Update an `attention_queue` item's status (default `"RESOLVED"`).
     - StateDB.list_open: List open `attention_queue` items ordered by priority and creation time.
+  - Session State API (WO dispatch tracking for compaction resilience):
+    - StateDB.track_dispatch: Record or update a Work Order dispatch in `session_state`.
+    - StateDB.track_completion: Record Work Order completion or escalation in `session_state`.
+    - StateDB.get_session_state: Fetch all `session_state` rows for a conversation.
+    - StateDB.record_decision: Record a session decision, dead_end, or pending_action.
+    - StateDB.get_session_decisions: Fetch all `session_decisions` for a conversation.
   - PR Projection & Checkpoints API:
     - Tracked via `sessions.last_checkpoint_step` and `sessions.pr_id`/`wo_id` via `bind_session`,
       `get_session`, and `update_session`.
@@ -81,10 +87,12 @@ TABLES: tuple[str, ...] = (
     "verification_receipts",
     "escalations",
     "attention_queue",
+    "session_state",
+    "session_decisions",
 )
 
 # SQLite PRAGMA user_version integer identifying the current `state.db` schema revision.
-SCHEMA_VERSION: int = 1
+SCHEMA_VERSION: int = 2
 
 
 def utc_now_iso() -> str:
@@ -99,9 +107,10 @@ def utc_now_iso() -> str:
 class StateDB:
     """Repo-local SQLite state database in WAL mode for persistent workflow coordination.
 
-    Manages `repo_config`, `sessions`, `verification_receipts`, `escalations`, and
-    `attention_queue` inside `<workspace_dir>/state.db` with `journal_mode=WAL` and
-    `busy_timeout=5000` for concurrent hook and CLI access.
+    Manages `repo_config`, `sessions`, `verification_receipts`, `escalations`,
+    `attention_queue`, `session_state`, and `session_decisions` inside
+    `<workspace_dir>/state.db` with `journal_mode=WAL` and `busy_timeout=5000`
+    for concurrent hook and CLI access.
     """
 
     def __init__(self, path: str | Path) -> None:
@@ -148,7 +157,7 @@ class StateDB:
         self.conn.close()
 
     def init(self) -> None:
-        """Create the 5 SPEC §6.5 tables idempotently and set `PRAGMA user_version = 1`."""
+        """Create the 7 SPEC §6.5 tables idempotently and set `PRAGMA user_version`."""
         # --- Step 1: Create repo_config and sessions tables idempotently ---
         with self.conn:
             self.conn.execute(
@@ -227,7 +236,33 @@ class StateDB:
                 )
                 """
             )
-            # --- Step 3: Stamp PRAGMA user_version = 1 only when not already set ---
+            # --- Step 3: Create session_state and session_decisions tables ---
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_state (
+                    conversation_id TEXT NOT NULL,
+                    wo_id           TEXT NOT NULL,
+                    dispatch_status TEXT NOT NULL DEFAULT 'pending',
+                    subagent_conv_id TEXT,
+                    dispatched_at   TEXT,
+                    completed_at    TEXT,
+                    result_summary  TEXT,
+                    PRIMARY KEY (conversation_id, wo_id)
+                )
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_decisions (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL,
+                    decision_type   TEXT NOT NULL DEFAULT 'decision',
+                    summary         TEXT NOT NULL,
+                    created_at      TEXT NOT NULL
+                )
+                """
+            )
+            # --- Step 4: Stamp PRAGMA user_version only when not already set ---
             cur_ver_row = self.conn.execute("PRAGMA user_version;").fetchone()
             cur_ver = int(cur_ver_row[0]) if cur_ver_row is not None else 0
             if cur_ver != SCHEMA_VERSION:
@@ -841,6 +876,197 @@ class StateDB:
             "ORDER BY priority ASC, created_at ASC, rowid ASC"
         )
         cur = self.conn.execute(sql, params)
+        return [dict(row) for row in cur.fetchall()]
+
+    # -------------------------------------------------------------------------
+    # session_state accessors (WO dispatch tracking for compaction resilience)
+    # -------------------------------------------------------------------------
+
+    def track_dispatch(
+        self,
+        conversation_id: str,
+        wo_id: str,
+        *,
+        subagent_conv_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Record or update a Work Order dispatch in session_state.
+
+        Args:
+            conversation_id: PA session conversation UUID.
+            wo_id: Work Order identifier being dispatched.
+            subagent_conv_id: Optional engineer subagent conversation UUID.
+
+        Returns:
+            Dictionary of the upserted session_state row.
+        """
+        # --- Step 1: Generate dispatched_at timestamp ---
+        now = utc_now_iso()
+
+        # --- Step 2: Upsert the dispatch row, updating on conflict ---
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO session_state (
+                    conversation_id, wo_id, dispatch_status,
+                    subagent_conv_id, dispatched_at
+                )
+                VALUES (?, ?, 'dispatched', ?, ?)
+                ON CONFLICT(conversation_id, wo_id) DO UPDATE SET
+                    dispatch_status = 'dispatched',
+                    subagent_conv_id = excluded.subagent_conv_id,
+                    dispatched_at = excluded.dispatched_at
+                """,
+                (conversation_id, wo_id, subagent_conv_id, now),
+            )
+
+        # --- Step 3: Fetch and return the stored row ---
+        cur = self.conn.execute(
+            "SELECT * FROM session_state WHERE conversation_id = ? AND wo_id = ?",
+            (conversation_id, wo_id),
+        )
+        row = cur.fetchone()
+        assert row is not None
+        return dict(row)
+
+    def track_completion(
+        self,
+        conversation_id: str,
+        wo_id: str,
+        *,
+        status: str = "completed",
+        result_summary: str | None = None,
+    ) -> dict[str, Any]:
+        """Record Work Order completion or escalation in session_state.
+
+        Args:
+            conversation_id: PA session conversation UUID.
+            wo_id: Work Order identifier.
+            status: Terminal status ('completed', 'escalated', 'blocked').
+            result_summary: Optional one-line result description.
+
+        Returns:
+            Updated session_state row dictionary.
+        """
+        # --- Step 1: Generate completed_at timestamp ---
+        now = utc_now_iso()
+
+        # --- Step 2: Upsert the row — UPDATE if exists, INSERT otherwise ---
+        with self.conn:
+            cur = self.conn.execute(
+                """
+                UPDATE session_state
+                SET dispatch_status = ?, completed_at = ?, result_summary = ?
+                WHERE conversation_id = ? AND wo_id = ?
+                """,
+                (status, now, result_summary, conversation_id, wo_id),
+            )
+            if cur.rowcount == 0:
+                # No prior track_dispatch() for this pair — insert a minimal row
+                self.conn.execute(
+                    """
+                    INSERT INTO session_state (conversation_id, wo_id, dispatched_at,
+                                               dispatch_status, completed_at, result_summary)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (conversation_id, wo_id, now, status, now, result_summary),
+                )
+
+        # --- Step 3: Fetch and return the updated row ---
+        cur = self.conn.execute(
+            "SELECT * FROM session_state WHERE conversation_id = ? AND wo_id = ?",
+            (conversation_id, wo_id),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise RuntimeError(
+                f"session_state row missing after upsert for ({conversation_id}, {wo_id})"
+            )
+        return dict(row)
+
+    def get_session_state(self, conversation_id: str) -> list[dict[str, Any]]:
+        """Fetch all session_state rows for a conversation, ordered by dispatched_at.
+
+        Args:
+            conversation_id: PA session conversation UUID.
+
+        Returns:
+            List of session_state row dictionaries.
+        """
+        # --- Step 1: Query all dispatch rows for the conversation ---
+        cur = self.conn.execute(
+            """
+            SELECT * FROM session_state
+            WHERE conversation_id = ?
+            ORDER BY dispatched_at ASC, rowid ASC
+            """,
+            (conversation_id,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+    # -------------------------------------------------------------------------
+    # session_decisions accessors
+    # -------------------------------------------------------------------------
+
+    def record_decision(
+        self,
+        conversation_id: str,
+        summary: str,
+        *,
+        decision_type: str = "decision",
+    ) -> dict[str, Any]:
+        """Record a session decision, dead_end, or pending_action.
+
+        Args:
+            conversation_id: Session conversation UUID.
+            summary: One-line description of the decision or observation.
+            decision_type: Category ('decision', 'dead_end', 'pending_action').
+
+        Returns:
+            Dictionary of the inserted session_decisions row.
+        """
+        # --- Step 1: Generate created_at timestamp ---
+        now = utc_now_iso()
+
+        # --- Step 2: Insert the decision row ---
+        with self.conn:
+            cur = self.conn.execute(
+                """
+                INSERT INTO session_decisions (
+                    conversation_id, decision_type, summary, created_at
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (conversation_id, decision_type, summary, now),
+            )
+            row_id = cur.lastrowid
+
+        # --- Step 3: Fetch and return the stored row ---
+        cur = self.conn.execute(
+            "SELECT * FROM session_decisions WHERE id = ?",
+            (row_id,),
+        )
+        row = cur.fetchone()
+        assert row is not None
+        return dict(row)
+
+    def get_session_decisions(self, conversation_id: str) -> list[dict[str, Any]]:
+        """Fetch all session_decisions for a conversation, ordered by created_at.
+
+        Args:
+            conversation_id: Session conversation UUID.
+
+        Returns:
+            List of session_decisions row dictionaries.
+        """
+        # --- Step 1: Query all decision rows for the conversation ---
+        cur = self.conn.execute(
+            """
+            SELECT * FROM session_decisions
+            WHERE conversation_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (conversation_id,),
+        )
         return [dict(row) for row in cur.fetchall()]
 
 

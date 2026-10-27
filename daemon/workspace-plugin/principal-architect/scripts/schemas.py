@@ -34,10 +34,15 @@ Exported API Summary:
 - parse_document: Parse a YAML-frontmatter + H2-section Markdown string into dict and sections.
 - dump_document: Serialize a frontmatter model/mapping and ordered sections back to Markdown.
 - _require_sections: Validate that a `Document` contains all required H2 section prefixes.
+- _WO_STATUS_COERCE_MAP: Legacy Work Order status string to canonical `WorkOrderStatus` coercion map.
+- _PR_STATUS_COERCE_MAP: Legacy PR status string to canonical `PRState` coercion map.
 - load_program: Load, parse, and validate a `PROGRAM.md` document from disk.
 - load_project: Load, parse, and validate a `PROJECT.md` document from disk.
+- load_project_tolerant: Tolerant `PROJECT.md` loader that strips unknown keys and coerces statuses.
 - load_workorder: Load, parse, and validate a `WORKORDER.md` document from disk.
+- load_workorder_tolerant: Tolerant `WORKORDER.md` loader that strips unknown keys and coerces statuses.
 - load_audit: Load, parse, and validate an `AUDIT-round-<K>.md` document from disk.
+- repair_document_yaml: Write canonical YAML back to disk, stripping legacy/unknown fields.
 - canonical_json: Serialize a dictionary to deterministic canonical JSON for hashing.
 - norm_section: Normalize a Markdown section string by stripping outer and trailing whitespace.
 - _part1_workorder_sections: Extract Part I H2 sections preceding `## Completion Report`.
@@ -642,6 +647,29 @@ def _require_sections(doc: Document[Any], required_prefixes: Sequence[str], kind
             raise ValueError(f"{kind} is missing required H2 section starting with '{prefix}'")
 
 
+# ---------------------------------------------------------------------------
+# Tolerant Parsing: Status Coercion Maps
+# ---------------------------------------------------------------------------
+
+# Maps legacy or informal Work Order status strings to canonical `WorkOrderStatus` values.
+_WO_STATUS_COERCE_MAP: dict[str, str] = {
+    "PLANNED": "PENDING",
+    "DONE": "COMPLETED",
+    "COMPLETE": "COMPLETED",
+    "FINISHED": "COMPLETED",
+    "TODO": "PENDING",
+}
+
+# Maps legacy or informal PR status strings to canonical `PRState` values.
+_PR_STATUS_COERCE_MAP: dict[str, str] = {
+    "MERGED": "GRADUATED",
+    "COMPLETED": "GRADUATED",
+    "CLOSED": "ARCHIVED",
+    "DRAFT": "PLANNED",
+    "ACTIVE": "IN_PROGRESS",
+}
+
+
 def load_program(path: str | Path) -> Document[ProgramSpec]:
     """Load and validate a `PROGRAM.md` file from disk.
 
@@ -684,6 +712,81 @@ def load_project(path: str | Path) -> Document[ProjectSpec]:
     return doc
 
 
+def load_project_tolerant(path: str | Path) -> tuple[Document[ProjectSpec], list[str]]:
+    """Load a `PROJECT.md` file with tolerant parsing, stripping unknown keys and coercing statuses.
+
+    Performs best-effort pre-cleaning on the parsed frontmatter dictionary
+    before passing it to the strict ``ProjectSpec.model_validate()`` call.
+    Unknown keys are stripped at the ``ProjectSpec``, ``PRCharterSpec``, and
+    ``WOSummaryRow`` levels.  Status enum values are coerced using
+    ``_PR_STATUS_COERCE_MAP`` and ``_WO_STATUS_COERCE_MAP``.
+
+    Args:
+        path: Filesystem path to `PROJECT.md`.
+
+    Returns:
+        A 2-tuple of ``(Document[ProjectSpec], warnings)`` where *warnings* is
+        a list of human-readable strings describing every key that was stripped
+        or value that was coerced.
+
+    Raises:
+        OSError: If the file cannot be read.
+        ValueError: If frontmatter parsing still fails after pre-cleaning, or
+            required H2 sections are missing.
+    """
+    warnings: list[str] = []
+
+    # --- Step 1: Parse raw frontmatter and sections from disk ---
+    p = Path(path)
+    fm_data, sections = parse_document(p.read_text(encoding="utf-8"))
+
+    # --- Step 2: Strip unknown keys from top-level ProjectSpec ---
+    project_known = set(ProjectSpec.model_fields)
+    for key in list(fm_data):
+        if key not in project_known:
+            warnings.append(f"ProjectSpec: stripped unknown key '{key}'")
+            del fm_data[key]
+
+    # --- Step 3: Coerce top-level PRState status ---
+    if "status" in fm_data and isinstance(fm_data["status"], str):
+        coerced = _PR_STATUS_COERCE_MAP.get(fm_data["status"].upper())
+        if coerced is not None:
+            warnings.append(f"ProjectSpec.status: coerced '{fm_data['status']}' -> '{coerced}'")
+            fm_data["status"] = coerced
+
+    # --- Step 4: Strip unknown keys and coerce status in nested charter dict ---
+    if "charter" in fm_data and isinstance(fm_data["charter"], dict):
+        charter_known = set(PRCharterSpec.model_fields)
+        for key in list(fm_data["charter"]):
+            if key not in charter_known:
+                warnings.append(f"PRCharterSpec: stripped unknown key '{key}'")
+                del fm_data["charter"][key]
+
+    # --- Step 5: Strip unknown keys and coerce statuses in work_orders entries ---
+    if "work_orders" in fm_data and isinstance(fm_data["work_orders"], list):
+        wo_known = set(WOSummaryRow.model_fields)
+        for idx, wo in enumerate(fm_data["work_orders"]):
+            if not isinstance(wo, dict):
+                continue
+            for key in list(wo):
+                if key not in wo_known:
+                    warnings.append(f"work_orders[{idx}]: stripped unknown key '{key}'")
+                    del wo[key]
+            if "status" in wo and isinstance(wo["status"], str):
+                coerced = _WO_STATUS_COERCE_MAP.get(wo["status"].upper())
+                if coerced is not None:
+                    warnings.append(
+                        f"work_orders[{idx}].status: coerced '{wo['status']}' -> '{coerced}'"
+                    )
+                    wo["status"] = coerced
+
+    # --- Step 6: Validate cleaned data with strict Pydantic model ---
+    spec = ProjectSpec.model_validate(fm_data)
+    doc = Document(spec=spec, sections=sections, path=p)
+    _require_sections(doc, ("## 1.", "## 2.", "## 3.", "## 4."), "PROJECT.md")
+    return doc, warnings
+
+
 def load_workorder(path: str | Path) -> Document[WorkOrderSpec]:
     """Load and validate a `WORKORDER.md` file from disk.
 
@@ -707,6 +810,104 @@ def load_workorder(path: str | Path) -> Document[WorkOrderSpec]:
     if doc.section("## Completion Report") is None:
         raise ValueError("WORKORDER.md is missing required H2 section '## Completion Report'")
     return doc
+
+
+def load_workorder_tolerant(path: str | Path) -> tuple[Document[WorkOrderSpec], list[str]]:
+    """Load a `WORKORDER.md` file with tolerant parsing, stripping unknown keys and coercing statuses.
+
+    Performs best-effort pre-cleaning on the parsed frontmatter dictionary
+    before passing it to the strict ``WorkOrderSpec.model_validate()`` call.
+    Unknown keys are stripped at the ``WorkOrderSpec`` and nested
+    ``CompletionReport`` levels.  Status enum values are coerced using
+    ``_WO_STATUS_COERCE_MAP``.
+
+    Args:
+        path: Filesystem path to `WORKORDER.md`.
+
+    Returns:
+        A 2-tuple of ``(Document[WorkOrderSpec], warnings)`` where *warnings*
+        is a list of human-readable strings describing every key that was
+        stripped or value that was coerced.
+
+    Raises:
+        OSError: If the file cannot be read.
+        ValueError: If frontmatter parsing still fails after pre-cleaning, or
+            required Part I / ``## Completion Report`` sections are missing.
+    """
+    warnings: list[str] = []
+
+    # --- Step 1: Parse raw frontmatter and sections from disk ---
+    p = Path(path)
+    fm_data, sections = parse_document(p.read_text(encoding="utf-8"))
+
+    # --- Step 2: Strip unknown keys from top-level WorkOrderSpec ---
+    wo_known = set(WorkOrderSpec.model_fields)
+    for key in list(fm_data):
+        if key not in wo_known:
+            warnings.append(f"WorkOrderSpec: stripped unknown key '{key}'")
+            del fm_data[key]
+
+    # --- Step 3: Coerce top-level WorkOrderStatus status ---
+    if "status" in fm_data and isinstance(fm_data["status"], str):
+        coerced = _WO_STATUS_COERCE_MAP.get(fm_data["status"].upper())
+        if coerced is not None:
+            warnings.append(f"WorkOrderSpec.status: coerced '{fm_data['status']}' -> '{coerced}'")
+            fm_data["status"] = coerced
+
+    # --- Step 4: Strip unknown keys and coerce status in nested completion dict ---
+    if "completion" in fm_data and isinstance(fm_data["completion"], dict):
+        comp_known = set(CompletionReport.model_fields)
+        for key in list(fm_data["completion"]):
+            if key not in comp_known:
+                warnings.append(f"CompletionReport: stripped unknown key '{key}'")
+                del fm_data["completion"][key]
+        if "status" in fm_data["completion"] and isinstance(fm_data["completion"]["status"], str):
+            coerced = _WO_STATUS_COERCE_MAP.get(fm_data["completion"]["status"].upper())
+            if coerced is not None:
+                warnings.append(
+                    f"CompletionReport.status: coerced "
+                    f"'{fm_data['completion']['status']}' -> '{coerced}'"
+                )
+                fm_data["completion"]["status"] = coerced
+
+    # --- Step 5: Validate cleaned data with strict Pydantic model ---
+    spec = WorkOrderSpec.model_validate(fm_data)
+    doc = Document(spec=spec, sections=sections, path=p)
+
+    # --- Step 6: Check required Part I sections and Completion Report ---
+    part1 = _part1_workorder_sections(sections)
+    if not part1:
+        raise ValueError("WORKORDER.md requires at least one Part I H2 section")
+    if doc.section("## Completion Report") is None:
+        raise ValueError("WORKORDER.md is missing required H2 section '## Completion Report'")
+    return doc, warnings
+
+
+def repair_document_yaml(
+    path: str | Path,
+    spec: BaseModel,
+    sections: Sequence[Section],
+) -> bool:
+    """Write canonical YAML back to disk, stripping legacy/unknown fields.
+
+    Serializes the validated Pydantic ``spec`` and preserved Markdown
+    ``sections`` via ``dump_document()`` and overwrites the file at ``path``
+    only if the content differs from what is already on disk.
+
+    Args:
+        path: Filesystem path to overwrite.
+        spec: Validated Pydantic spec to serialize.
+        sections: Preserved Markdown sections.
+
+    Returns:
+        True if file was written (content changed), False if already canonical.
+    """
+    p = Path(path)
+    canonical = dump_document(spec, sections)
+    if p.exists() and p.read_text(encoding="utf-8") == canonical:
+        return False
+    p.write_text(canonical, encoding="utf-8")
+    return True
 
 
 def load_audit(path: str | Path) -> Document[AuditReport]:
