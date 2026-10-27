@@ -1605,5 +1605,59 @@ def test_pa_status_and_migrate_legacy_project_tolerance(
     assert any("archive/pr-00-old/PROJECT.md" in p for p in upgraded_paths)
 
 
+def test_load_workorder_tolerant_and_repair(tmp_path: Path) -> None:
+    """Validate tolerant loading of legacy WORKORDER.md with unknown keys and missing completion report."""
+    import schemas
+
+    wo_file = tmp_path / "WORKORDER.md"
+    wo_file.write_text(
+        """---
+wo_id: WO-02.5
+pr_id: PR-02
+programme_id: prog-test
+title: Legacy Module Test
+slug: wo5-legacy
+branch: feat/wo5
+base_branch: main
+complexity: standard
+status: PLANNED
+attempts: 1
+allowed_files:
+  - src/test.cpp
+verification_command: pio test
+---
+
+## 1. Objective
+Test objective.
+
+## 2. Specification
+Test specification.
+""",
+        encoding="utf-8",
+    )
+
+    doc, warnings = schemas.load_workorder_tolerant(wo_file)
+    assert doc.spec.wo_id == "WO-02.5"
+    assert doc.spec.status == schemas.WorkOrderStatus.PENDING
+    assert doc.section("## Completion Report") is not None
+    assert any("stripped unknown key 'programme_id'" in w for w in warnings)
+    assert any("coerced 'PLANNED' -> 'PENDING'" in w for w in warnings)
+    assert any("synthesized missing '## Completion Report'" in w for w in warnings)
+
+    # Test repair writes canonical YAML with the synthesized completion report section
+    repaired = schemas.repair_document_yaml(wo_file, doc.spec, doc.sections)
+    assert repaired is True
+
+    # Strict load should now succeed without errors!
+    strict_doc = schemas.load_workorder(wo_file)
+    assert strict_doc.spec.wo_id == "WO-02.5"
+    assert strict_doc.spec.status == schemas.WorkOrderStatus.PENDING
+    assert strict_doc.section("## Completion Report") is not None
+
+    # Calling repair again when already canonical should return False
+    assert schemas.repair_document_yaml(wo_file, strict_doc.spec, strict_doc.sections) is False
+
+
+
 
 
