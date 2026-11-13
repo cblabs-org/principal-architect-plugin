@@ -137,10 +137,12 @@ def _is_ephemeral_runtime_path(rel_posix: str) -> bool:
         rel_posix: Normalized repo-relative POSIX path.
 
     Returns:
-        `True` if the path points to `.agents/plugins.json` or any `.state/` directory entry.
+        `True` if the path points to `.agents/plugins.json`, inside the staged PA plugin
+        directory, or any `.state/` directory entry.
     """
-    norm = rel_posix.strip().lstrip("./")
-    if norm == ".agents/plugins.json":
+    norm = rel_posix.strip().removeprefix("./").lstrip("/")
+    staged_prefix = common.STAGED_PLUGIN_REL.as_posix()
+    if norm == ".agents/plugins.json" or norm == staged_prefix or norm.startswith(staged_prefix + "/"):
         return True
     return ".state" in norm.split("/")
 

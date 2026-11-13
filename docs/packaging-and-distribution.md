@@ -8,8 +8,8 @@
 
 A production Antigravity plugin that combines a UI/AuxPane sidecar (`sidecar.json`), workspace lifecycle hooks (`hooks.json`), custom role subagents (`agents/`), workspace rules (`rules/`), and slash-command skills (`skills/`) faces three packaging constraints:
 
-1. **Global vs. Per-Workspace Isolation:** UI and scheduled sidecars (`sidecar.json`) only launch from global plugins under `~/.gemini/config/plugins/<daemon-name>/`, whereas governance lifecycle hooks (`PreInvocation`, `PreToolUse`, `PostToolUse`, `Stop`) and role subagents (`pa-chief-architect`, `pa-principal-architect`, `pa-engineer`, `pa-auditor`, `pa-debugger`) must only fire inside **explicitly enrolled repositories** (`<repo>/.agents/plugins.json`) so unenrolled workspaces experience zero hook overhead.
-2. **Machine-Specific Path Resolution:** Antigravity's configuration loaders apply different path-expansion rules across `.agents/plugins.json`, `hooks.json`, `sidecar.json`, and `SKILL.md`. Naive zipping of an installed plugin directory captures hardcoded `/Users/<author>/...` paths or unversioned runtime state (`state/registry.json`) that break on another user's machine.
+1. **Global vs. Per-Workspace Isolation:** UI and scheduled sidecars (`sidecar.json`) only launch from global plugins under `~/.gemini/config/plugins/<daemon-name>/`, whereas governance lifecycle hooks (`PreInvocation`, `PreToolUse`, `PostToolUse`, `Stop`) and role subagents (`pa-chief-architect`, `pa-principal-architect`, `pa-engineer`, `pa-auditor`, `pa-debugger`) must only fire inside **explicitly enrolled repositories** (`<repo>/.agents/plugins/principal-architect/`).
+2. **In-Repo Discovery & Path Resolution (Antigravity `1.5.2+`):** Starting in Antigravity `1.5.2`, `.agents/plugins.json` and `.agents/skills.json` entries pointing outside the workspace root (via absolute paths, `../`, or symlinks) are skipped for untrusted-repository protection. `pa enroll` and `pa doctor --fix` therefore stage a real (non-symlink) copy of `workspace-plugin/principal-architect/` directly into `<repo>/.agents/plugins/principal-architect/` (excluded in `.git/info/exclude`) and use plugin-root-relative `./scripts/...` commands in `hooks.json`.
 3. **Python Runtime & Dependency Portability vs. Zero-CLI Drop-In Bundles:** While `principal-architect`'s hot-path hooks (`common.py`, `state_db.py`, `pre_invocation.py`, `post_tool_receipt.py`) and the `cockpit.py` HTTP server are 100% Python standard library, slow-path schema validation (`schemas.py`, `models.py`, `pre_tool_gate.py`, `stop_gate.py`, and `pa_cli.py`) requires `pydantic>=2,<3` and `pyyaml>=6`. Users want either a one-command CLI installer **or** a single universal `.zip` (`pa-daemon.zip`) they can extract directly into `~/.gemini/config/plugins/`.
 
 This document defines the **Dual-Channel Distribution & Single-Source Versioning Architecture** tailored for `principal-architect-plugin`.
@@ -44,7 +44,7 @@ This document defines the **Dual-Channel Distribution & Single-Source Versioning
         ├── hooks.json                               #    PreInvocation, PreToolUse, PostToolUse, Stop
         ├── agents/                                  #    Tier 1/2/3 subagents (pa-chief-architect, pa-principal-architect,
         │                                            #    pa-engineer, pa-auditor, pa-debugger)
-        ├── rules/                                   #    Workspace operating model (00-pa-operating-model.md)
+        ├── rules/                                   #    Workspace operating model (AGENTS.md)
         ├── skills/
         │   └── principal-architect/
         │       ├── SKILL.md                         #    Core workflow skill
@@ -62,8 +62,8 @@ This document defines the **Dual-Channel Distribution & Single-Source Versioning
 
 **Why this works:**
 - Global plugin discovery scans `~/.gemini/config/plugins/` strictly **one level deep**. It discovers `pa-daemon` (starting the `pa_cockpit` UI sidecar and registering the global `/principal-architect-admin` management skill) and completely ignores `workspace-plugin/principal-architect/`.
-- When a user enrolls a repository (via `/principal-architect-admin enroll this repo` or `pa enroll`), `pa_cli.py` writes the resolved **absolute path** of `workspace-plugin` into `<repo>/.agents/plugins.json` (and adds `.agents/plugins.json` to `<repo>/.git/info/exclude`).
-- Only enrolled repositories load `workspace-plugin/principal-architect/hooks.json`, `agents/`, `rules/`, and `skills/principal-architect/`.
+- When a user enrolls a repository (via `/principal-architect-admin enroll this repo` or `pa enroll`), `pa_cli.py` stages a non-symlink copy of `workspace-plugin/principal-architect/` into `<repo>/.agents/plugins/principal-architect/` (excluded via `<repo>/.git/info/exclude`, and cleaning any legacy external entry in `<repo>/.agents/plugins.json`).
+- Only enrolled repositories load `.agents/plugins/principal-architect/{hooks.json,agents/,rules/AGENTS.md,skills/principal-architect/}`.
 
 ### 2.2 In-Place Replaceable Plugin Directory & Preserved State
 
@@ -92,9 +92,9 @@ To build a universal `pa-daemon.zip` bundle and CLI installer that work on **any
 
 | Surface | File Path | Expands `~`? | Expands `$HOME` / Env Vars? | Expands `${PLUGIN_ROOT}`? | Portable Pattern for `principal-architect` |
 |---|---|---|---|---|---|
-| **Workspace Plugin Pointer** | `<repo>/.agents/plugins.json` | **NO** | **NO** | **NO** | Never distribute statically. Generated on the user's machine at `pa enroll` time using `Path.home()` / `.resolve()`. |
-| **Lifecycle Hooks** | `workspace-plugin/principal-architect/hooks.json` | **YES** (`expandHome`) | **YES** (runs via `/bin/sh -c` on Unix) | **NO** (unless fallback set in command string) | `"command": "~/.gemini/config/plugins/pa-daemon/bin/run-pa-hook.sh pre_invocation.py"` |
-| **Process / UI Sidecar** | `sidecars/pa_cockpit/sidecar.json` (`command: ...`) | **NO** | **NO** | **YES** | `"command": "python3", "args": ["${PLUGIN_ROOT}/workspace-plugin/principal-architect/scripts/cockpit.py"]` |
+| **Staged Workspace Plugin** | `<repo>/.agents/plugins/principal-architect/` | N/A | N/A | N/A | Copied (non-symlink) into `<repo>/.agents/plugins/principal-architect/` at `pa enroll` / `pa doctor --fix` time so Antigravity `1.5.2+` loads it in-repo without external paths in `.agents/plugins.json`. |
+| **Lifecycle Hooks** | `workspace-plugin/principal-architect/hooks.json` | **YES** (`expandHome`) | **YES** (runs via `/bin/sh -c` on Unix) | **YES** (`1.5.3+`, not needed when relative) | `"command": "python3 ./scripts/pre_invocation.py"` (hooks execute with `cwd` set to the plugin directory). |
+| **Process / UI Sidecar** | `sidecars/pa_cockpit/sidecar.json` (`command: ...`) | **NO** | **NO** | **YES** | `"command": "sh", "args": ["./run-cockpit.sh"]` with `PYTHONPATH: "${PLUGIN_ROOT}/workspace-plugin/principal-architect/scripts"` |
 | **Admin Skill** | `skills/principal-architect-admin/SKILL.md` | **YES** (Bash tool) | **YES** (Bash tool) | **NO** | `~/.gemini/config/plugins/pa-daemon/bin/pa` (with `~/.local/bin/pa` symlinked for terminal CLI use) |
 
 ### Critical Platform Gotchas
@@ -180,7 +180,7 @@ pa-daemon/
         │   ├── pa-engineer.md
         │   └── pa-principal-architect.md
         ├── rules/
-        │   └── 00-pa-operating-model.md
+        │   └── AGENTS.md
         ├── skills/
         │   └── principal-architect/
         │       ├── SKILL.md
@@ -236,21 +236,11 @@ Running `pa doctor [path]` verifies the complete installation and workspace heal
 1. **CLI vs. Installed Daemon Version:** Compares the running script's `plugin.json` version against `~/.gemini/config/plugins/pa-daemon/plugin.json`. Warns if they differ (`Run ./scripts/install.sh to refresh pa-daemon`).
 2. **Python Runtime & Dependencies:** Verifies Python `>= 3.11` and imports `pydantic` and `pyyaml`. If `--fix` is passed and dependencies are missing, automatically provisions `~/.gemini/config/plugins/pa-daemon/.venv`.
 3. **Global Daemon & Sidecar:** Verifies `~/.gemini/config/plugins/pa-daemon/config.json` (`enabled: true`) and `sidecars/pa_cockpit/sidecar.json`.
-4. **Enrolled Repository Health:** Checks `state/registry.json` entries and verifies that each enrolled repository's `.agents/plugins.json` points to the existing `workspace-plugin` path.
+4. **Enrolled Repository Health:** Checks `state/registry.json` entries, verifies each enrolled repository's staged `<repo>/.agents/plugins/principal-architect/` matches the active daemon version, and flags any stale external `.agents/plugins.json` entries (repairing all enrolled repos automatically when `--fix` is passed).
 
-### 5.4 Atomic Upgrades Across Enrolled Repositories
+### 5.4 Upgrades Across Enrolled Repositories
 
-Because every enrolled repository's `.agents/plugins.json` points to the stable path:
-```json
-{
-  "entries": [
-    {
-      "path": "/Users/<user>/.gemini/config/plugins/pa-daemon/workspace-plugin"
-    }
-  ]
-}
-```
-upgrading `~/.gemini/config/plugins/pa-daemon/` (via `./scripts/install.sh`, `install-release.sh`, or unzipping a new `pa-daemon.zip`) **atomically upgrades all enrolled repositories on the machine** without touching `<repo>/.agents/plugins.json` or re-enrolling.
+Upgrading `~/.gemini/config/plugins/pa-daemon/` via `./scripts/install.sh` or `install-release.sh` updates the global daemon in-place and automatically runs `pa doctor --fix`, which re-stages `<repo>/.agents/plugins/principal-architect/` (keeping the top-level plugin folder inode intact) and updates `.state/pa-skills.json` / `.state/pa-worker-rules.json` across every enrolled repository registered in `state/registry.json`. If you upgrade by manually unzipping `pa-daemon.zip` over `~/.gemini/config/plugins/pa-daemon/`, run `pa doctor --fix` once to refresh staged workspace plugins in enrolled repositories.
 
 ---
 

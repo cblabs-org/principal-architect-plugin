@@ -442,17 +442,12 @@ def test_hooks_json_schema() -> None:
     pa_hooks = data["principal-architect"]
     assert pa_hooks["enabled"] is True
 
-    prefix = (
-        'PLUGIN_ROOT="${PLUGIN_ROOT:-${PA_DAEMON_HOME:-$HOME/.gemini/config/plugins/pa-daemon}'
-        '/workspace-plugin/principal-architect}"; '
-    )
-
     # PreInvocation
     pre_inv = pa_hooks["PreInvocation"]
     assert len(pre_inv) == 1
     assert pre_inv[0] == {
         "type": "command",
-        "command": prefix + "python3 ${PLUGIN_ROOT}/scripts/pre_invocation.py",
+        "command": "python3 ./scripts/pre_invocation.py",
         "timeout": 10,
     }
 
@@ -466,7 +461,7 @@ def test_hooks_json_schema() -> None:
     assert pre_tool[0]["hooks"] == [
         {
             "type": "command",
-            "command": prefix + "python3 ${PLUGIN_ROOT}/scripts/pre_tool_gate.py",
+            "command": "python3 ./scripts/pre_tool_gate.py",
             "timeout": 10,
         }
     ]
@@ -478,7 +473,7 @@ def test_hooks_json_schema() -> None:
     assert post_tool[0]["hooks"] == [
         {
             "type": "command",
-            "command": prefix + "python3 ${PLUGIN_ROOT}/scripts/post_tool_receipt.py",
+            "command": "python3 ./scripts/post_tool_receipt.py",
             "timeout": 10,
         }
     ]
@@ -488,7 +483,7 @@ def test_hooks_json_schema() -> None:
     assert len(stop) == 1
     assert stop[0] == {
         "type": "command",
-        "command": prefix + "python3 ${PLUGIN_ROOT}/scripts/stop_gate.py",
+        "command": "python3 ./scripts/stop_gate.py",
         "timeout": 10,
     }
 
@@ -2642,8 +2637,9 @@ def test_agent_frontmatter_rule_and_skill_compliance() -> None:
     ]
     assert "ask_question" in dbg_fm["tools"]
 
-    # 6. Rule file compliance: no YAML frontmatter and < 8192 bytes
-    rule_path = plugin_dir / "rules" / "00-pa-operating-model.md"
+    # 6. Rule file compliance: rules/AGENTS.md with no YAML frontmatter and < 8192 bytes
+    assert not (plugin_dir / "rules" / "00-pa-operating-model.md").exists()
+    rule_path = plugin_dir / "rules" / "AGENTS.md"
     assert rule_path.is_file()
     rule_bytes = rule_path.read_bytes()
     assert 0 < len(rule_bytes) < 8192
@@ -3014,6 +3010,35 @@ def test_pre_invocation_subagent_type_fallback_and_role_playbook_injection(
         assert bound is not None
         assert bound["role"] == "pa"
         assert bound["pr_id"] == "PR-02"
+
+
+def test_staged_plugin_excluded_from_hygiene_and_tree_hash(tmp_repo: Path) -> None:
+    """Verify staged .agents/plugins/principal-architect/** is ignored by hygiene and tree_hash."""
+    import pa_cli
+
+    staged_file = tmp_repo / ".agents" / "plugins" / "principal-architect" / "plugin.json"
+    staged_file.parent.mkdir(parents=True, exist_ok=True)
+    staged_file.write_text('{"name": "principal-architect"}\n', encoding="utf-8")
+
+    staged_rel = ".agents/plugins/principal-architect/plugin.json"
+    assert pa_cli._is_ephemeral_runtime_path(".agents/plugins/principal-architect")
+    assert pa_cli._is_ephemeral_runtime_path(staged_rel)
+    assert stop_gate._is_ephemeral_runtime_path(".agents/plugins/principal-architect")
+    assert stop_gate._is_ephemeral_runtime_path(staged_rel)
+
+    hash_before = post_tool_receipt.compute_tree_hash(tmp_repo, ["**"])
+    staged_file.write_text('{"name": "principal-architect", "version": "9.9.9"}\n', encoding="utf-8")
+    hash_after = post_tool_receipt.compute_tree_hash(tmp_repo, ["**"])
+    assert hash_before == hash_after
+
+    collected = pa_cli._collect_existing_allowed_files(
+        tmp_repo,
+        ["**"],
+        [],
+        pre_tool_gate.matches_any_pattern,
+    )
+    assert staged_rel not in collected
+    assert "README.md" in collected
 
 
 

@@ -96,6 +96,7 @@ def compute_tree_hash(repo_root: str | Path, allowed_files: Sequence[str]) -> st
     # --- Step 1: Walk repository and collect files matching allowed_files ---
     real_root = Path(os.path.realpath(repo_root))
     matched: list[tuple[str, Path]] = []
+    staged_prefix = common.STAGED_PLUGIN_REL.as_posix()
 
     if real_root.is_dir() and allowed_files:
         for dirpath, dirnames, filenames in os.walk(real_root):
@@ -110,6 +111,8 @@ def compute_tree_hash(repo_root: str | Path, allowed_files: Sequence[str]) -> st
                     continue
                 parts = rel_posix.split("/")
                 if ".git" in parts or ".state" in parts:
+                    continue
+                if rel_posix == staged_prefix or rel_posix.startswith(staged_prefix + "/"):
                     continue
                 if pre_tool_gate.matches_any_pattern(rel_posix, allowed_files):
                     matched.append((rel_posix, fpath))

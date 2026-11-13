@@ -140,6 +140,11 @@ fi
 mkdir -p "${PA_BIN_DIR}"
 ln -sf "${PA_DAEMON_HOME}/bin/pa" "${PA_BIN_DIR}/pa"
 
+# Refresh staged in-repo workspace plugins across enrolled repositories
+if [[ -z "${PA_SKIP_VENV:-}" ]]; then
+  "${PA_DAEMON_HOME}/bin/pa" doctor --fix >/dev/null 2>&1 || true
+fi
+
 echo "Installed principal-architect-plugin (${PA_VERSION}):"
 echo "  PA_DAEMON_HOME: ${PA_DAEMON_HOME}"
 echo "  pa CLI:         ${PA_BIN_DIR}/pa"

@@ -33,7 +33,7 @@ You are an execution-focused **Tier 3 Engineer (`pa-engineer`)** assigned to imp
 
 - **Authorization & Spawn Header:**
   - Your session is bound on Turn 1 via `PA_ROLE: engineer`, `WO_ID: <WO-ID>`, `PR_ID: <PR-ID>`, `PROGRAMME_ID: <programme-id>`.
-  - Confirm that your parent `PROJECT.md` has `status: APPROVED` (`00-pa-operating-model.md`).
+  - Confirm that your parent `PROJECT.md` has `status: APPROVED` (`rules/AGENTS.md`).
 - **Strict Boundary Box (`pre_tool_gate.py` Rule R3):**
   - You may create or modify **only** files matching `allowed_files` (and never `forbidden_files`) plus **Part II (`status`, `completion` in frontmatter, and `## Completion Report`)** of your own `WORKORDER.md`.
   - **Never** modify Part I of `WORKORDER.md` (any frontmatter field other than `status`/`completion` or any H2 section before `## Completion Report`); doing so invalidates `spec_hash` and is blocked by `pre_tool_gate.py` and `stop_gate.py`.

@@ -39,9 +39,9 @@ Fallback if `~/.local/bin` is not on `PATH`:
 
 | Command | Args | Notes |
 |---|---|---|
-| **enroll** | `[path] [--execution-mode {monitored,autonomous}] [--auto-approve-pr-plans \| --no-auto-approve-pr-plans] [--memory-mode {auto,external,builtin}] [--vcs-mode {auto,github,local_git}] [--extra-skill NAME] [--exclude-rule PATTERN] [--migrate]` | Registers repo in `pa-daemon/state/registry.json`, writes `.agents/plugins.json`, initializes `.agents/plugins/principal-architect-workspace/` and `.state/{state.db,pa-skills.json,pa-worker-rules.json}`. |
+| **enroll** | `[path] [--execution-mode {monitored,autonomous}] [--auto-approve-pr-plans \| --no-auto-approve-pr-plans] [--memory-mode {auto,external,builtin}] [--vcs-mode {auto,github,local_git}] [--extra-skill NAME] [--exclude-rule PATTERN] [--migrate]` | Registers repo in `pa-daemon/state/registry.json`, stages `.agents/plugins/principal-architect/`, excludes it in `.git/info/exclude`, cleans legacy `.agents/plugins.json` PA entries, and initializes `.agents/plugins/principal-architect-workspace/` and `.state/{state.db,pa-skills.json,pa-worker-rules.json}`. |
 | **migrate** | `[path] [--seed-repo-memory \| --no-seed-repo-memory] [--no-cleanup-legacy-skill] [--json]` | Moves/merges `.agents/skills/principal-architect-workspace/` into `.agents/plugins/principal-architect-workspace/`, removes legacy `.agents/skills/principal-architect`, rewrites stale path references (preserving `charter_hash`/`spec_hash`), backfills `.state/state.db` via `pa sync`, and seeds `repo-memory` (`seed`, `seed-docs`, `index`) when `memory_mode=external`. |
-| **unenroll** | `[path]` | Removes PA workspace plugin entry from `.agents/plugins.json` and unregisters repo from `registry.json` (preserves committed `PROGRAM.md` / `PROJECT.md` / `WORKORDER.md` artifacts). |
+| **unenroll** | `[path]` | Removes staged `.agents/plugins/principal-architect/` (and any legacy PA entry in `.agents/plugins.json`) and unregisters repo from `registry.json` (preserves committed `PROGRAM.md` / `PROJECT.md` / `WORKORDER.md` artifacts). |
 | **sync** | `[path]` | Reconciles GitHub PRs/reviews (`vcs_mode: github`) or local git trailers & committed `AUDIT-round-*.md` files (`vcs_mode: local_git`) into `.state/state.db`. |
 | **mode** | `<monitored\|autonomous> [--path PATH]` | Switches execution mode (`monitored` prompts via interactive `ask` on boundary exceptions; `autonomous` denies out-of-bounds actions and routes structured escalations up `Worker -> PA -> Chief -> Human Attention Queue`). |
 | **wo resolve** | `<WO-ID> --resolution "<note>" [--repo PATH]` | Resolves an open escalation / attention queue item for `<WO-ID>` and resets structural failure counters. |
@@ -62,6 +62,7 @@ git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true
 ls -d "$REPO_ROOT/.memory" \
   "$REPO_ROOT/.agents/memory" \
   "$REPO_ROOT/.agents/skills/principal-architect-workspace" \
+  "$REPO_ROOT/.agents/plugins/principal-architect" \
   "$REPO_ROOT/.agents/plugins/principal-architect-workspace" \
   "$REPO_ROOT/.agents/skills" \
   "$REPO_ROOT/.agents/rules" 2>/dev/null || true

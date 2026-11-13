@@ -82,8 +82,8 @@ if [[ -f "${REPO_ROOT}/LICENSE" ]]; then
   cp -f "${REPO_ROOT}/LICENSE" "${PA_DAEMON_HOME}/LICENSE"
 fi
 
-# Strip any cached bytecode directories copied from the working tree
-find "${PA_DAEMON_HOME}" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+# Strip any cached bytecode or egg-info directories copied from the working tree
+find "${PA_DAEMON_HOME}" \( -name "__pycache__" -o -name "*.egg-info" \) -type d -exec rm -rf {} + 2>/dev/null || true
 
 # --- Step 4: Stamp resolved semantic version into daemon and workspace plugin.json ---
 python3 - "${PA_DAEMON_HOME}" "${VERSION}" <<'PYEOF'
@@ -156,6 +156,11 @@ fi
 
 mkdir -p "${PA_BIN_DIR}"
 ln -sf "${PA_DAEMON_HOME}/bin/pa" "${PA_BIN_DIR}/pa"
+
+# Refresh staged in-repo workspace plugins across enrolled repositories
+if [[ -z "${PA_SKIP_VENV:-}" ]]; then
+  "${PA_DAEMON_HOME}/bin/pa" doctor --fix >/dev/null 2>&1 || true
+fi
 
 # --- Step 8: Enable `pa-daemon` and `pa_cockpit` in Antigravity Language Server if reachable ---
 # Address of the local Antigravity Language Server HTTP endpoint.
