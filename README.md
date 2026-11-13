@@ -134,15 +134,15 @@ What `pa enroll` does deterministically:
 1. Resolves the target repository's Git root (running `git init` if not yet a Git repository).
 2. Migrates any legacy `.agents/skills/principal-architect-workspace/` directory to `.agents/plugins/principal-architect-workspace/` while preserving relative memory links and recomputing hashes.
 3. Auto-detects `memory_mode` (`external` if `cblabs-org/repo-memory-plugin` is present, else `builtin`) and `vcs_mode` (`github` if a GitHub `origin` remote and authenticated `gh` CLI exist, else `local_git`).
-4. Generates role-scoped capability manifests `.state/pa-skills.json` (mounting `<repo>/.agents/skills` + `--extra-skill`) and `.state/pa-worker-rules.json` (mounting `<repo>/.agents/rules` while excluding `01-plan-before-execute.md` and `bug-fixer-*` rules that cause autonomous Workers to stall).
-5. Initializes `.state/state.db` (SQLite WAL mode), writes `<repo>/.agents/plugins.json` (added to `.git/info/exclude`), and registers the repository in `<PA_DAEMON_HOME>/state/registry.json`.
+4. Generates role-scoped capability manifests `.state/pa-skills.json` (mounting `.agents/skills` plus any `--extra-skill` copies in `.state/extra-skills/`) and `.state/pa-worker-rules.json` (mounting `.agents/rules` while excluding `01-plan-before-execute.md` and `bug-fixer-*` rules that cause autonomous Workers to stall).
+5. Initializes `.state/state.db` (SQLite WAL mode), stages a non-symlink copy of `principal-architect` into `<repo>/.agents/plugins/principal-architect/` (added to `.git/info/exclude`, and cleaning any legacy external PA pointer from `.agents/plugins.json`), and registers the repository in `<PA_DAEMON_HOME>/state/registry.json`.
 
 ---
 
 ### Step 4 — Upgrading, Unenrolling & Uninstalling
 
-- **Upgrading:** Re-running `make install` (`./scripts/install.sh`), re-running `install-release.sh`, or unzipping a newer `pa-daemon.zip` over `~/.gemini/config/plugins/pa-daemon/` updates all scripts, UI assets, agents, skills, and manifests in-place while preserving `<PA_DAEMON_HOME>/state/registry.json`. All enrolled repositories on your machine are upgraded atomically without re-enrolling.
-- **Unenrolling a Repository:** Remove the workspace plugin entry from `<repo>/.agents/plugins.json` while keeping all committed artifacts in `.agents/plugins/principal-architect-workspace/`:
+- **Upgrading:** Re-running `make install` (`./scripts/install.sh`), re-running `install-release.sh`, or unzipping a newer `pa-daemon.zip` over `~/.gemini/config/plugins/pa-daemon/` updates all scripts, UI assets, agents, skills, and manifests in-place while preserving `<PA_DAEMON_HOME>/state/registry.json`. `install.sh` and `install-release.sh` also run `pa doctor --fix` automatically to re-stage `<repo>/.agents/plugins/principal-architect/` across all enrolled repositories on your machine (if you installed manually by unzipping `pa-daemon.zip`, run `pa doctor --fix` once).
+- **Unenrolling a Repository:** Remove the staged `<repo>/.agents/plugins/principal-architect/` directory (and any legacy `.agents/plugins.json` entry) while keeping all committed artifacts in `.agents/plugins/principal-architect-workspace/`:
   ```bash
   pa unenroll /path/to/repo
   # or: ./scripts/unenroll.sh /path/to/repo
@@ -233,11 +233,11 @@ The global daemon bundles the **Principal Architect Cockpit** AuxPane sidecar (`
 
 | Command | Description |
 |---|---|
-| `pa enroll [path] [--execution-mode monitored\|autonomous] [--auto-approve-pr-plans \| --no-auto-approve-pr-plans] [--memory-mode auto\|external\|builtin] [--vcs-mode auto\|github\|local_git] [--extra-skill <name>] [--exclude-rule <glob>] [--migrate]` | Enroll a repository, migrate legacy workspace paths if present, generate `.state/` manifests, initialize `.state/state.db`, and register in `daemon/state/registry.json`. |
+| `pa enroll [path] [--execution-mode monitored\|autonomous] [--auto-approve-pr-plans \| --no-auto-approve-pr-plans] [--memory-mode auto\|external\|builtin] [--vcs-mode auto\|github\|local_git] [--extra-skill <name>] [--exclude-rule <glob>] [--migrate]` | Enroll a repository, migrate legacy workspace paths if present, stage `.agents/plugins/principal-architect/`, generate `.state/` manifests, initialize `.state/state.db`, and register in `daemon/state/registry.json`. |
 | `pa migrate [path] [--seed-repo-memory \| --no-seed-repo-memory] [--no-cleanup-legacy-skill] [--json]` | Move or merge legacy `.agents/skills/principal-architect-workspace/` into `.agents/plugins/principal-architect-workspace/`, remove legacy `.agents/skills/principal-architect`, rewrite stale path references, backfill `.state/state.db` via `pa sync`, and seed `repo-memory` when `memory_mode=external`. |
-| `pa unenroll [path]` | Remove the workspace plugin entry from `.agents/plugins.json` and unregister from `daemon/state/registry.json`. |
+| `pa unenroll [path]` | Remove staged `.agents/plugins/principal-architect/` (and any legacy `.agents/plugins.json` entry) and unregister from `daemon/state/registry.json`. |
 | `pa status [path] [--json]` | Reconcile committed specs, local git trailers, and `.state/state.db`; output human-readable tree or `--json`. |
-| `pa doctor [path] [--json]` | Check CLI vs. installed `pa-daemon` version drift, Python 3.11+ & `pydantic`/`pyyaml` dependencies, and enrolled repository health. |
+| `pa doctor [path] [--fix] [--json]` | Check CLI vs. installed `pa-daemon` version drift, Python 3.11+ & `pydantic`/`pyyaml` dependencies, and enrolled repository staged plugin health (refreshing all enrolled repos when `--fix` is passed). |
 | `pa mode [monitored\|autonomous] [--path <repo>]` | Query or set the repository's `execution_mode` (`monitored` or `autonomous`). |
 | `pa sync [path]` | Reconcile git commit trailers (`PA-WorkOrder`, `PA-Verified-Hash`, `PA-Audit-Verdict`), `AUDIT-round-<K>.md` files, and GitHub PR state into `.state/state.db`. |
 | `pa programme init <slug> --title "..." [--base-branch main] [--path <repo>]` | Scaffold `programme-<slug>/PROGRAM.md` and bind the Tier 1 Chief Architect session. |

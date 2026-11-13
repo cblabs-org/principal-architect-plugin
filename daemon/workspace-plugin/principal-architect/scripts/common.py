@@ -14,6 +14,7 @@ in under 1 ms.
 
 Exported API Summary:
 - NEW_WORKSPACE_REL: Repository-relative path to the active plugin workspace directory.
+- STAGED_PLUGIN_REL: Repository-relative path to the staged in-repo workspace plugin bundle.
 - LEGACY_WORKSPACE_REL: Repository-relative path to the legacy skill workspace directory.
 - Runner: Callable type alias for subprocess execution functions compatible with `run`.
 - run: Execute a subprocess command with string stdout/stderr capture and timeout control.
@@ -53,6 +54,9 @@ from typing import Any
 
 # Repository-relative directory path for modern Principal Architect workspaces.
 NEW_WORKSPACE_REL = Path(".agents/plugins/principal-architect-workspace")
+
+# Repository-relative directory path for the staged in-repo workspace plugin bundle.
+STAGED_PLUGIN_REL = Path(".agents/plugins/principal-architect")
 
 # Repository-relative directory path for legacy skill-based Principal Architect workspaces.
 LEGACY_WORKSPACE_REL = Path(".agents/skills/principal-architect-workspace")

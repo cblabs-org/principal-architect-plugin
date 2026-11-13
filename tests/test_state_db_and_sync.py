@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -890,11 +891,19 @@ def test_enroll_explicit_2x2_matrix(
     else:
         assert not mem_dir.exists()
 
-    # Check plugins.json and .git/info/exclude
-    plugins_data = json.loads((repo / ".agents" / "plugins.json").read_text(encoding="utf-8"))
-    assert plugins_data == {"entries": [{"path": str(daemon_home / "workspace-plugin")}]}
+    # Check staged in-repo plugin, no symlinks, .git/info/exclude, and no plugins.json
+    staged_dir = repo / common.STAGED_PLUGIN_REL
+    assert (staged_dir / "plugin.json").is_file()
+    assert (staged_dir / "hooks.json").is_file()
+    assert (staged_dir / "rules" / "AGENTS.md").is_file()
+    assert (staged_dir / "skills" / "principal-architect" / "SKILL.md").is_file()
+    assert not staged_dir.is_symlink()
+    assert all(not p.is_symlink() for p in staged_dir.rglob("*"))
+    assert not (repo / ".agents" / "plugins.json").exists()
     exclude_text = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8")
-    assert ".agents/plugins.json" in exclude_text.splitlines()
+    exclude_lines = exclude_text.splitlines()
+    assert ".agents/plugins/principal-architect/" in exclude_lines
+    assert ".agents/plugins.json" in exclude_lines
     assert common.is_repo_enrolled([repo])
 
 
@@ -969,6 +978,26 @@ def test_enroll_manifests_idempotency_and_memory_preservation(
     """Verify generated manifests, extra_skill/exclude_rule persistence, and non-destructive re-enroll."""
     fake_runner.set_response(["git", "remote", "get-url", "origin"], returncode=1)
 
+    # Seed global 'pio' skill so --extra-skill copies it into .state/extra-skills/pio
+    user_cfg = Path(os.path.realpath(Path.home())) / ".gemini" / "config"
+    pio_skill = user_cfg / "skills" / "pio" / "SKILL.md"
+    pio_skill.parent.mkdir(parents=True, exist_ok=True)
+    pio_skill.write_text("---\nname: pio\ndescription: PlatformIO skill\n---\n", encoding="utf-8")
+
+    # Seed a legacy external PA entry in .agents/plugins.json plus an unrelated plugin
+    (tmp_repo / ".agents").mkdir(parents=True, exist_ok=True)
+    (tmp_repo / ".agents" / "plugins.json").write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {"path": str(daemon_home / "workspace-plugin")},
+                    {"path": ".agents/plugins/custom-local"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
     # First enroll with --extra-skill and --exclude-rule
     rc1 = pa_cli.main(
         [
@@ -988,12 +1017,18 @@ def test_enroll_manifests_idempotency_and_memory_preservation(
     assert rc1 == 0
 
     ws_dir = tmp_repo / common.NEW_WORKSPACE_REL
+    staged_extra_skill = ws_dir / ".state" / "extra-skills" / "pio" / "SKILL.md"
+    assert staged_extra_skill.is_file()
+    assert not staged_extra_skill.is_symlink()
+
     skills_manifest = json.loads((ws_dir / ".state" / "pa-skills.json").read_text(encoding="utf-8"))
-    user_cfg = Path(os.path.realpath(Path.home())) / ".gemini" / "config"
     assert skills_manifest == {
         "entries": [
-            {"path": str(tmp_repo / ".agents" / "skills")},
-            {"path": str(user_cfg / "skills"), "include_only": ["pio"]},
+            {"path": ".agents/skills"},
+            {
+                "path": ".agents/plugins/principal-architect-workspace/.state/extra-skills",
+                "include_only": ["pio"],
+            },
         ]
     }
 
@@ -1003,11 +1038,15 @@ def test_enroll_manifests_idempotency_and_memory_preservation(
     assert rules_manifest == {
         "entries": [
             {
-                "path": str(tmp_repo / ".agents" / "rules"),
+                "path": ".agents/rules",
                 "exclude": ["01-plan-before-execute.md", "bug-fixer-*", "custom-rule-*"],
             }
         ]
     }
+
+    # Legacy external PA entry removed while unrelated entry preserved
+    cleaned_plugins = json.loads((tmp_repo / ".agents" / "plugins.json").read_text(encoding="utf-8"))
+    assert cleaned_plugins == {"entries": [{"path": ".agents/plugins/custom-local"}]}
 
     # Customize MEMORY.md and switch mode to autonomous
     mem_md = ws_dir / "memory" / "MEMORY.md"
@@ -1031,18 +1070,15 @@ def test_enroll_manifests_idempotency_and_memory_preservation(
         assert json.loads(db.get_config("extra_skills_json") or "[]") == ["pio"]
         assert json.loads(db.get_config("exclude_rules_json") or "[]") == ["custom-rule-*"]
 
-    # Check no duplicate lines in .gitignore, .git/info/exclude, or .agents/plugins.json
+    # Check no duplicate lines in .gitignore, .git/info/exclude, and preserved plugins.json
     assert (ws_dir / ".gitignore").read_text(encoding="utf-8").splitlines() == [".state/"]
-    exclude_lines = [
-        ln
-        for ln in (tmp_repo / ".git" / "info" / "exclude").read_text(encoding="utf-8").splitlines()
-        if ln.strip() == ".agents/plugins.json"
-    ]
-    assert len(exclude_lines) == 1
+    exclude_lines_all = (tmp_repo / ".git" / "info" / "exclude").read_text(encoding="utf-8").splitlines()
+    assert len([ln for ln in exclude_lines_all if ln.strip() == ".agents/plugins.json"]) == 1
+    assert len([ln for ln in exclude_lines_all if ln.strip() == ".agents/plugins/principal-architect/"]) == 1
     plugins_entries = json.loads(
         (tmp_repo / ".agents" / "plugins.json").read_text(encoding="utf-8")
     )["entries"]
-    assert len(plugins_entries) == 1
+    assert plugins_entries == [{"path": ".agents/plugins/custom-local"}]
 
 
 def test_enroll_legacy_migration_tracked_untracked_and_conflict(
@@ -1122,6 +1158,9 @@ def test_enroll_non_git_directory_and_unenroll_via_wrappers(
     )
     assert res_enroll.returncode == 0, res_enroll.stderr
     assert (plain_dir / ".git").is_dir()
+    assert (plain_dir / ".agents" / "plugins" / "principal-architect" / "plugin.json").is_file()
+    pdata_enrolled = json.loads((plain_dir / ".agents" / "plugins.json").read_text(encoding="utf-8"))
+    assert pdata_enrolled == {"entries": [{"path": "/other/plugin"}]}
     assert common.is_repo_enrolled([plain_dir])
 
     # Unenroll via wrapper script
@@ -1133,6 +1172,7 @@ def test_enroll_non_git_directory_and_unenroll_via_wrappers(
     )
     assert res_unenroll.returncode == 0, res_unenroll.stderr
     assert not common.is_repo_enrolled([plain_dir])
+    assert not (plain_dir / ".agents" / "plugins" / "principal-architect").exists()
 
     # Verify other plugin preserved in plugins.json and workspace files remain intact
     pdata = json.loads((plain_dir / ".agents" / "plugins.json").read_text(encoding="utf-8"))
@@ -1656,6 +1696,57 @@ Test specification.
 
     # Calling repair again when already canonical should return False
     assert schemas.repair_document_yaml(wo_file, strict_doc.spec, strict_doc.sections) is False
+
+
+def test_doctor_detects_and_fixes_stale_staged_workspace_plugin(
+    tmp_repo: Path,
+    daemon_home: Path,
+    fake_runner: FakeRunner,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Verify pa doctor warns on missing/stale staged plugin or legacy plugins.json and --fix repairs it."""
+    (daemon_home / "plugin.json").write_text(
+        json.dumps({"name": "pa-daemon", "version": pa_cli._cli_plugin_version()}) + "\n",
+        encoding="utf-8",
+    )
+    fake_runner.set_response(["git", "remote", "get-url", "origin"], returncode=1)
+    assert (
+        pa_cli.main(
+            ["enroll", str(tmp_repo), "--memory-mode", "builtin", "--vcs-mode", "local_git"],
+            runner=fake_runner,
+        )
+        == 0
+    )
+
+    staged_dir = tmp_repo / common.STAGED_PLUGIN_REL
+    assert (staged_dir / "plugin.json").is_file()
+
+    # Simulate pre-upgrade enrolled repository state: no staged plugin, legacy external plugins.json
+    shutil.rmtree(staged_dir)
+    plugins_file = tmp_repo / ".agents" / "plugins.json"
+    plugins_file.parent.mkdir(parents=True, exist_ok=True)
+    plugins_file.write_text(
+        json.dumps({"entries": [{"path": str(daemon_home / "workspace-plugin")}]}),
+        encoding="utf-8",
+    )
+
+    capsys.readouterr()
+    rc_warn = pa_cli.main(["doctor", str(tmp_repo), "--json"], runner=fake_runner)
+    assert rc_warn == 0
+    warn_payload = json.loads(capsys.readouterr().out)
+    assert any(str(tmp_repo) in w for w in warn_payload["warnings"])
+
+    # Run `pa doctor --fix --json` and verify repair
+    rc_fix = pa_cli.main(["doctor", str(tmp_repo), "--fix", "--json"], runner=fake_runner)
+    assert rc_fix == 0
+    capsys.readouterr()
+    assert (staged_dir / "plugin.json").is_file()
+    assert not plugins_file.exists()
+
+    rc_clean = pa_cli.main(["doctor", str(tmp_repo), "--json"], runner=fake_runner)
+    assert rc_clean == 0
+    clean_payload = json.loads(capsys.readouterr().out)
+    assert clean_payload["warnings"] == []
 
 
 

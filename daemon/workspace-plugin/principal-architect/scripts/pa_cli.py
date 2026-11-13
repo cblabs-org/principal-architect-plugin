@@ -44,6 +44,18 @@ Functions:
     Detect legacy or unparseable workspace specs, emit warnings, and optionally generate frontmatter.
   - `_bridge_repo_memory(repo_root, new_ws, *, runner=common.run) -> dict[str, Any]`:
     Register PA memory in `.agents/memory/config.json` and run `repo-memory` seed/index.
+  - `_resolve_workspace_plugin_source() -> Path`:
+    Locate the source `principal-architect` workspace plugin bundle directory.
+  - `_stage_workspace_plugin(repo_root) -> Path`:
+    Stage a real, non-symlink copy of the workspace plugin into `.agents/plugins/principal-architect`.
+  - `_is_pa_plugins_json_entry_path(raw_path) -> bool`:
+    Return True if a `.agents/plugins.json` entry path points to Principal Architect.
+  - `_remove_pa_from_plugins_json(repo_root) -> bool`:
+    Remove legacy Principal Architect entries from `.agents/plugins.json`.
+  - `_ensure_repo_git_excludes(repo_root, *, runner=common.run) -> None`:
+    Add staged plugin, `.agents/plugins.json`, and `.state/` excludes to git info/exclude.
+  - `_write_role_capability_manifests(repo_root, new_ws, extra_skills, exclude_rules) -> None`:
+    Write `.state/pa-skills.json`, `.state/pa-worker-rules.json`, and staged extra skills.
   - `_cmd_migrate(args, *, runner=common.run) -> int`: Handler for `pa migrate`.
   - `_cmd_enroll(args, *, runner=common.run) -> int`: Handler for `pa enroll`.
   - `_cmd_unenroll(args, *, runner=common.run) -> int`: Handler for `pa unenroll`.
@@ -219,8 +231,8 @@ def detect_memory_mode(repo_root: str | Path) -> Literal["external", "builtin"]:
     real_root = os.path.realpath(str(repo_root))
     root = Path(real_root)
 
-    # --- Step 1: Check for a direct `.memory` directory in the repository ---
-    if (root / ".memory").exists():
+    # --- Step 1: Check for a direct `.memory` or staged `.agents/plugins/repo-memory` directory ---
+    if (root / ".memory").exists() or (root / ".agents" / "plugins" / "repo-memory").exists():
         return "external"
 
     # --- Step 2: Check `<repo>/.agents/plugins.json` for a repo-memory entry ---
@@ -771,6 +783,259 @@ def _cmd_migrate(args: argparse.Namespace, *, runner: common.Runner = common.run
     return 0
 
 
+def _resolve_workspace_plugin_source() -> Path:
+    """Locate the source `principal-architect` workspace plugin bundle directory.
+
+    Prefers the installed `pa-daemon` bundle under `common.daemon_home()` when present,
+    falling back to the bundle adjacent to `_SCRIPTS_DIR`.
+
+    Returns:
+        `Path` to the source `principal-architect` workspace plugin directory.
+    """
+    cand = common.daemon_home() / "workspace-plugin" / "principal-architect"
+    if (cand / "plugin.json").is_file():
+        return cand
+    return Path(_SCRIPTS_DIR).parent
+
+
+def _stage_workspace_plugin(repo_root: Path) -> Path:
+    """Stage a real, non-symlink copy of `principal-architect` inside `repo_root`.
+
+    Antigravity 1.5.2+ skips `.agents/plugins.json` entries and symlinks that point outside
+    the workspace root. Copying the workspace plugin directly into
+    `<repo>/.agents/plugins/principal-architect/` preserves per-repo hook/agent isolation
+    while remaining natively discoverable without symlinks or external paths.
+
+    Args:
+        repo_root: Canonical repository root `Path`.
+
+    Returns:
+        `Path` to the staged `<repo>/.agents/plugins/principal-architect` directory.
+    """
+    src = _resolve_workspace_plugin_source()
+    dest = repo_root / common.STAGED_PLUGIN_REL
+    # Keep top-level `dest` inode intact if Antigravity already opened the plugin folder.
+    dest.mkdir(parents=True, exist_ok=True)
+    if os.path.realpath(dest) == os.path.realpath(src):
+        return dest
+
+    for subdir_name in ("agents", "rules", "skills", "scripts"):
+        sub_dest = dest / subdir_name
+        if sub_dest.is_symlink():
+            sub_dest.unlink()
+        elif sub_dest.exists():
+            shutil.rmtree(sub_dest)
+
+    for stale_dir in list(dest.glob("*.egg-info")) + list(dest.glob("__pycache__")):
+        if stale_dir.is_symlink():
+            stale_dir.unlink()
+        elif stale_dir.is_dir():
+            shutil.rmtree(stale_dir, ignore_errors=True)
+
+    ignore_fn = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "*.egg-info", ".DS_Store")
+    for subdir_name in ("agents", "rules", "skills", "scripts"):
+        sub_src = src / subdir_name
+        if sub_src.is_dir():
+            shutil.copytree(sub_src, dest / subdir_name, symlinks=False, ignore=ignore_fn)
+
+    for fname in ("plugin.json", "hooks.json"):
+        file_src = src / fname
+        if file_src.is_file():
+            shutil.copy2(file_src, dest / fname)
+
+    scripts_dest = dest / "scripts"
+    if scripts_dest.is_dir():
+        for py_file in scripts_dest.glob("*.py"):
+            try:
+                py_file.chmod(0o755)
+            except OSError:
+                pass
+
+    return dest
+
+
+def _is_pa_plugins_json_entry_path(raw_path: str) -> bool:
+    """Return True if a `.agents/plugins.json` entry path points to Principal Architect.
+
+    Args:
+        raw_path: Raw `path` string from an entry in `.agents/plugins.json`.
+
+    Returns:
+        `True` if the path points to the PA daemon workspace-plugin or staged plugin path.
+    """
+    p_str = raw_path.strip().rstrip("/")
+    wp_path = str(common.daemon_home() / "workspace-plugin").rstrip("/")
+    return p_str == wp_path or p_str.endswith(
+        (
+            "/pa-daemon/workspace-plugin",
+            "/workspace-plugin/principal-architect",
+            ".agents/plugins/principal-architect",
+        )
+    )
+
+
+def _remove_pa_from_plugins_json(repo_root: Path) -> bool:
+    """Remove legacy Principal Architect entries from `<repo>/.agents/plugins.json`.
+
+    Preserves unrelated entries (such as `repo-memory` or `/other/plugin`) and removes
+    `.agents/plugins.json` cleanly when no entries or inherited configs remain.
+
+    Args:
+        repo_root: Repository root `Path`.
+
+    Returns:
+        `True` if at least one PA entry was removed; `False` otherwise.
+    """
+    plugins_file = repo_root / ".agents" / "plugins.json"
+    if not plugins_file.is_file():
+        return False
+    try:
+        pdata = json.loads(plugins_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    if not isinstance(pdata, dict) or not isinstance(pdata.get("entries"), list):
+        return False
+
+    filtered: list[Any] = []
+    removed = False
+    for item in pdata["entries"]:
+        if isinstance(item, dict) and _is_pa_plugins_json_entry_path(str(item.get("path", ""))):
+            removed = True
+            continue
+        filtered.append(item)
+
+    if not removed:
+        return False
+
+    has_other_keys = any(bool(v) for k, v in pdata.items() if k != "entries")
+    if not filtered and not has_other_keys:
+        try:
+            plugins_file.unlink()
+        except OSError:
+            pass
+    else:
+        updated = dict(pdata)
+        updated["entries"] = filtered
+        plugins_file.write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
+def _ensure_repo_git_excludes(repo_root: Path, *, runner: common.Runner = common.run) -> None:
+    """Ensure PA staged plugin and runtime `.state/` paths are listed in git `info/exclude`.
+
+    Args:
+        repo_root: Repository root `Path`.
+        runner: Subprocess runner callable used for worktree `--git-path` resolution.
+    """
+    git_entry = repo_root / ".git"
+    if not git_entry.exists():
+        return
+
+    exclude_file: Path | None = None
+    if git_entry.is_dir():
+        exclude_file = git_entry / "info" / "exclude"
+    else:
+        try:
+            res = runner(["git", "rev-parse", "--git-path", "info/exclude"], cwd=repo_root)
+            if res.returncode == 0 and res.stdout.strip():
+                cand = Path(res.stdout.strip())
+                exclude_file = cand if cand.is_absolute() else (repo_root / cand)
+        except (OSError, subprocess.SubprocessError):
+            exclude_file = None
+
+    if exclude_file is None:
+        return
+
+    for pattern in (
+        f"{common.STAGED_PLUGIN_REL.as_posix()}/",
+        ".agents/plugins.json",
+        f"{common.NEW_WORKSPACE_REL.as_posix()}/.state/",
+        f"{common.LEGACY_WORKSPACE_REL.as_posix()}/.state/",
+    ):
+        _ensure_line_in_file(exclude_file, pattern)
+
+
+def _write_role_capability_manifests(
+    repo_root: Path,
+    new_ws: Path,
+    extra_skills: list[str],
+    exclude_rules: list[str],
+) -> None:
+    """Write workspace-relative `.state/pa-skills.json`, `.state/pa-worker-rules.json`, and extra skills.
+
+    Antigravity 1.5.2+ skips `skills.json` / `rules.json` entries outside the workspace root.
+    Any requested `--extra-skill` directories from `~/.gemini/config` are copied into
+    `.state/extra-skills/<slug>` so all manifest entries remain workspace-relative.
+
+    Args:
+        repo_root: Canonical repository root `Path`.
+        new_ws: Active `principal-architect-workspace` directory `Path`.
+        extra_skills: Ordered list of requested extra skill slugs.
+        exclude_rules: Ordered list of additional worker rule exclusion globs.
+    """
+    state_dir = new_ws / ".state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    user_config_dir = Path(os.path.realpath(Path.home())) / ".gemini" / "config"
+
+    skills_entries: list[dict[str, Any]] = [{"path": ".agents/skills"}]
+    extra_dir = state_dir / "extra-skills"
+    if extra_skills:
+        extra_dir.mkdir(parents=True, exist_ok=True)
+        desired = set(extra_skills)
+        for existing in list(extra_dir.iterdir()):
+            if existing.name not in desired:
+                if existing.is_symlink() or existing.is_file():
+                    existing.unlink()
+                elif existing.is_dir():
+                    shutil.rmtree(existing, ignore_errors=True)
+
+        ignore_fn = shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store")
+        for slug in extra_skills:
+            candidates = [user_config_dir / "skills" / slug]
+            plugins_dir = user_config_dir / "plugins"
+            if plugins_dir.is_dir():
+                candidates.extend(sorted(plugins_dir.glob(f"*/skills/{slug}")))
+            src_skill = next(
+                (c for c in candidates if c.is_dir() and (c / "SKILL.md").is_file()),
+                None,
+            )
+            if src_skill is not None:
+                dest_skill = extra_dir / slug
+                if dest_skill.is_symlink():
+                    dest_skill.unlink()
+                elif dest_skill.exists():
+                    shutil.rmtree(dest_skill)
+                shutil.copytree(src_skill, dest_skill, symlinks=False, ignore=ignore_fn)
+
+        try:
+            extra_rel = extra_dir.relative_to(repo_root).as_posix()
+        except ValueError:
+            extra_rel = f"{common.NEW_WORKSPACE_REL.as_posix()}/.state/extra-skills"
+        skills_entries.append({"path": extra_rel, "include_only": list(extra_skills)})
+    elif extra_dir.exists():
+        shutil.rmtree(extra_dir, ignore_errors=True)
+
+    (state_dir / "pa-skills.json").write_text(
+        json.dumps({"entries": skills_entries}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    combined_excludes = _dedup_preserve_order(
+        [*DEFAULT_WORKER_RULE_EXCLUDES, *exclude_rules]
+    )
+    rules_entries: list[dict[str, Any]] = [
+        {
+            "path": ".agents/rules",
+            "exclude": combined_excludes,
+        }
+    ]
+    (state_dir / "pa-worker-rules.json").write_text(
+        json.dumps({"entries": rules_entries}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _cmd_enroll(args: argparse.Namespace, *, runner: common.Runner = common.run) -> int:
     """Execute the normative 9-step `pa enroll` sequence (SPEC §4.3, Charter §2.3).
 
@@ -893,35 +1158,7 @@ def _cmd_enroll(args: argparse.Namespace, *, runner: common.Runner = common.run)
                 except json.JSONDecodeError:
                     exclude_rules = []
 
-        user_config_dir = Path(os.path.realpath(Path.home())) / ".gemini" / "config"
-        skills_entries: list[dict[str, Any]] = [
-            {"path": str(repo_root / ".agents" / "skills")},
-        ]
-        if extra_skills:
-            skills_entries.append(
-                {
-                    "path": str(user_config_dir / "skills"),
-                    "include_only": extra_skills,
-                }
-            )
-        (state_dir / "pa-skills.json").write_text(
-            json.dumps({"entries": skills_entries}, indent=2) + "\n",
-            encoding="utf-8",
-        )
-
-        combined_excludes = _dedup_preserve_order(
-            [*DEFAULT_WORKER_RULE_EXCLUDES, *exclude_rules]
-        )
-        rules_entries: list[dict[str, Any]] = [
-            {
-                "path": str(repo_root / ".agents" / "rules"),
-                "exclude": combined_excludes,
-            }
-        ]
-        (state_dir / "pa-worker-rules.json").write_text(
-            json.dumps({"entries": rules_entries}, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        _write_role_capability_manifests(repo_root, new_ws, extra_skills, exclude_rules)
 
         _ensure_line_in_file(new_ws / ".gitignore", ".state/")
 
@@ -944,40 +1181,10 @@ def _cmd_enroll(args: argparse.Namespace, *, runner: common.Runner = common.run)
         if req_auto_approve is not None:
             db.set_config("auto_approve_pr_plans", "true" if req_auto_approve else "false")
 
-    # --- Step 7: Write/merge <repo>/.agents/plugins.json and update .git/info/exclude ---
-    wp_path = str(common.daemon_home() / "workspace-plugin")
-    plugins_file = repo_root / ".agents" / "plugins.json"
-    plugins_file.parent.mkdir(parents=True, exist_ok=True)
-    existing_entries: list[dict[str, Any]] = []
-    if plugins_file.is_file():
-        try:
-            pdata = json.loads(plugins_file.read_text(encoding="utf-8"))
-            if isinstance(pdata, dict) and isinstance(pdata.get("entries"), list):
-                for item in pdata["entries"]:
-                    if isinstance(item, dict) and "path" in item:
-                        existing_entries.append(dict(item))
-        except (OSError, json.JSONDecodeError):
-            existing_entries = []
-
-    seen_paths: set[str] = set()
-    merged_entries: list[dict[str, Any]] = []
-    for item in existing_entries:
-        p_val = str(item["path"])
-        if p_val not in seen_paths:
-            seen_paths.add(p_val)
-            merged_entries.append(item)
-
-    if wp_path not in seen_paths:
-        merged_entries.append({"path": wp_path})
-
-    plugins_file.write_text(
-        json.dumps({"entries": merged_entries}, indent=2) + "\n",
-        encoding="utf-8",
-    )
-
-    git_dir = repo_root / ".git"
-    if git_dir.is_dir():
-        _ensure_line_in_file(git_dir / "info" / "exclude", ".agents/plugins.json")
+    # --- Step 7: Stage <repo>/.agents/plugins/principal-architect, clean legacy plugins.json, update excludes ---
+    _stage_workspace_plugin(repo_root)
+    _remove_pa_from_plugins_json(repo_root)
+    _ensure_repo_git_excludes(repo_root, runner=runner)
 
     # --- Step 8: Register repository in global Registry ---
     state_db.Registry().register(repo_root, workspace_dir=new_ws)
@@ -1007,36 +1214,19 @@ def _cmd_unenroll(args: argparse.Namespace, *, runner: common.Runner = common.ru
     Returns:
         Exit code `0`.
     """
-    # --- Step 1: Resolve repository root and remove workspace-plugin from plugins.json ---
+    # --- Step 1: Resolve repository root, remove staged plugin, and clean plugins.json ---
     raw_target = Path(args.path).expanduser()
     repo_root = common.find_repo_root(raw_target, runner=runner) or Path(
         os.path.realpath(raw_target)
     )
 
-    wp_path = str(common.daemon_home() / "workspace-plugin")
-    plugins_file = repo_root / ".agents" / "plugins.json"
-    if plugins_file.is_file():
-        try:
-            pdata = json.loads(plugins_file.read_text(encoding="utf-8"))
-            if isinstance(pdata, dict) and isinstance(pdata.get("entries"), list):
-                filtered: list[Any] = []
-                for item in pdata["entries"]:
-                    if isinstance(item, dict):
-                        p_str = str(item.get("path", "")).rstrip("/")
-                        if p_str == wp_path.rstrip("/") or p_str.endswith(
-                            (
-                                "/pa-daemon/workspace-plugin",
-                                "/workspace-plugin/principal-architect",
-                            )
-                        ):
-                            continue
-                    filtered.append(item)
-                plugins_file.write_text(
-                    json.dumps({"entries": filtered}, indent=2) + "\n",
-                    encoding="utf-8",
-                )
-        except (OSError, json.JSONDecodeError):
-            pass
+    staged_dir = repo_root / common.STAGED_PLUGIN_REL
+    if staged_dir.is_symlink():
+        staged_dir.unlink()
+    elif staged_dir.exists():
+        shutil.rmtree(staged_dir, ignore_errors=True)
+
+    _remove_pa_from_plugins_json(repo_root)
 
     # --- Step 2: Unregister repository from global Registry ---
     state_db.Registry().unregister(repo_root)
@@ -1786,14 +1976,88 @@ def _cmd_doctor(args: argparse.Namespace, *, runner: common.Runner = common.run)
                 "Run `pa doctor --fix`, `./scripts/dev-bootstrap.sh`, or `pip install pydantic pyyaml`."
             )
 
-    # --- Step 3: Inspect registry.json and target repository enrollment pointers ---
+    # --- Step 3: Inspect registry.json, staged workspace plugins, and target repository pointers ---
     registry_path = daemon_dir / "state" / "registry.json"
     enrolled_count = 0
+    expected_ver = daemon_ver or cli_ver
+    fix_mode = bool(getattr(args, "fix", False))
+    staged_rel_posix = common.STAGED_PLUGIN_REL.as_posix()
     if registry_path.is_file():
         try:
             reg_data = json.loads(registry_path.read_text(encoding="utf-8"))
             if isinstance(reg_data, dict) and isinstance(reg_data.get("repos"), dict):
                 enrolled_count = len(reg_data["repos"])
+                for repo_key in reg_data["repos"]:
+                    repo_p = Path(repo_key)
+                    if not repo_p.is_dir():
+                        continue
+                    staged_dir = repo_p / common.STAGED_PLUGIN_REL
+                    staged_manifest = staged_dir / "plugin.json"
+                    staged_stale = False
+                    if staged_dir.is_symlink() or staged_manifest.is_symlink() or not staged_manifest.is_file():
+                        staged_stale = True
+                    else:
+                        try:
+                            st_data = json.loads(staged_manifest.read_text(encoding="utf-8"))
+                            if not isinstance(st_data, dict) or str(st_data.get("version", "")).strip() != expected_ver:
+                                staged_stale = True
+                        except (OSError, json.JSONDecodeError):
+                            staged_stale = True
+
+                    has_legacy_plugins_json = False
+                    plugins_file = repo_p / ".agents" / "plugins.json"
+                    if plugins_file.is_file():
+                        try:
+                            pdata = json.loads(plugins_file.read_text(encoding="utf-8"))
+                            if isinstance(pdata, dict) and isinstance(pdata.get("entries"), list):
+                                for item in pdata["entries"]:
+                                    if isinstance(item, dict) and _is_pa_plugins_json_entry_path(
+                                        str(item.get("path", ""))
+                                    ):
+                                        has_legacy_plugins_json = True
+                                        break
+                        except (OSError, json.JSONDecodeError):
+                            pass
+
+                    if fix_mode:
+                        _stage_workspace_plugin(repo_p)
+                        _remove_pa_from_plugins_json(repo_p)
+                        _ensure_repo_git_excludes(repo_p, runner=runner)
+                        ws_p = common.workspace_dir(repo_p)
+                        db_p = ws_p / ".state" / "state.db"
+                        if db_p.is_file():
+                            extra_skills: list[str] = []
+                            exclude_rules: list[str] = []
+                            with state_db.StateDB(db_p) as db:
+                                raw_extra = db.get_config("extra_skills_json")
+                                if raw_extra:
+                                    try:
+                                        parsed_extra = json.loads(raw_extra)
+                                        if isinstance(parsed_extra, list):
+                                            extra_skills = _dedup_preserve_order(
+                                                [str(x) for x in parsed_extra]
+                                            )
+                                    except json.JSONDecodeError:
+                                        extra_skills = []
+                                raw_excl = db.get_config("exclude_rules_json")
+                                if raw_excl:
+                                    try:
+                                        parsed_excl = json.loads(raw_excl)
+                                        if isinstance(parsed_excl, list):
+                                            exclude_rules = _dedup_preserve_order(
+                                                [str(x) for x in parsed_excl]
+                                            )
+                                    except json.JSONDecodeError:
+                                        exclude_rules = []
+                            _write_role_capability_manifests(
+                                repo_p, ws_p, extra_skills, exclude_rules
+                            )
+                    elif staged_stale or has_legacy_plugins_json:
+                        warnings.append(
+                            f"Enrolled repository {repo_p} has missing or outdated staged "
+                            f"workspace plugin ({staged_rel_posix}). "
+                            f"Run `pa doctor --fix` or `pa enroll {repo_p}`."
+                        )
         except (OSError, json.JSONDecodeError):
             warnings.append(f"Could not parse {registry_path}.")
 
@@ -1918,10 +2182,12 @@ def _is_ephemeral_runtime_path(rel_posix: str) -> bool:
         rel_posix: Repository-relative POSIX path string.
 
     Returns:
-        `True` if the path is `.agents/plugins.json` or resides inside a `.state` directory.
+        `True` if the path is `.agents/plugins.json`, inside the staged PA plugin
+        directory, or inside a `.state` directory.
     """
-    norm = rel_posix.strip().lstrip("./")
-    if norm == ".agents/plugins.json":
+    norm = rel_posix.strip().removeprefix("./").lstrip("/")
+    staged_prefix = common.STAGED_PLUGIN_REL.as_posix()
+    if norm == ".agents/plugins.json" or norm == staged_prefix or norm.startswith(staged_prefix + "/"):
         return True
     return ".state" in norm.split("/")
 
@@ -1944,6 +2210,7 @@ def _collect_existing_allowed_files(
         Sorted list of existing repo-relative POSIX file paths within `allowed_files`.
     """
     collected: list[str] = []
+    staged_prefix = common.STAGED_PLUGIN_REL.as_posix()
     for dirpath, dirnames, filenames in os.walk(real_root):
         dirnames[:] = [d for d in dirnames if d not in (".git", ".state")]
         for fname in filenames:
@@ -1956,6 +2223,8 @@ def _collect_existing_allowed_files(
                 continue
             parts = rel_posix.split("/")
             if ".git" in parts or ".state" in parts:
+                continue
+            if rel_posix == staged_prefix or rel_posix.startswith(staged_prefix + "/"):
                 continue
             if not matches_any_fn(rel_posix, forbidden_files) and matches_any_fn(
                 rel_posix, allowed_files
@@ -1993,17 +2262,7 @@ def _cmd_wo_verify(args: argparse.Namespace, *, runner: common.Runner = common.r
     ws_dir = common.workspace_dir(real_root)
     wo_id_arg = str(args.wo_id).strip()
 
-    git_dir = real_root / ".git"
-    if git_dir.is_dir():
-        _ensure_line_in_file(git_dir / "info" / "exclude", ".agents/plugins.json")
-        _ensure_line_in_file(
-            git_dir / "info" / "exclude",
-            f"{common.NEW_WORKSPACE_REL.as_posix()}/.state/",
-        )
-        _ensure_line_in_file(
-            git_dir / "info" / "exclude",
-            f"{common.LEGACY_WORKSPACE_REL.as_posix()}/.state/",
-        )
+    _ensure_repo_git_excludes(real_root, runner=runner)
 
     wo_doc = pre_tool_gate._find_bound_workorder(ws_dir, None, wo_id_arg)
     if wo_doc is None or wo_doc.path is None:
